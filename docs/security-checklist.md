@@ -63,20 +63,53 @@ REPORT_MASK_NAMES=true npm run import:excel
 
 **只删除文件是不够的** —— 数据仍留在 Git 历史中，任何人 clone 都能看到。
 
-处理顺序：
+### 实测结论：`git push --force` 也清不掉 GitHub 上的旧对象
+
+本仓库实际验证过（2026-09）：
+
+| 操作 | 结果 |
+| --- | --- |
+| 删除文件并推送 | 分支顶端 404，但旧提交的原始链接仍返回 200 |
+| `git push --force` 重写历史 | 匿名 `commits` 列表里不再出现旧提交 ✅，但 `github.com/<owner>/<repo>/commit/<旧SHA>` 与 `raw.githubusercontent.com/<owner>/<repo>/<旧SHA>/<文件>` **仍然返回 200** ⚠️ |
+
+也就是：**GitHub 会长期保留不可达（unreachable）的 commit 与 blob。**
+只要有人知道那个 SHA，就能把内容下载下来。
+
+### 真正彻底清除的两条路
+
+**① 删除仓库 + 同名重建（推荐，30 秒解决）**
+
+```bash
+# 先确认本地有完整最新代码
+git log --oneline -1 && git status --short
+
+# 删除远程仓库（用 API 或网页 Settings → Danger Zone → Delete this repository）
+curl -X DELETE -H "Authorization: Bearer <TOKEN>" \
+  https://api.github.com/repos/<owner>/<repo>
+
+# 同名重新创建后，把干净历史推上去
+git push https://<owner>:<TOKEN>@github.com/<owner>/<repo>.git main:main
+```
+
+旧对象随仓库一起消失，不留任何残留。仓库地址不变，之前的提交历史会全部丢失
+（本文场景下要丢掉的正是泄露提交，所以是好事）。
+
+**② 提交 GitHub Support 工单（保留仓库与历史）**
+
+访问 <https://support.github.com/contact>，选择 *Repository → Sensitive data*，
+说明「请清除 <owner>/<repo> 中 SHA 为 <旧SHA> 的不可达对象」。
+GitHub 可以服务端清除，但需要等待处理。
+
+### 处理顺序
 
 1. **立即吊销泄露的密钥**（GitHub → Settings → Developer settings → Personal access tokens）
-2. **把仓库改为 Private**（Settings → General → 最底部 Danger Zone → Change visibility）
-3. 清理历史（用 [git-filter-repo](https://github.com/newren/git-filter-repo) 或 BFG）：
-
-   ```bash
-   # 例：从全部历史中彻底移除某文件
-   git filter-repo --invert-paths --path excel-analysis.md --path import-report.md
-   git push --force --all
-   ```
-
+2. 如果仓库是公开的，**先转私有**可立刻阻断公网访问（可随时改回公开）
+3. 按上面 ① 或 ② 彻底清除历史
 4. 涉及身份证号 / 银行卡号泄露的，按《个人信息保护法》要求评估是否需要
-   向受影响员工告知并上报。
+   向受影响员工告知并上报
+
+> ⚠️ 本地若保留了含旧数据的 ref（如备份 tag / branch），**绝不要推送它们**，
+> 否则会把已清除的数据重新带回远程。用 `git tag -l`、`git branch -a` 检查一遍。
 
 ## 启用登录前
 
