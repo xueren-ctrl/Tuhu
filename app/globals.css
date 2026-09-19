@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --hr-bg: #f4f6fa;
+  --hr-panel: #ffffff;
+  --hr-border: #e4e8f0;
+  --hr-text: #1c2434;
+  --hr-text-sub: #5b6b83;
+  --hr-primary: #2563eb;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--hr-bg);
+  color: var(--hr-text);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 滚动条（桌面优先，保持克制） ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c9d2e0;
+  border-radius: 6px;
+  border: 2px solid var(--hr-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aeb9cb;
+}
+
+/* ---------- 表单基础外观 ---------- */
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--hr-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+/* ---------- 隐藏 number 输入的上下箭头，避免误触 ---------- */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---------- 表格 ---------- */
+table.grid-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+}
+table.grid-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7f9fc;
+  border-bottom: 1px solid var(--hr-border);
+  white-space: nowrap;
+}
+table.grid-table tbody td {
+  border-bottom: 1px solid #eef1f6;
+}
+table.grid-table tbody tr:hover {
+  background: #f8fbff;
+}
+
+/* ---------- 打印 ---------- */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
+
+@layer utilities {
+  .text-sub {
+    color: var(--hr-text-sub);
+  }
+  .panel {
+    background: var(--hr-panel);
+    border: 1px solid var(--hr-border);
+    border-radius: 10px;
+  }
+}

@@ -1,0 +1,50 @@
+# ===== 依赖 / 构建产物 =====
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# ===== 环境变量（严禁提交敏感信息）=====
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ===== HR 敏感数据：数据库文件绝不入库 =====
+/data/*.db
+/data/*.db-journal
+/data/*.db-wal
+/data/*.db-shm
+/data/backup/
+/data/import/*.xlsx
+/data/import/*.xls
+/data/import/*.csv
+/data/export/
+/templates/*.xlsx
+
+# ===== 导入报告含真实员工姓名，属个人数据，默认不进 Git =====
+# 需要公开报告时：设置 REPORT_MASK_NAMES=true 重新生成后再提交
+/docs/import-report.md
+
+# ===== 原始 Excel（绝对不能被 Git 追踪 / 被程序覆盖）=====
+/途虎HR人员登记.xlsx
+
+# ===== 本地 Agent 工作记忆（可能累积员工相关细节，不进 Git）=====
+.workbuddy/
+
+# ===== 临时文件 =====
+scripts/_analyze*.py
+scripts/_out*.txt
+scripts/_diag*.ts
+.tmp_*
+.t1.json
+.t2.json
+.remote_*.md
+.staged.txt
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

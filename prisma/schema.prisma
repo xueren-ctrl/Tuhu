@@ -1,0 +1,301 @@
+// ============================================================
+// 途虎加盟店 HR 人事管理系统 —— 数据库模型
+// 数据库：SQLite     ORM：Prisma
+//
+// 设计原则（第一阶段）：
+//  1. Employee 是唯一员工数据源，其他业务页面全部实时查询本表。
+//  2. Excel「数据库」Sheet 的每一个原始字段都能落到 Employee 上，
+//     暂不做过度拆表；后续再拆出 招聘 / 社保 / 薪资 / 合同 / 离职 子表。
+//  3. 员工系统内部唯一标识为 employeeId（THHR+年份+6位流水号），
+//     绝不使用 姓名 / 姓名+入职日期 / 身份证号 作为主键。
+//  4. 身份证号只作为业务唯一性校验字段之一。
+//  5. 删除采用软删除（deletedAt），不做物理删除。
+//  6. 注意：SQLite 不支持 Prisma enum，状态字段使用 String，
+//     取值受 lib/constants.ts 中的常量约束。
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// 门店（基础设置，可增删改停用）
+// ------------------------------------------------------------
+model Store {
+  id      Int     @id @default(autoincrement())
+  name    String  @unique // 门店名称，来自 Excel「门店名称」
+  code    String? // 门店编码（可选）
+  region  String? // 区域 / 城市（可选）
+  address String? // 门店地址（可选）
+  // 计划编制人数（来自「门店人员编制」Sheet，第一阶段仅存参考值）
+  plannedHeadcount Int?
+  status    String  @default("ACTIVE") // ACTIVE | INACTIVE
+  remark    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employees Employee[]
+
+  @@index([status])
+}
+
+// ------------------------------------------------------------
+// 职位 / 工种（基础设置，可增删改停用）
+// 数据来源：Excel「工种级别」列的历史取值
+// ------------------------------------------------------------
+model Position {
+  id        Int     @id @default(autoincrement())
+  name      String  @unique // 职位/工种名称，如 店长、机修、前台
+  category  String? // 职位大类（预留：技术 / 服务 / 管理 / 职能）
+  level     String? // 级别（预留：如 青铜 / 白银 / 黄金，对应 Excel「工种级别」的级别后缀）
+  sortOrder Int     @default(0)
+  status    String  @default("ACTIVE") // ACTIVE | INACTIVE
+  remark    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employees Employee[]
+
+  @@index([status])
+}
+
+// ------------------------------------------------------------
+// 通用字典表（第一阶段只放必要字典，避免过度设计）
+// category 例如：YES_NO_FLAG、DOC_STATUS、RESIGN_REASON、DORMITORY、ID_TYPE
+// ------------------------------------------------------------
+model DictOption {
+  id        Int     @id @default(autoincrement())
+  category  String
+  code      String
+  label     String
+  sortOrder Int     @default(0)
+  status    String  @default("ACTIVE") // ACTIVE | INACTIVE
+  remark    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([category, code])
+  @@index([category, status])
+}
+
+// ------------------------------------------------------------
+// 员工主档案 —— 系统唯一员工数据源
+// 字段顺序基本对齐 Excel「数据库」Sheet 的 46 列，便于人工核对
+// ------------------------------------------------------------
+model Employee {
+  id         Int    @id @default(autoincrement()) // 内部主键（自增）
+  employeeId String @unique // 业务唯一编号 THHR2026000001，永不修改
+
+  // ---- ① 基本信息 --------------------------------------------------
+  name                  String // 姓名（Excel col5）
+  idCardNo              String? // 身份证号（Excel col6，字符串存储，禁止当数字）
+  gender                String? // 性别（由身份证号推导，仅供统计，不落 Excel）
+  age                   Int? // 年龄（Excel col28，清洗为整数）
+  ageRaw                String? // 年龄原文，保留 Excel 原样
+  minorNote             String? // 未成年备注（Excel col46）
+
+  // ---- ② 联系方式 --------------------------------------------------
+  phone            String? // 联系电话（Excel col7，字符串存储）
+  currentAddress   String? // 现居住地址（Excel col24）
+  emergencyContact1 String? // 紧急联系人1（Excel col12）
+  emergencyPhone1   String? // 紧急联系人1电话（Excel col13）
+  emergencyContact2 String? // 紧急联系人2（Excel col14）
+  emergencyPhone2   String? // 紧急联系人2电话（Excel col15）
+
+  // ---- ③ 门店 / 职位 -----------------------------------------------
+  storeId       Int? // 关联 Store
+  storeNameRaw  String? // Excel 原始门店名称（原文保留，历史数据不丢）
+  positionId    Int? // 关联 Position
+  jobGradeRaw   String? // Excel「工种级别」原文，如「青铜机修技师」
+  positionNote  String? // 职位备注（Excel col9）
+  certificateLevel String? // 证书级别（Excel col42）
+
+  // ---- ④ 入职信息 --------------------------------------------------
+  hireDate     DateTime? // 入职日期（Excel col3）
+  dormitory    String? // 是否住宿舍（Excel col10）
+  mentorName   String? // 带教人（Excel col39）
+  onboardingMedical String? // 入职体检（Excel col20）
+
+  // ---- ⑤ 社保（第一阶段仅存字段，不做业务逻辑）----------------------
+  socialInsurancePurchased String? // 社保购买（Excel col11）
+
+  // ---- ⑥ 薪资（第一阶段仅存字段，不做业务逻辑）----------------------
+  salaryTerms         String? // 薪资待遇（Excel col23）
+  firstMonthGuarantee String? // 首月保障（Excel col37）
+  bankBranch          String? // 工资卡开户银行支行（Excel col21）
+  bankAccountNo       String? // 银行卡账号（Excel col22，字符串存储，禁止当数字）
+
+  // ---- ⑦ 合同 / 入职资料（第一阶段仅存字段）-------------------------
+  laborContract          String? // 劳动合同（Excel col16）
+  socialInsuranceAgreement String? // 社保协议（Excel col17）
+  fireSafetyCommitment   String? // 消防承诺书（Excel col18）
+  dormitoryWaiver        String? // 宿舍免责协议（Excel col19）
+  docResume              String? // 简历表（Excel col34）
+  docInterviewEvaluation String? // 面试评估表（Excel col35）
+  docOnboardingForm      String? // 入职表（Excel col40）
+  docInterviewEvaluation2 String? // 面试评估表（Excel col41，原表重复列名）
+
+  // ---- ⑧ 离职 ------------------------------------------------------
+  status        String    @default("ACTIVE") // ACTIVE | RESIGNED | CANDIDATE
+  resignDate    DateTime? // 离职日期（Excel col27「备注（离职日期）」中可解析的日期部分）
+  resignDateRaw String? // 离职日期原文（含 "9/30已离职" 之类文本，原样保留）
+  resignReason  String? // 离职原因（Excel col26）
+
+  // ---- ⑨ 招聘 / 面试（第一阶段仅存字段，不做完整招聘系统）------------
+  recruiterName     String? // 招聘人（Excel col25）
+  interviewDate     DateTime? // 面试时间（Excel col29）
+  interviewLocation String? // 面试地点（Excel col30）
+  interviewResult   String? // 面试结果（Excel col31）
+  interviewerName   String? // 面试人（Excel col32）
+  interviewHired    String? // 是否入职（Excel col33）
+
+  // ---- ⑩ 备注 / 系统计算字段（原样保留以便追溯）----------------------
+  remark             String? // 备注（Excel col38）
+  remark3            String? // 备注（Excel col43，原表重复列名）
+  computed7Days      String? // 是否满7天（Excel col44，公式/手工混合，仅存快照）
+  computed2Months    String? // 是否入职满2个月（Excel col45，公式/手工混合，仅存快照）
+  tenureTextAtImport String? // 导入时「在职年限」计算快照（Excel col4，计算字段）
+  resignedTenureText String? // 导入时「在职年限（离职）」计算快照（Excel col36，计算字段）
+
+  // ---- ⑪ 溯源 / 审计 -----------------------------------------------
+  sourceSheet  String? // 来源 Sheet 名，默认「数据库」
+  sourceRowNo  Int? // Excel 原始行号
+  importBatch  String? // 导入批次号
+  dataFlags    String? // 数据异常标记 JSON 数组，如 ["身份证号为空","手机号疑似填写在身份证列"]
+
+  // ---- ⑫ 软删除 / 时间戳 -------------------------------------------
+  deletedAt DateTime? // 软删除时间；非空表示已停用/删除
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  store    Store?    @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  position Position? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+
+  /** 该员工在原始 Excel 中对应的全部数据行（一行员工可能由多行 Excel 合并而来） */
+  sourceRows EmployeeSourceRow[]
+
+  @@index([name])
+  @@index([phone])
+  @@index([idCardNo])
+  @@index([employeeId])
+  @@index([storeId])
+  @@index([positionId])
+  @@index([status])
+  @@index([deletedAt])
+  @@index([hireDate])
+}
+
+// ------------------------------------------------------------
+// 员工 ↔ 原始 Excel 行的溯源映射
+//
+// 为什么需要单独一张表：
+//   Excel 中同一名员工可能出现多行（重复登记、同一段任职被录入两次）。
+//   导入时这些行会合并到同一条 Employee 记录上，
+//   若只把行号存在 Employee.sourceRowNo（单值），后一行会覆盖前一行，
+//   下次重复导入时前一行就再也找不到归属 → 会重复创建员工。
+//   因此这里用 (sheet, rowNo) 唯一索引持久化「每一个 Excel 行 → 员工」的映射，
+//   保证导入脚本可无限次重复执行而不产生重复员工。
+// ------------------------------------------------------------
+model EmployeeSourceRow {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  sheet      String // 来源 Sheet 名，第一阶段固定为「数据库」
+  rowNo      Int // Excel 原始行号
+  batchId    String? // 首次建立该映射的导入批次
+  createdAt  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([sheet, rowNo])
+  @@index([employeeId])
+}
+
+// ------------------------------------------------------------
+// employee_id 流水号计数器（每年一份，保证 THHR+年份+6位 永久唯一）
+// ------------------------------------------------------------
+model EmployeeIdCounter {
+  year      Int      @id
+  lastValue Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+// ------------------------------------------------------------
+// 导入批次（用于可重复执行导入 + 审计）
+// ------------------------------------------------------------
+model ImportBatch {
+  id           String   @id // 批次号，如 IMP-20260919-205600-abc123
+  sourceFile   String // Excel 源文件绝对路径
+  sourceSha256 String? // 源文件 SHA256，用于确认导入的是同一份原始文件
+  sourceSheet  String
+  totalRows    Int      @default(0) // 数据区总行数
+  inserted     Int      @default(0)
+  updated      Int      @default(0)
+  skipped      Int      @default(0)
+  duplicated   Int      @default(0)
+  failed       Int      @default(0)
+  issueCount   Int      @default(0)
+  status       String   @default("RUNNING") // RUNNING | SUCCESS | PARTIAL | FAILED
+  message      String?
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+
+  issues ImportIssue[]
+}
+
+// ------------------------------------------------------------
+// 导入异常明细（不静默处理任何异常）
+// ------------------------------------------------------------
+model ImportIssue {
+  id          Int     @id @default(autoincrement())
+  batchId     String
+  sourceRowNo Int? // 原始 Excel 行号
+  employeeName String? // 员工姓名
+  fieldName   String? // 异常字段
+  rawValue    String? // 原始值
+  issueType   String // MISSING_ID | INVALID_ID | FIELD_MISPLACED | INVALID_DATE | EMPTY_NAME | DUPLICATE_KEY | FALLBACK_MATCH | OTHER
+  severity    String  @default("WARN") // WARN | ERROR
+  message     String?
+  createdAt   DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@index([issueType])
+}
+
+// ------------------------------------------------------------
+// 系统用户（第一阶段只预留管理员 / HR普通用户两种角色）
+// ------------------------------------------------------------
+model AppUser {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  displayName  String?
+  passwordHash String // 仅存哈希，绝不存明文
+  role         String   @default("HR") // ADMIN | HR
+  status       String   @default("ACTIVE")
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ------------------------------------------------------------
+// 操作审计日志（HR 敏感数据系统，保留变更痕迹）
+// ------------------------------------------------------------
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  actor      String? // 操作人
+  action     String // CREATE | UPDATE | SOFT_DELETE | RESTORE | IMPORT
+  entity     String // Employee | Store | Position | ...
+  entityId   String?
+  summary    String? // 变更摘要（严禁写入完整身份证号 / 银行卡号）
+  detail     String? // 变更明细 JSON（敏感字段已脱敏）
+  createdAt  DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}

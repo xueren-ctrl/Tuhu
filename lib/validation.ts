@@ -1,0 +1,204 @@
+import { z } from "zod";
+import {
+  normalizeBankAccount,
+  normalizeIdCard,
+  normalizeName,
+  normalizePhone,
+  toDateOnly,
+  toNullableInt,
+  toNullableText,
+} from "./format";
+
+/** 可空文本：空串统一转 null */
+const nullableText = z
+  .union([z.string(), z.number(), z.null(), z.undefined()])
+  .transform((v) => toNullableText(v));
+
+/** 可空日期：接受 yyyy-MM-dd / ISO / 空串，统一转为 UTC 零点的「纯日期」 */
+const nullableDate = z
+  .union([z.string(), z.null(), z.undefined()])
+  .transform((v) => {
+    const s = toNullableText(v);
+    if (s === null) return null;
+    // yyyy-MM-dd（前端 <input type="date"> 的标准输出）
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (m) return toDateOnly(Number(m[1]), Number(m[2]), Number(m[3]));
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return null;
+    return toDateOnly(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+  });
+
+/** 可空整数 */
+const nullableInt = z
+  .union([z.string(), z.number(), z.null(), z.undefined()])
+  .transform((v) => toNullableInt(v));
+
+/** 可空外键 id */
+const nullableId = z
+  .union([z.string(), z.number(), z.null(), z.undefined()])
+  .transform((v) => {
+    const n = toNullableInt(v);
+    return n === null || n <= 0 ? null : n;
+  });
+
+/** 身份证号：规范化为字符串，绝不转数字 */
+const idCardField = nullableText.transform((v) => {
+  const n = normalizeIdCard(v);
+  return n;
+});
+
+const phoneField = nullableText.transform((v) => normalizePhone(v));
+const bankField = nullableText.transform((v) => normalizeBankAccount(v));
+
+export const employeeCreateSchema = z.object({
+  name: z
+    .string({ required_error: "姓名必填" })
+    .transform((v) => normalizeName(v) ?? "")
+    .refine((v) => v.length > 0, { message: "姓名必填" })
+    .refine((v) => v.length <= 50, { message: "姓名过长" }),
+
+  idCardNo: idCardField.optional().nullable(),
+  phone: phoneField.optional().nullable(),
+
+  storeId: nullableId.optional(),
+  storeNameRaw: nullableText.optional(),
+  positionId: nullableId.optional(),
+  jobGradeRaw: nullableText.optional(),
+  positionNote: nullableText.optional(),
+
+  hireDate: nullableDate.optional(),
+  status: z.enum(["ACTIVE", "RESIGNED", "CANDIDATE"]).default("ACTIVE"),
+  resignDate: nullableDate.optional(),
+  resignDateRaw: nullableText.optional(),
+  resignReason: nullableText.optional(),
+  remark: nullableText.optional(),
+
+  // 其余 Excel 字段（可选，全部保留）
+  gender: nullableText.optional(),
+  age: nullableInt.optional(),
+  ageRaw: nullableText.optional(),
+  minorNote: nullableText.optional(),
+  currentAddress: nullableText.optional(),
+  emergencyContact1: nullableText.optional(),
+  emergencyPhone1: nullableText.optional(),
+  emergencyContact2: nullableText.optional(),
+  emergencyPhone2: nullableText.optional(),
+  certificateLevel: nullableText.optional(),
+  dormitory: nullableText.optional(),
+  mentorName: nullableText.optional(),
+  onboardingMedical: nullableText.optional(),
+  socialInsurancePurchased: nullableText.optional(),
+  salaryTerms: nullableText.optional(),
+  firstMonthGuarantee: nullableText.optional(),
+  bankBranch: nullableText.optional(),
+  bankAccountNo: bankField.optional(),
+  laborContract: nullableText.optional(),
+  socialInsuranceAgreement: nullableText.optional(),
+  fireSafetyCommitment: nullableText.optional(),
+  dormitoryWaiver: nullableText.optional(),
+  docResume: nullableText.optional(),
+  docInterviewEvaluation: nullableText.optional(),
+  docOnboardingForm: nullableText.optional(),
+  docInterviewEvaluation2: nullableText.optional(),
+  recruiterName: nullableText.optional(),
+  interviewDate: nullableDate.optional(),
+  interviewLocation: nullableText.optional(),
+  interviewResult: nullableText.optional(),
+  interviewerName: nullableText.optional(),
+  interviewHired: nullableText.optional(),
+  remark3: nullableText.optional(),
+  computed7Days: nullableText.optional(),
+  computed2Months: nullableText.optional(),
+  tenureTextAtImport: nullableText.optional(),
+  resignedTenureText: nullableText.optional(),
+});
+
+/** 更新：employee_id / createdAt 一律不允许被普通编辑修改 */
+export const employeeUpdateSchema = employeeCreateSchema
+  .partial()
+  .omit({ name: true })
+  .extend({
+    name: z
+      .string()
+      .transform((v) => normalizeName(v) ?? "")
+      .refine((v) => v.length > 0, { message: "姓名必填" })
+      .optional(),
+  });
+
+export const storeSchema = z.object({
+  name: z
+    .string({ required_error: "门店名称必填" })
+    .transform((v) => normalizeName(v) ?? "")
+    .refine((v) => v.length > 0, { message: "门店名称必填" })
+    .refine((v) => v.length <= 100, { message: "门店名称过长" }),
+  code: nullableText.optional(),
+  region: nullableText.optional(),
+  address: nullableText.optional(),
+  plannedHeadcount: nullableInt.optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  remark: nullableText.optional(),
+});
+
+export const positionSchema = z.object({
+  name: z
+    .string({ required_error: "职位名称必填" })
+    .transform((v) => normalizeName(v) ?? "")
+    .refine((v) => v.length > 0, { message: "职位名称必填" })
+    .refine((v) => v.length <= 50, { message: "职位名称过长" }),
+  category: nullableText.optional(),
+  level: nullableText.optional(),
+  sortOrder: nullableInt.optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  remark: nullableText.optional(),
+});
+
+export const employeeQuerySchema = z.object({
+  keyword: z.string().optional(),
+  name: z.string().optional(),
+  phone: z.string().optional(),
+  idCardNo: z.string().optional(),
+  storeId: z.string().optional(),
+  positionId: z.string().optional(),
+  status: z.enum(["ACTIVE", "RESIGNED", "CANDIDATE", ""]).optional(),
+  includeDeleted: z
+    .union([z.string(), z.boolean()])
+    .optional()
+    .transform((v) => v === true || v === "true" || v === "1"),
+  page: z
+    .union([z.string(), z.number()])
+    .optional()
+    .transform((v) => Math.max(1, toNullableInt(v) ?? 1)),
+  pageSize: z
+    .union([z.string(), z.number()])
+    .optional()
+    .transform((v) => {
+      const n = toNullableInt(v) ?? 20;
+      return Math.min(200, Math.max(1, n));
+    }),
+  sortBy: z
+    .enum([
+      "employeeId",
+      "name",
+      "hireDate",
+      "resignDate",
+      "status",
+      "createdAt",
+      "updatedAt",
+    ])
+    .optional()
+    .default("employeeId"),
+  sortOrder: z.enum(["asc", "desc"]).optional().default("asc"),
+});
+
+export type EmployeeCreateInput = z.infer<typeof employeeCreateSchema>;
+export type EmployeeUpdateInput = z.infer<typeof employeeUpdateSchema>;
+export type EmployeeQueryInput = z.infer<typeof employeeQuerySchema>;
+export type StoreInput = z.infer<typeof storeSchema>;
+export type PositionInput = z.infer<typeof positionSchema>;
+
+/** 把 zod 错误整理成前端可直接展示的中文提示 */
+export function formatZodError(err: z.ZodError): string {
+  return err.errors
+    .map((e) => `${e.path.join(".") || "表单"}：${e.message}`)
+    .join("；");
+}
