@@ -3,10 +3,10 @@ import { listEmployees } from "@/lib/employee-service";
 import { getSelectOptions } from "@/lib/settings-service";
 import { employeeQuerySchema } from "@/lib/validation";
 import { Alert, Button, Card, EmptyState } from "@/components/ui";
-import EmployeeFilterBar from "@/components/employees/EmployeeFilterBar";
+import EmployeeFilterPanel from "@/components/employees/EmployeeFilterPanel";
 import EmployeeTable from "@/components/employees/EmployeeTable";
 import ListPagination from "@/components/employees/ListPagination";
-import { EMPLOYEE_STATUS_LABEL } from "@/lib/constants";
+import { EMPLOYEE_STATUS_LABEL, UNASSIGNED } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -41,20 +41,46 @@ export default async function EmployeesPage({
   if (q.idCardNo) chips.push(`身份证「${q.idCardNo}」`);
   if (q.storeId)
     chips.push(
-      `门店「${options.stores.find((s) => String(s.id) === q.storeId)?.name ?? q.storeId}」`
+      q.storeId === UNASSIGNED
+        ? "未分配门店"
+        : `门店「${options.stores.find((s) => String(s.id) === q.storeId)?.name ?? q.storeId}」`
+    );
+  if (q.departmentId)
+    chips.push(
+      q.departmentId === UNASSIGNED
+        ? "未分配部门"
+        : `部门「${options.departments.find((d) => String(d.id) === q.departmentId)?.name ?? q.departmentId}」`
     );
   if (q.positionId)
     chips.push(
-      `职位「${
-        options.positions.find((p) => String(p.id) === q.positionId)?.name ?? q.positionId
-      }」`
+      q.positionId === UNASSIGNED
+        ? "未分配职位"
+        : `职位「${options.positions.find((p) => String(p.id) === q.positionId)?.name ?? q.positionId}」`
     );
   if (q.status) chips.push(`状态「${EMPLOYEE_STATUS_LABEL[q.status] ?? q.status}」`);
   if (q.includeDeleted) chips.push("包含已停用档案");
 
   return (
     <div className="mx-auto max-w-[1500px] space-y-4">
-      <EmployeeFilterBar stores={options.stores} positions={options.positions} />
+      <EmployeeFilterPanel
+        basePath="/employees"
+        stores={options.stores}
+        departments={options.departments}
+        positions={options.positions}
+        fields={[
+          "keyword",
+          "name",
+          "phone",
+          "idCardNo",
+          "storeId",
+          "departmentId",
+          "positionId",
+          "status",
+          "includeDeleted",
+        ]}
+        advanced
+        deletable
+      />
 
       {chips.length ? (
         <Alert tone="info">

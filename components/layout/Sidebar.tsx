@@ -28,13 +28,24 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/employees", label: "员工档案", icon: "▦", ready: true },
       { href: "/employees/new", label: "新增员工", icon: "＋", ready: true },
-      { href: "/employees?includeDeleted=true", label: "已停用档案", icon: "⊘", ready: true },
+    ],
+  },
+  {
+    title: "人员视图（第二阶段）",
+    items: [
+      { href: "/employees/views", label: "视图总览", icon: "◱", ready: true },
+      { href: "/employees/views/active", label: "在职人员", icon: "✓", ready: true },
+      { href: "/employees/views/resigned", label: "离职人员", icon: "✗", ready: true },
+      { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂", ready: true },
+      { href: "/employees/views/departments", label: "部门人员查询", icon: "▣", ready: true },
+      { href: "/employees/views/distribution", label: "人员分布统计", icon: "◔", ready: true },
     ],
   },
   {
     title: "基础设置",
     items: [
       { href: "/settings/stores", label: "门店管理", icon: "⌂", ready: true },
+      { href: "/settings/departments", label: "部门管理", icon: "▣", ready: true },
       { href: "/settings/positions", label: "职位管理", icon: "◆", ready: true },
       { href: "/settings/import", label: "导入与报告", icon: "⇪", ready: true },
     ],
@@ -45,8 +56,8 @@ const NAV: NavGroup[] = [
       { href: "#", label: "招聘管理", icon: "◷", ready: false },
       { href: "#", label: "社保管理", icon: "◈", ready: false },
       { href: "#", label: "薪资管理", icon: "¥", ready: false },
-      { href: "#", label: "人员流失率", icon: "◔", ready: false },
       { href: "#", label: "Excel 导出", icon: "⇩", ready: false },
+      { href: "#", label: "手机 APP", icon: "▢", ready: false },
     ],
   },
 ];
@@ -57,10 +68,10 @@ export default function Sidebar() {
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
     const base = href.split("?")[0];
-    if (base === "/employees") {
-      // 精确匹配列表页，避免 /employees/new 也高亮
-      return pathname === "/employees";
-    }
+    // /employees 只精确匹配列表页，避免与 /employees/views、/employees/new 冲突
+    if (base === "/employees") return pathname === "/employees";
+    // /employees/views 只精确匹配总览，子视图各自高亮
+    if (base === "/employees/views") return pathname === "/employees/views";
     return pathname === base || pathname.startsWith(base + "/");
   };
 

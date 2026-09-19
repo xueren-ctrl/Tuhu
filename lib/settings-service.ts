@@ -183,13 +183,106 @@ export async function setPositionStatus(
   return p;
 }
 
-/** 门店 / 职位 下拉选项（表单用） */
+// ---------------------------- 部门 ----------------------------
+
+export async function listDepartments(opts?: {
+  keyword?: string;
+  status?: string;
+  includeInactive?: boolean;
+}) {
+  const and: Record<string, unknown>[] = [];
+  if (opts?.status && opts.status !== "") and.push({ status: opts.status });
+  else if (!opts?.includeInactive) and.push({ status: "ACTIVE" });
+  if (opts?.keyword?.trim()) {
+    const kw = opts.keyword.trim();
+    and.push({
+      OR: [{ name: { contains: kw } }, { code: { contains: kw } }, { deptType: { contains: kw } }],
+    });
+  }
+  const rows = await prisma.department.findMany({
+    where: and.length ? { AND: and } : {},
+    orderBy: [{ status: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
+    include: { _count: { select: { employees: true } } },
+  });
+  return rows.map((d) => ({
+    id: d.id,
+    name: d.name,
+    code: d.code,
+    deptType: d.deptType,
+    managerName: d.managerName,
+    sortOrder: d.sortOrder,
+    status: d.status,
+    remark: d.remark,
+    employeeCount: d._count.employees,
+    createdAt: d.createdAt.toISOString(),
+    updatedAt: d.updatedAt.toISOString(),
+  }));
+}
+
+export async function createDepartment(input: Record<string, unknown>) {
+  const name = String(input.name ?? "").trim();
+  if (!name) throw new Error("部门名称必填");
+  const dup = await prisma.department.findUnique({ where: { name } });
+  if (dup) throw new Error(`部门「${name}」已存在`);
+  const d = await prisma.department.create({ data: input as never });
+  await prisma.auditLog.create({
+    data: {
+      action: "CREATE",
+      entity: "Department",
+      entityId: String(d.id),
+      summary: `新增部门 ${name}`,
+    },
+  });
+  return d;
+}
+
+export async function updateDepartment(id: number, input: Record<string, unknown>) {
+  const existing = await prisma.department.findUnique({ where: { id } });
+  if (!existing) throw new Error("部门不存在");
+  const name = input.name !== undefined ? String(input.name).trim() : existing.name;
+  if (!name) throw new Error("部门名称必填");
+  if (name !== existing.name) {
+    const dup = await prisma.department.findUnique({ where: { name } });
+    if (dup) throw new Error(`部门「${name}」已存在`);
+  }
+  const d = await prisma.department.update({ where: { id }, data: input as never });
+  await prisma.auditLog.create({
+    data: {
+      action: "UPDATE",
+      entity: "Department",
+      entityId: String(id),
+      summary: `编辑部门 ${existing.name} -> ${d.name}`,
+    },
+  });
+  return d;
+}
+
+/** 停用部门（软停用，不删除，保留历史关联） */
+export async function setDepartmentStatus(id: number, status: "ACTIVE" | "INACTIVE") {
+  const d = await prisma.department.update({ where: { id }, data: { status } });
+  await prisma.auditLog.create({
+    data: {
+      action: "UPDATE",
+      entity: "Department",
+      entityId: String(id),
+      summary: `${status === "ACTIVE" ? "启用" : "停用"}部门 ${d.name}`,
+    },
+  });
+  return d;
+}
+
+/** 门店 / 部门 / 职位 下拉选项（表单与筛选组件用） */
 export async function getSelectOptions() {
-  const [stores, positions] = await Promise.all([
+  const [stores, departments, positions] = await Promise.all([
     prisma.store.findMany({
       where: { status: "ACTIVE" },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
+    }),
+    prisma.department.findMany({
+      where: { status: "ACTIVE" },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: { id: true, name: true, deptType: true },
     }),
     prisma.position.findMany({
       where: { status: "ACTIVE" },
@@ -197,5 +290,5 @@ export async function getSelectOptions() {
       select: { id: true, name: true, category: true, level: true },
     }),
   ]);
-  return { stores, positions };
+  return { stores, departments, positions };
 }

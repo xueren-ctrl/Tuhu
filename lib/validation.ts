@@ -62,6 +62,8 @@ export const employeeCreateSchema = z.object({
 
   storeId: nullableId.optional(),
   storeNameRaw: nullableText.optional(),
+  departmentId: nullableId.optional(),
+  departmentNameRaw: nullableText.optional(),
   positionId: nullableId.optional(),
   jobGradeRaw: nullableText.optional(),
   positionNote: nullableText.optional(),
@@ -139,8 +141,21 @@ export const storeSchema = z.object({
   remark: nullableText.optional(),
 });
 
-export const positionSchema = z.object({
+export const departmentSchema = z.object({
   name: z
+    .string({ required_error: "部门名称必填" })
+    .transform((v) => normalizeName(v) ?? "")
+    .refine((v) => v.length > 0, { message: "部门名称必填" })
+    .refine((v) => v.length <= 60, { message: "部门名称过长" }),
+  code: nullableText.optional(),
+  deptType: nullableText.optional(),
+  managerName: nullableText.optional(),
+  sortOrder: nullableInt.optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  remark: nullableText.optional(),
+});
+
+export const positionSchema = z.object({  name: z
     .string({ required_error: "职位名称必填" })
     .transform((v) => normalizeName(v) ?? "")
     .refine((v) => v.length > 0, { message: "职位名称必填" })
@@ -158,6 +173,7 @@ export const employeeQuerySchema = z.object({
   phone: z.string().optional(),
   idCardNo: z.string().optional(),
   storeId: z.string().optional(),
+  departmentId: z.string().optional(),
   positionId: z.string().optional(),
   status: z.enum(["ACTIVE", "RESIGNED", "CANDIDATE", ""]).optional(),
   includeDeleted: z
@@ -194,6 +210,7 @@ export type EmployeeCreateInput = z.infer<typeof employeeCreateSchema>;
 export type EmployeeUpdateInput = z.infer<typeof employeeUpdateSchema>;
 export type EmployeeQueryInput = z.infer<typeof employeeQuerySchema>;
 export type StoreInput = z.infer<typeof storeSchema>;
+export type DepartmentInput = z.infer<typeof departmentSchema>;
 export type PositionInput = z.infer<typeof positionSchema>;
 
 /** 把 zod 错误整理成前端可直接展示的中文提示 */

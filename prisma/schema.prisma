@@ -45,6 +45,30 @@ model Store {
 }
 
 // ------------------------------------------------------------
+// 部门（第二阶段新增）
+// 数据来源：Excel「运营部」「运营部离职」Sheet。
+// 这些 Sheet 的业务含义是**部门**而非门店，因此从 Store 中独立出来。
+// 说明：Excel 未提供门店员工的部门归属，因此门店员工的 departmentId 为 null，
+//       系统不擅自为门店员工虚构部门（不用 mock 数据填充）。
+// ------------------------------------------------------------
+model Department {
+  id          Int     @id @default(autoincrement())
+  name        String  @unique // 部门名称，如「运营部」
+  code        String? // 部门编码（可选）
+  deptType    String? // 部门类型（可选：运营 / 职能 / 技术 …）
+  managerName String? // 部门负责人（可选）
+  sortOrder   Int     @default(0)
+  status      String  @default("ACTIVE") // ACTIVE | INACTIVE
+  remark      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  employees Employee[]
+
+  @@index([status])
+}
+
+// ------------------------------------------------------------
 // 职位 / 工种（基础设置，可增删改停用）
 // 数据来源：Excel「工种级别」列的历史取值
 // ------------------------------------------------------------
@@ -107,13 +131,17 @@ model Employee {
   emergencyContact2 String? // 紧急联系人2（Excel col14）
   emergencyPhone2   String? // 紧急联系人2电话（Excel col15）
 
-  // ---- ③ 门店 / 职位 -----------------------------------------------
-  storeId       Int? // 关联 Store
-  storeNameRaw  String? // Excel 原始门店名称（原文保留，历史数据不丢）
-  positionId    Int? // 关联 Position
-  jobGradeRaw   String? // Excel「工种级别」原文，如「青铜机修技师」
-  positionNote  String? // 职位备注（Excel col9）
-  certificateLevel String? // 证书级别（Excel col42）
+  // ---- ③ 门店 / 部门 / 职位 -----------------------------------------
+  // 查询一律走外键（storeId / departmentId / positionId）；
+  // 下面的 *Raw 原文列仅作「Excel 原始值留痕」，不参与查询与筛选。
+  storeId           Int? // 关联 Store
+  storeNameRaw      String? // Excel 原始门店名称（原文保留，历史数据不丢）
+  departmentId      Int? // 关联 Department
+  departmentNameRaw String? // Excel 原始部门名称（取自「运营部」等 Sheet）
+  positionId        Int? // 关联 Position
+  jobGradeRaw       String? // Excel「工种级别」原文，如「青铜机修技师」
+  positionNote      String? // 职位备注（Excel col9）
+  certificateLevel  String? // 证书级别（Excel col42）
 
   // ---- ④ 入职信息 --------------------------------------------------
   hireDate     DateTime? // 入职日期（Excel col3）
@@ -173,8 +201,9 @@ model Employee {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  store    Store?    @relation(fields: [storeId], references: [id], onDelete: SetNull)
-  position Position? @relation(fields: [positionId], references: [id], onDelete: SetNull)
+  store      Store?      @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  position   Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
 
   /** 该员工在原始 Excel 中对应的全部数据行（一行员工可能由多行 Excel 合并而来） */
   sourceRows EmployeeSourceRow[]
@@ -184,6 +213,7 @@ model Employee {
   @@index([idCardNo])
   @@index([employeeId])
   @@index([storeId])
+  @@index([departmentId])
   @@index([positionId])
   @@index([status])
   @@index([deletedAt])

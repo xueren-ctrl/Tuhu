@@ -31,6 +31,7 @@ export default async function NewEmployeePage() {
       <EmployeeForm
         mode="create"
         stores={options.stores}
+        departments={options.departments}
         positions={options.positions}
       />
     </div>

@@ -15,9 +15,10 @@ export default async function DashboardPage() {
   const stats = await getDashboardStats();
 
   // 数据库概览（技术侧可观测性，不属于业务 KPI）
-  const [storeRows, positionRows, dictRows, employeeRows, auditRows, lastBatch] =
+  const [storeRows, deptRows, positionRows, dictRows, employeeRows, auditRows, lastBatch] =
     await Promise.all([
       prisma.store.count(),
+      prisma.department.count(),
       prisma.position.count(),
       prisma.dictOption.count(),
       prisma.employee.count(),
@@ -45,8 +46,8 @@ export default async function DashboardPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-5">
-      {/* 5 个核心统计卡片 —— 全部实时计算 */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      {/* 6 个核心统计卡片 —— 全部实时计算 */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
         <StatCard
           label="员工总数"
           value={stats.total}
@@ -68,15 +69,33 @@ export default async function DashboardPage() {
         <StatCard
           label="门店数量"
           value={stats.storeCount}
-          sub={`启用中的门店`}
+          sub="启用中的门店"
           tone="slate"
+        />
+        <StatCard
+          label="部门数量"
+          value={stats.departmentCount}
+          sub="启用中的部门"
+          tone="amber"
         />
         <StatCard
           label="职位数量"
           value={stats.positionCount}
-          sub={`启用中的职位`}
-          tone="amber"
+          sub="启用中的职位"
+          tone="blue"
         />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-brand-200 bg-brand-50 px-3 py-2 text-[12.5px] text-brand-800">
+        <span>
+          第二阶段已上线：<strong>人员视图</strong>（在职 / 离职 / 门店 / 部门 / 分布统计），
+          替代 Excel 的分表视图，全部实时查询员工表。
+        </span>
+        <Link href="/employees/views">
+          <Button size="sm" variant="primary">
+            进入人员视图 →
+          </Button>
+        </Link>
       </div>
 
       {stats.candidate > 0 ? (
@@ -149,6 +168,7 @@ export default async function DashboardPage() {
           <dl className="space-y-2.5 text-[12.5px]">
             <Row label="员工主表 Employee" value={employeeRows} />
             <Row label="门店表 Store" value={storeRows} />
+            <Row label="部门表 Department" value={deptRows} />
             <Row label="职位表 Position" value={positionRows} />
             <Row label="字典表 DictOption" value={dictRows} />
             <Row label="审计日志 AuditLog" value={auditRows} />

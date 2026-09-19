@@ -57,6 +57,7 @@ export default async function EditEmployeePage({
       <EmployeeForm
         mode="edit"
         stores={options.stores}
+        departments={options.departments}
         positions={options.positions}
         initial={employee as unknown as Record<string, unknown>}
       />

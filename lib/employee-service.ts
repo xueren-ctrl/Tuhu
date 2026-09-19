@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { maskObject } from "./mask";
-import { EMPLOYEE_STATUS } from "./constants";
+import { EMPLOYEE_STATUS, UNASSIGNED, UNASSIGNED_LABEL } from "./constants";
 import { nextEmployeeId } from "./employee-id";
 import { genderFromIdCard } from "./format";
 import type { EmployeeQueryInput } from "./validation";
@@ -15,10 +15,14 @@ export interface EmployeeListRow {
   id: number;
   employeeId: string;
   name: string;
+  gender: string | null;
+  age: number | null;
   idCardNo: string | null;
   phone: string | null;
   storeName: string | null;
   storeNameRaw: string | null;
+  departmentName: string | null;
+  departmentNameRaw: string | null;
   positionName: string | null;
   jobGradeRaw: string | null;
   hireDate: string | null;
@@ -37,9 +41,12 @@ const listSelect = {
   id: true,
   employeeId: true,
   name: true,
+  gender: true,
+  age: true,
   idCardNo: true,
   phone: true,
   storeNameRaw: true,
+  departmentNameRaw: true,
   jobGradeRaw: true,
   hireDate: true,
   resignDate: true,
@@ -52,6 +59,7 @@ const listSelect = {
   updatedAt: true,
   deletedAt: true,
   store: { select: { id: true, name: true } },
+  department: { select: { id: true, name: true } },
   position: { select: { id: true, name: true } },
 } satisfies Prisma.EmployeeSelect;
 
@@ -62,10 +70,14 @@ function shapeListRow(r: RawListRow): EmployeeListRow {
     id: r.id,
     employeeId: r.employeeId,
     name: r.name,
+    gender: r.gender ?? null,
+    age: r.age ?? null,
     idCardNo: r.idCardNo ?? null,
     phone: r.phone ?? null,
     storeName: r.store?.name ?? null,
     storeNameRaw: r.storeNameRaw ?? null,
+    departmentName: r.department?.name ?? null,
+    departmentNameRaw: r.departmentNameRaw ?? null,
     positionName: r.position?.name ?? null,
     jobGradeRaw: r.jobGradeRaw ?? null,
     hireDate: r.hireDate ? r.hireDate.toISOString() : null,
@@ -116,12 +128,25 @@ export function buildEmployeeWhere(
     and.push({ idCardNo: { contains: i } });
   }
   if (q.storeId?.trim()) {
-    const id = Number(q.storeId);
-    if (Number.isFinite(id) && id > 0) and.push({ storeId: id });
+    if (q.storeId === UNASSIGNED) and.push({ storeId: null });
+    else {
+      const id = Number(q.storeId);
+      if (Number.isFinite(id) && id > 0) and.push({ storeId: id });
+    }
+  }
+  if (q.departmentId?.trim()) {
+    if (q.departmentId === UNASSIGNED) and.push({ departmentId: null });
+    else {
+      const id = Number(q.departmentId);
+      if (Number.isFinite(id) && id > 0) and.push({ departmentId: id });
+    }
   }
   if (q.positionId?.trim()) {
-    const id = Number(q.positionId);
-    if (Number.isFinite(id) && id > 0) and.push({ positionId: id });
+    if (q.positionId === UNASSIGNED) and.push({ positionId: null });
+    else {
+      const id = Number(q.positionId);
+      if (Number.isFinite(id) && id > 0) and.push({ positionId: id });
+    }
   }
   if (q.status) and.push({ status: q.status });
 
@@ -164,6 +189,7 @@ export async function getEmployeeById(id: number, opts?: { mask?: boolean }) {
     where: { id },
     include: {
       store: { select: { id: true, name: true, code: true, region: true } },
+      department: { select: { id: true, name: true, deptType: true } },
       position: { select: { id: true, name: true, category: true, level: true } },
     },
   });
@@ -171,6 +197,7 @@ export async function getEmployeeById(id: number, opts?: { mask?: boolean }) {
   const out = {
     ...r,
     storeName: r.store?.name ?? null,
+    departmentName: r.department?.name ?? null,
     positionName: r.position?.name ?? null,
   } as Record<string, unknown>;
   return opts?.mask ? maskObject(out) : out;
@@ -182,13 +209,19 @@ export async function createEmployee(input: Record<string, unknown>) {
   if (!name) throw new Error("姓名必填");
 
   const storeId = (input.storeId as number | null) ?? null;
+  const departmentId = (input.departmentId as number | null) ?? null;
   const positionId = (input.positionId as number | null) ?? null;
 
-  // 门店/职位：优先用选择的基础数据；同时保留 Excel 原文
+  // 门店/部门/职位：优先用选择的基础数据；同时保留 Excel 原文
   let storeNameRaw = (input.storeNameRaw as string | null) ?? null;
   if (storeId) {
     const s = await prisma.store.findUnique({ where: { id: storeId } });
     if (s) storeNameRaw = storeNameRaw ?? s.name;
+  }
+  let departmentNameRaw = (input.departmentNameRaw as string | null) ?? null;
+  if (departmentId) {
+    const d = await prisma.department.findUnique({ where: { id: departmentId } });
+    if (d) departmentNameRaw = departmentNameRaw ?? d.name;
   }
   let jobGradeRaw = (input.jobGradeRaw as string | null) ?? null;
   if (positionId) {
@@ -209,8 +242,10 @@ export async function createEmployee(input: Record<string, unknown>) {
         idCardNo,
         gender,
         storeId,
+        departmentId,
         positionId,
         storeNameRaw,
+        departmentNameRaw,
         jobGradeRaw,
       },
     });
@@ -260,12 +295,19 @@ export async function updateEmployee(
     data[k] = v;
   }
 
-  // 门店/职位同步维护原文列
+  // 门店/部门/职位同步维护原文列
   if ("storeId" in data) {
     const sid = data.storeId as number | null;
     if (sid) {
       const s = await prisma.store.findUnique({ where: { id: sid } });
       if (s) data.storeNameRaw = data.storeNameRaw ?? s.name;
+    }
+  }
+  if ("departmentId" in data) {
+    const did = data.departmentId as number | null;
+    if (did) {
+      const d = await prisma.department.findUnique({ where: { id: did } });
+      if (d) data.departmentNameRaw = data.departmentNameRaw ?? d.name;
     }
   }
   if ("positionId" in data) {
@@ -340,16 +382,25 @@ export async function restoreEmployee(id: number, actor?: string) {
 
 /** 首页 Dashboard 统计 —— 全部实时从数据库计算，禁止写死 */
 export async function getDashboardStats() {
-  const [total, active, resigned, candidate, storeCount, positionCount, deleted] =
-    await Promise.all([
-      prisma.employee.count({ where: { deletedAt: null } }),
-      prisma.employee.count({ where: { deletedAt: null, status: "ACTIVE" } }),
-      prisma.employee.count({ where: { deletedAt: null, status: "RESIGNED" } }),
-      prisma.employee.count({ where: { deletedAt: null, status: "CANDIDATE" } }),
-      prisma.store.count({ where: { status: "ACTIVE" } }),
-      prisma.position.count({ where: { status: "ACTIVE" } }),
-      prisma.employee.count({ where: { NOT: { deletedAt: null } } }),
-    ]);
+  const [
+    total,
+    active,
+    resigned,
+    candidate,
+    storeCount,
+    departmentCount,
+    positionCount,
+    deleted,
+  ] = await Promise.all([
+    prisma.employee.count({ where: { deletedAt: null } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "ACTIVE" } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "RESIGNED" } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "CANDIDATE" } }),
+    prisma.store.count({ where: { status: "ACTIVE" } }),
+    prisma.department.count({ where: { status: "ACTIVE" } }),
+    prisma.position.count({ where: { status: "ACTIVE" } }),
+    prisma.employee.count({ where: { NOT: { deletedAt: null } } }),
+  ]);
 
   return {
     total,
@@ -357,8 +408,244 @@ export async function getDashboardStats() {
     resigned,
     candidate,
     storeCount,
+    departmentCount,
     positionCount,
     deleted,
     activeRate: total > 0 ? Math.round((active / total) * 1000) / 10 : 0,
+  };
+}
+
+// ============================================================
+// 人员分布统计（第二阶段）
+// 全部实时聚合 Employee 表，不落任何中间表、不使用 mock 数据
+// ============================================================
+
+export interface DistributionRow {
+  key: string;
+  id: number | null;
+  label: string;
+  total: number;
+  active: number;
+  resigned: number;
+  candidate: number;
+}
+
+type DistGroup = {
+  id: number | null;
+  label: string;
+  total: number;
+  active: number;
+  resigned: number;
+  candidate: number;
+};
+
+function toRows(groups: DistGroup[], unassignedLabel: string): DistributionRow[] {
+  return groups
+    .map((g) => ({
+      key: g.id === null ? UNASSIGNED : String(g.id),
+      id: g.id,
+      label: g.id === null ? unassignedLabel : g.label,
+      total: g.total,
+      active: g.active,
+      resigned: g.resigned,
+      candidate: g.candidate,
+    }))
+    .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label, "zh-CN"));
+}
+
+/** 按门店分布（含「未分配门店」） */
+export async function getStoreDistribution(): Promise<DistributionRow[]> {
+  const rows = await prisma.store.findMany({
+    select: {
+      id: true,
+      name: true,
+      employees: {
+        where: { deletedAt: null },
+        select: { status: true },
+      },
+    },
+  });
+  const groups: DistGroup[] = rows.map((s) => ({
+    id: s.id,
+    label: s.name,
+    total: s.employees.length,
+    active: s.employees.filter((e) => e.status === "ACTIVE").length,
+    resigned: s.employees.filter((e) => e.status === "RESIGNED").length,
+    candidate: s.employees.filter((e) => e.status === "CANDIDATE").length,
+  }));
+  const unassigned = await prisma.employee.count({
+    where: { storeId: null, deletedAt: null },
+  });
+  if (unassigned > 0) {
+    const [a, r, c] = await Promise.all([
+      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: "ACTIVE" } }),
+      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: "RESIGNED" } }),
+      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: "CANDIDATE" } }),
+    ]);
+    groups.push({ id: null, label: UNASSIGNED_LABEL, total: unassigned, active: a, resigned: r, candidate: c });
+  }
+  return toRows(groups, UNASSIGNED_LABEL);
+}
+
+/** 按部门分布（含「未分配部门」） */
+export async function getDepartmentDistribution(): Promise<DistributionRow[]> {
+  const rows = await prisma.department.findMany({
+    select: {
+      id: true,
+      name: true,
+      employees: { where: { deletedAt: null }, select: { status: true } },
+    },
+  });
+  const groups: DistGroup[] = rows.map((d) => ({
+    id: d.id,
+    label: d.name,
+    total: d.employees.length,
+    active: d.employees.filter((e) => e.status === "ACTIVE").length,
+    resigned: d.employees.filter((e) => e.status === "RESIGNED").length,
+    candidate: d.employees.filter((e) => e.status === "CANDIDATE").length,
+  }));
+  const unassigned = await prisma.employee.count({
+    where: { departmentId: null, deletedAt: null },
+  });
+  if (unassigned > 0) {
+    const [a, r, c] = await Promise.all([
+      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: "ACTIVE" } }),
+      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: "RESIGNED" } }),
+      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: "CANDIDATE" } }),
+    ]);
+    groups.push({ id: null, label: UNASSIGNED_LABEL, total: unassigned, active: a, resigned: r, candidate: c });
+  }
+  return toRows(groups, UNASSIGNED_LABEL);
+}
+
+/** 按岗位分布（含「未分配岗位」） */
+export async function getPositionDistribution(): Promise<DistributionRow[]> {
+  const rows = await prisma.position.findMany({
+    select: {
+      id: true,
+      name: true,
+      employees: { where: { deletedAt: null }, select: { status: true } },
+    },
+  });
+  const groups: DistGroup[] = rows.map((p) => ({
+    id: p.id,
+    label: p.name,
+    total: p.employees.length,
+    active: p.employees.filter((e) => e.status === "ACTIVE").length,
+    resigned: p.employees.filter((e) => e.status === "RESIGNED").length,
+    candidate: p.employees.filter((e) => e.status === "CANDIDATE").length,
+  }));
+  const unassigned = await prisma.employee.count({
+    where: { positionId: null, deletedAt: null },
+  });
+  if (unassigned > 0) {
+    const [a, r, c] = await Promise.all([
+      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: "ACTIVE" } }),
+      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: "RESIGNED" } }),
+      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: "CANDIDATE" } }),
+    ]);
+    groups.push({ id: null, label: UNASSIGNED_LABEL, total: unassigned, active: a, resigned: r, candidate: c });
+  }
+  return toRows(groups, UNASSIGNED_LABEL);
+}
+
+/**
+ * 指定门店的岗位分布 + 人数汇总。
+ * 用于「门店人员查询」页：选择门店后展示在职/离职人数与岗位分布。
+ */
+export async function getStoreSummary(storeId: number) {
+  const where = { storeId, deletedAt: null } as const;
+  const [total, active, resigned, candidate, byPosition] = await Promise.all([
+    prisma.employee.count({ where }),
+    prisma.employee.count({ where: { ...where, status: "ACTIVE" } }),
+    prisma.employee.count({ where: { ...where, status: "RESIGNED" } }),
+    prisma.employee.count({ where: { ...where, status: "CANDIDATE" } }),
+    prisma.employee.groupBy({
+      by: ["positionId", "status"],
+      where,
+      _count: { _all: true },
+    }),
+  ]);
+
+  const posIds = Array.from(
+    new Set(byPosition.map((g) => g.positionId).filter((v): v is number => v !== null))
+  );
+  const positions = await prisma.position.findMany({
+    where: { id: { in: posIds } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(positions.map((p) => [p.id, p.name]));
+
+  const acc = new Map<string, DistributionRow>();
+  for (const g of byPosition) {
+    const key = g.positionId === null ? UNASSIGNED : String(g.positionId);
+    const label = g.positionId === null ? UNASSIGNED_LABEL : (nameById.get(g.positionId) ?? `#${g.positionId}`);
+    const cur =
+      acc.get(key) ??
+      { key, id: g.positionId, label, total: 0, active: 0, resigned: 0, candidate: 0 };
+    cur.total += g._count._all;
+    if (g.status === "ACTIVE") cur.active += g._count._all;
+    else if (g.status === "RESIGNED") cur.resigned += g._count._all;
+    else if (g.status === "CANDIDATE") cur.candidate += g._count._all;
+    acc.set(key, cur);
+  }
+
+  return {
+    total,
+    active,
+    resigned,
+    candidate,
+    positionDistribution: Array.from(acc.values()).sort(
+      (a, b) => b.active - a.active || b.total - a.total || a.label.localeCompare(b.label, "zh-CN")
+    ),
+  };
+}
+
+/** 指定部门的岗位分布 + 人数汇总。用于「部门人员查询」页。 */
+export async function getDepartmentSummary(departmentId: number) {
+  const where = { departmentId, deletedAt: null } as const;
+  const [total, active, resigned, candidate, byPosition] = await Promise.all([
+    prisma.employee.count({ where }),
+    prisma.employee.count({ where: { ...where, status: "ACTIVE" } }),
+    prisma.employee.count({ where: { ...where, status: "RESIGNED" } }),
+    prisma.employee.count({ where: { ...where, status: "CANDIDATE" } }),
+    prisma.employee.groupBy({
+      by: ["positionId", "status"],
+      where,
+      _count: { _all: true },
+    }),
+  ]);
+
+  const posIds = Array.from(
+    new Set(byPosition.map((g) => g.positionId).filter((v): v is number => v !== null))
+  );
+  const positions = await prisma.position.findMany({
+    where: { id: { in: posIds } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(positions.map((p) => [p.id, p.name]));
+
+  const acc = new Map<string, DistributionRow>();
+  for (const g of byPosition) {
+    const key = g.positionId === null ? UNASSIGNED : String(g.positionId);
+    const label = g.positionId === null ? UNASSIGNED_LABEL : (nameById.get(g.positionId) ?? `#${g.positionId}`);
+    const cur =
+      acc.get(key) ??
+      { key, id: g.positionId, label, total: 0, active: 0, resigned: 0, candidate: 0 };
+    cur.total += g._count._all;
+    if (g.status === "ACTIVE") cur.active += g._count._all;
+    else if (g.status === "RESIGNED") cur.resigned += g._count._all;
+    else if (g.status === "CANDIDATE") cur.candidate += g._count._all;
+    acc.set(key, cur);
+  }
+
+  return {
+    total,
+    active,
+    resigned,
+    candidate,
+    positionDistribution: Array.from(acc.values()).sort(
+      (a, b) => b.active - a.active || b.total - a.total || a.label.localeCompare(b.label, "zh-CN")
+    ),
   };
 }

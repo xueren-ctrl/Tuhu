@@ -77,6 +77,8 @@ export default function EmployeeDetail({ employee }: { employee: Emp }) {
         return <span className="font-mono">{String(employee.employeeId ?? "")}</span>;
       case "storeName":
         return text("storeName") ?? text("storeNameRaw") ?? null;
+      case "departmentName":
+        return text("departmentName") ?? text("departmentNameRaw") ?? null;
       case "positionName":
         return text("positionName") ?? text("jobGradeRaw") ?? null;
       case "hireDate":
@@ -127,6 +129,9 @@ export default function EmployeeDetail({ employee }: { employee: Emp }) {
                 </span>
                 <span>
                   门店：{text("storeName") ?? text("storeNameRaw") ?? "—"}
+                </span>
+                <span>
+                  部门：{text("departmentName") ?? text("departmentNameRaw") ?? "未分配"}
                 </span>
                 <span>
                   职位：{text("positionName") ?? text("jobGradeRaw") ?? "—"}

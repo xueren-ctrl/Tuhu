@@ -20,6 +20,7 @@ type FormState = Record<string, string>;
 export interface EmployeeFormProps {
   mode: "create" | "edit";
   stores: { id: number; name: string }[];
+  departments: { id: number; name: string }[];
   positions: { id: number; name: string }[];
   initial?: Record<string, unknown> | null;
 }
@@ -122,6 +123,7 @@ const TEXT_GROUPS: { title: string; keys: string[] }[] = [
 export default function EmployeeForm({
   mode,
   stores,
+  departments,
   positions,
   initial,
 }: EmployeeFormProps) {
@@ -134,6 +136,8 @@ export default function EmployeeForm({
       phone: "",
       storeId: "",
       storeNameRaw: "",
+      departmentId: "",
+      departmentNameRaw: "",
       positionId: "",
       jobGradeRaw: "",
       hireDate: "",
@@ -301,6 +305,34 @@ export default function EmployeeForm({
                 </option>
               ))}
             </Select>
+          </Field>
+
+          <Field
+            label="部门"
+            hint="Excel 只提供了「运营部」的部门归属；门店员工可在此手动指定"
+          >
+            <Select
+              value={form.departmentId}
+              onChange={(e) => set("departmentId")(e.target.value)}
+            >
+              <option value="">未分配部门</option>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          <Field
+            label="部门（Excel 原文）"
+            hint="迁移数据保留的原始部门名称，不会被覆盖"
+          >
+            <Input
+              value={form.departmentNameRaw}
+              onChange={(e) => set("departmentNameRaw")(e.target.value)}
+              placeholder="留空则跟随所选部门"
+            />
           </Field>
 
           <Field

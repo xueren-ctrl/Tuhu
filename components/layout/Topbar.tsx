@@ -5,12 +5,19 @@ import { usePathname } from "next/navigation";
 /** 顶部系统栏 */
 
 const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
-  { match: /^\/$/, title: "首页看板", sub: "员工 / 门店 / 职位 实时统计" },
+  { match: /^\/$/, title: "首页看板", sub: "员工 / 门店 / 部门 / 职位 实时统计" },
+  { match: /^\/employees\/views$/, title: "人员视图总览", sub: "替代 Excel 分表视图，全部实时查询员工表" },
+  { match: /^\/employees\/views\/active$/, title: "在职人员", sub: "status = ACTIVE" },
+  { match: /^\/employees\/views\/resigned$/, title: "离职人员", sub: "status = RESIGNED" },
+  { match: /^\/employees\/views\/stores$/, title: "门店人员查询", sub: "按 Store 表动态生成" },
+  { match: /^\/employees\/views\/departments$/, title: "部门人员查询", sub: "按 Department 查询" },
+  { match: /^\/employees\/views\/distribution$/, title: "人员分布统计", sub: "数据库实时聚合" },
   { match: /^\/employees\/new$/, title: "新增员工", sub: "保存后自动生成员工编号" },
   { match: /^\/employees\/\d+\/edit$/, title: "编辑员工", sub: "员工编号与创建时间不可修改" },
   { match: /^\/employees\/\d+$/, title: "员工详情", sub: "按分组展示全部档案字段" },
   { match: /^\/employees$/, title: "员工档案", sub: "搜索 · 筛选 · 分页 · 排序" },
   { match: /^\/settings\/stores$/, title: "门店管理", sub: "新增 · 编辑 · 停用 · 搜索" },
+  { match: /^\/settings\/departments$/, title: "部门管理", sub: "新增 · 编辑 · 停用" },
   { match: /^\/settings\/positions$/, title: "职位管理", sub: "新增 · 编辑 · 停用" },
   { match: /^\/settings\/import$/, title: "导入与报告", sub: "Excel 迁移说明与导入统计" },
 ];

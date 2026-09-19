@@ -32,6 +32,14 @@ export const RECORD_STATUS_LABEL: Record<string, string> = {
   INACTIVE: "停用",
 };
 
+/**
+ * 筛选「未分配」的哨兵值。
+ * 用于门店 / 部门 / 职位筛选中表达「未指定该字段」，例如：
+ *   /employees/views/departments?departmentId=__none__
+ */
+export const UNASSIGNED = "__none__";
+export const UNASSIGNED_LABEL = "未分配";
+
 // ---------- 用户角色（第一阶段预留）----------
 export const USER_ROLE = { ADMIN: "ADMIN", HR: "HR" } as const;
 export const USER_ROLE_LABEL: Record<string, string> = {
@@ -73,7 +81,7 @@ export type SortableField = (typeof SORTABLE_FIELDS)[number];
 export const EMPLOYEE_GROUPS = [
   { key: "basic", label: "基本信息" },
   { key: "contact", label: "联系方式" },
-  { key: "org", label: "门店信息" },
+  { key: "org", label: "门店 / 部门" },
   { key: "position", label: "职位信息" },
   { key: "onboard", label: "入职信息" },
   { key: "social", label: "社保" },
@@ -119,9 +127,11 @@ export const EMPLOYEE_FIELDS: FieldMeta[] = [
   { key: "emergencyContact2", label: "紧急联系人2", group: "contact", control: "text", excelColumn: "N 紧急联系人2" },
   { key: "emergencyPhone2", label: "紧急联系人2电话", group: "contact", sensitive: true, control: "text", excelColumn: "O 联系人电话" },
 
-  // ③ 门店信息
+  // ③ 门店 / 部门
   { key: "storeName", label: "门店", group: "org", control: "select", excelColumn: "B 门店名称" },
   { key: "storeNameRaw", label: "门店（Excel原文）", group: "org", control: "text", excelColumn: "B 门店名称" },
+  { key: "departmentName", label: "部门", group: "org", control: "select", excelColumn: "（来自「运营部」等 Sheet）" },
+  { key: "departmentNameRaw", label: "部门（Excel原文）", group: "org", control: "text", excelColumn: "（来自「运营部」等 Sheet）" },
 
   // ④ 职位信息
   { key: "positionName", label: "职位／工种", group: "position", control: "select", excelColumn: "H 工种级别" },

@@ -69,10 +69,21 @@ npm run start        # 生产模式启动
 npm run db:studio    # Prisma Studio 可视化查库
 npm run backup       # 备份数据库到 data/backup/
 
-# 一次性任务
-npx tsx scripts/acceptance-test.mjs   # 验收自检（需先 npm run build && npm run start）
-npx tsx scripts/cleanup-test-data.ts  # 清理验收自检产生的临时数据
+# 第二阶段：部门迁移（可先 --dry-run 预演）
+npm run migrate:departments -- --dry-run
+
+# 测试
+npm run test:stage1   # 第一阶段回归 38 项（需先 build + start）
+npm run test:stage2   # 第二阶段验收 33 项（需先 build + start）
+npm run test:cleanup  # 清理测试数据
+npm run check:sensitive  # 提交前敏感信息体检
 ```
+
+> ⚠️ **在 WorkBuddy IDE 内构建时的已知问题**：IDE 通过 `NODE_OPTIONS` 注入了文件删除保护
+> （`node-safe-delete-shim.cjs`），而 Next.js 构建结束时会批量清理自己的 `.next` 缓存，
+> 会被该保护拦截并报 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`。
+> 在 IDE 内构建请用：`NODE_OPTIONS= npx next build`；
+> **在普通终端（CMD / PowerShell）直接 `npm run build` 不受影响。**
 
 ### 重新建立迁移基线（危险操作）
 
@@ -131,12 +142,17 @@ D:\Tuhu-HR\
 │   └── seed.ts                   # 字典种子
 ├── scripts\
 │   ├── import-excel.ts           # Excel → SQLite 迁移脚本（幂等）
+│   ├── migrate-departments.ts    # 第二阶段：部门从门店独立出来（幂等，支持 --dry-run）
 │   ├── backup-db.ts              # 数据库备份
-│   ├── acceptance-test.mjs       # 验收自检 38 项（A~Q）
-│   └── cleanup-test-data.ts      # 清理验收临时数据
+│   ├── pre-push-check.mjs        # 提交前敏感信息体检
+│   ├── acceptance-test.mjs       # 第一阶段回归测试 38 项
+│   ├── stage2-test.mjs           # 第二阶段验收测试 33 项
+│   └── cleanup-test-data.ts      # 清理测试数据
 ├── docs\
 │   ├── excel-analysis.md         # Excel 结构分析（46 字段全量）
-│   └── import-report.md          # 导入报告（自动生成）
+│   ├── import-report.md          # 导入报告（自动生成，含真实姓名，不入 Git）
+│   ├── stage2-report.md          # 第二阶段交付报告
+│   └── security-checklist.md     # 仓库安全约定与敏感数据处置流程
 ├── templates\                    # 预留：Excel 官方导出模板
 ├── data\
 │   ├── hr.db                     # SQLite 数据库（不入 Git）
@@ -162,9 +178,32 @@ D:\Tuhu-HR\
 - 员工列表（默认脱敏展示身份证 / 手机号）
 - 关键词搜索（姓名 / 手机号 / 身份证 / 员工编号 / 门店 / 职位）
 - 精确筛选：按姓名、按手机号、按身份证
-- 门店筛选、职位筛选、在职状态筛选
+- 门店筛选、**部门筛选**、职位筛选、在职状态筛选
 - 分页（每页 10/20/50/100）+ 排序（编号 / 姓名 / 入职日期 / 状态 / 离职日期 / 创建时间 / 更新时间）
 - 新增、编辑、查看详情、停用（软删除）、恢复
+
+### 人员视图 `/employees/views`（第二阶段）
+
+把 Excel 的分表视图软件化。**全部实时查询 `Employee` 表**，不复制员工数据、不使用 mock 数据。
+
+| 页面 | 替代的 Excel Sheet |
+| --- | --- |
+| `/employees/views/active` 在职人员 | `在职` |
+| `/employees/views/resigned` 离职人员 | `离职` |
+| `/employees/views/stores` 门店人员查询 | 各门店 Sheet（如 `南昌3店`），由 Store 表动态生成 |
+| `/employees/views/departments` 部门人员查询 | `运营部`、`运营部离职` |
+| `/employees/views/distribution` 人员分布统计 | `门店人员分布明细`、`人员流失率` |
+
+门店 / 部门视图均为**一个页面 + URL 参数**（`?storeId=` / `?departmentId=`），
+不为每家门店或每个部门创建单独页面。
+
+### 统计接口
+
+```
+GET /api/statistics          员工总数 / 在职 / 离职 / 门店数 / 部门数 / 岗位数
+GET /api/statistics?detail=1 额外返回按门店、按部门、按岗位的分布
+```
+
 
 ### 员工详情 `/employees/[id]`
 
@@ -175,6 +214,7 @@ D:\Tuhu-HR\
 ### 基础设置
 
 - `/settings/stores` 门店管理：新增 / 编辑 / 停用 / 搜索
+- `/settings/departments` 部门管理：新增 / 编辑 / 停用
 - `/settings/positions` 职位管理：新增 / 编辑 / 停用
 - `/settings/import` 导入批次历史 + 异常分类统计 + 导入报告全文
 
