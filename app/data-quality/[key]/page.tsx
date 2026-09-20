@@ -34,8 +34,9 @@ export default async function DataQualityDetailPage({ params, searchParams }: Pr
   const result = await getDataQualityDetail(key as DqCategoryKey, { page, pageSize });
   const totalPages = Math.max(1, Math.ceil(result.total / pageSize));
 
-  // 「重复员工」类额外展示合法的重新入职参考，帮助 HR 区分
-  const rehire = key === "duplicate" ? await listRehireGroups(20) : [];
+  // 「真正重复 / 无去重键」两类都额外展示合法的重新入职参考，帮助 HR 区分
+  const isDuplicateLike = key === "exact-duplicate" || key === "no-identity-key";
+  const rehire = isDuplicateLike ? await listRehireGroups(20) : [];
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
@@ -166,7 +167,7 @@ export default async function DataQualityDetailPage({ params, searchParams }: Pr
         )}
       </Card>
 
-      {key === "duplicate" && (
+      {isDuplicateLike && (
         <Card title={`参考：合法「重新入职」记录（${rehire.length} 组，不算重复）`}>
           <Alert tone="warn">
             下面这些人<strong>不是重复员工</strong> —— 同一身份证号出现多条记录，

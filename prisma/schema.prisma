@@ -298,6 +298,7 @@ model ImportBatch {
   totalRows    Int      @default(0) // 数据区总行数
   inserted     Int      @default(0)
   updated      Int      @default(0)
+  unchanged    Int      @default(0) // 第五阶段：匹配到已有员工且字段完全一致、未写入的行
   skipped      Int      @default(0)
   duplicated   Int      @default(0)
   failed       Int      @default(0)
@@ -495,10 +496,23 @@ model ImportPreview {
   totalRows   Int // 数据区总行数
   validRows   Int // 有效业务行数
   skippedRows Int // 跳过的空行
-  diffJson    String // Diff 明细 JSON
-  summaryJson String // 汇总 JSON（新增 / 修改 / 状态变化 / 门店变化 数量）
-  status      String   @default("PENDING") // PENDING | COMMITTED | DISCARDED
+  diffJson    String // Diff 明细 JSON（**只含脱敏后的 display 值**，绝不含真实敏感值）
+  summaryJson String // 汇总 JSON（新增 / 修改 / 未变化 / 跳过 / 异常 数量）
+  status      String   @default("PENDING") // PENDING | COMMITTING | SUCCESS | PARTIAL | FAILED | DISCARDED
   operator    String?
+
+  // ---- 第五阶段：数据库版本指纹 ----
+  // 预览生成瞬间冻结的数据库状态；提交前重新计算并比对，
+  // 不一致说明「预览之后有人改过数据」，直接拒绝提交（防止「页面看到 A、写入 B」）。
+  dbVersion   String   @default("")
+
+  // ---- 第五阶段：提交结果 ----
+  attemptCount  Int     @default(0) // 提交尝试次数（含重试）
+  successCount  Int     @default(0) // 本次/累计成功写入条数
+  failedCount   Int     @default(0) // 失败条数
+  unchangedCount Int    @default(0) // 无变化、未写入条数
+  resultJson    String? // 逐条结果明细（失败行号 / 原因），供只重试失败项
+
   createdAt   DateTime @default(now())
   committedAt DateTime?
 

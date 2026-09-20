@@ -11,9 +11,12 @@
  *  3. 无岗位   —— positionId 为空。
  *  4. 无门店   —— storeId 为空，**且** departmentId 也为空。
  *     （只挂部门的员工，如运营部，storeId 为空是正常的，不计为问题。）
- *  5. 重复员工 —— 分为两档：
- *     a) 完全相同：姓名 + 身份证号 + 入职日期 三者都相同 → 真正重复。
- *     b) 无去重键：身份证号 / 手机号 / 入职日期 全为空，无法判定是否同一人。
+ *  5. 真正重复记录 —— 姓名 + 身份证号 + 入职日期 三者完全相同。
+ *  6. 无去重键    —— 身份证号 / 手机号 / 入职日期 全为空，无法判定是否同一人。
+ *
+ * ⚠️ 第五阶段拆分说明：原先这两档合并在「重复员工」里，HR 容易误解成
+ *    「系统已判定这些人是重复员工」。实际上「无去重键」只是**高风险待补录**，
+ *    系统根本没有判定他们是重复。因此拆成 exact-duplicate / no-identity-key 两类。
  *
  * ⚠️ 重要：「同一身份证号多条记录」**不是**重复员工 —— 那是合法的「重新入职」，
  *    由「身份证号 + 入职日期」区分保留。本模块单列说明，绝不当作重复处理。
@@ -27,7 +30,8 @@ export type DqCategoryKey =
   | "no-department"
   | "no-position"
   | "no-store"
-  | "duplicate";
+  | "exact-duplicate"
+  | "no-identity-key";
 
 export interface DqCategoryMeta {
   key: DqCategoryKey;
@@ -74,10 +78,18 @@ export const DQ_CATEGORIES: DqCategoryMeta[] = [
     severity: "high",
   },
   {
-    key: "duplicate",
-    label: "重复员工",
-    rule: "① 姓名 + 身份证号 + 入职日期 三者完全相同（真正重复）；② 身份证号 / 手机号 / 入职日期 全为空，无法判定是否同一人。",
-    fix: "核对后停用多余记录（软删除，可恢复），或在员工详情页补录缺失字段。",
+    key: "exact-duplicate",
+    label: "真正重复记录",
+    rule: "姓名 + 身份证号 + 入职日期 三者完全相同 —— 系统已判定为同一段任职被录入了多次。",
+    fix: "核对后停用多余记录（软删除，可恢复）。**不要**直接物理删除，历史任职要保留。",
+    batchFixable: false,
+    severity: "high",
+  },
+  {
+    key: "no-identity-key",
+    label: "无去重键（高风险）",
+    rule: "身份证号 / 手机号 / 入职日期 全为空，**系统无法判定**这些人是否与别人重复 —— 这只是「待补录」，不是「已判定重复」。",
+    fix: "在员工详情页补录身份证号或手机号 + 入职日期，补录后系统即可自动去重。",
     batchFixable: false,
     severity: "high",
   },
@@ -157,7 +169,8 @@ export async function getDataQualitySummary(): Promise<DqSummary> {
     "no-department": noDepartment,
     "no-position": noPosition,
     "no-store": noStore,
-    duplicate: exactDupGroups + noKeyCount,
+    "exact-duplicate": exactDupGroups,
+    "no-identity-key": noKeyCount,
   };
 
   // 工单进度：已处理（关闭 + 忽略）的数量，按类别统计
@@ -194,7 +207,7 @@ export async function getDataQualitySummary(): Promise<DqSummary> {
  */
 async function countAffectedEmployees(): Promise<number> {
   const whereAlive = { deletedAt: null } as const;
-  const [dept, pos, store, nokey] = await Promise.all([
+  const [dept, pos, store, nokey, exactDup] = await Promise.all([
     prisma.employee.findMany({ where: { ...whereAlive, departmentId: null }, select: { id: true } }),
     prisma.employee.findMany({ where: { ...whereAlive, positionId: null }, select: { id: true } }),
     prisma.employee.findMany({
@@ -205,6 +218,7 @@ async function countAffectedEmployees(): Promise<number> {
       where: { ...whereAlive, idCardNo: null, phone: null, hireDate: null },
       select: { id: true },
     }),
+    listExactDuplicateIds(),
   ]);
   const set = new Set<number>();
   // 已关闭 / 已忽略的工单需要从「受影响」里剔除
@@ -212,7 +226,8 @@ async function countAffectedEmployees(): Promise<number> {
     ["no-department", dept],
     ["no-position", pos],
     ["no-store", store],
-    ["duplicate", nokey],
+    ["exact-duplicate", exactDup],
+    ["no-identity-key", nokey],
   ];
   for (const [type, list] of pairs) {
     const handledIds = await listHandledEmployeeIds(type);
@@ -225,6 +240,25 @@ async function countAffectedEmployees(): Promise<number> {
   const conflictDone = new Set([...conflictHandled.closed, ...conflictHandled.ignored]);
   for (const id of conflicts) if (!conflictDone.has(id)) set.add(id);
   return set.size;
+}
+
+/**
+ * 真正重复记录（姓名 + 身份证号 + 入职日期 全同）的员工 id 列表。
+ * 与「无去重键」严格分开 —— 后者系统并未判定重复。
+ */
+export async function listExactDuplicateIds(): Promise<{ id: number }[]> {
+  const rows = await prisma.employee.findMany({
+    where: { deletedAt: null, idCardNo: { not: null }, hireDate: { not: null } },
+    select: { id: true, name: true, idCardNo: true, hireDate: true },
+  });
+  const seen = new Map<string, number>();
+  for (const e of rows) {
+    const k = `${e.name}|${e.idCardNo}|${e.hireDate?.toISOString()}`;
+    seen.set(k, (seen.get(k) ?? 0) + 1);
+  }
+  return rows
+    .filter((e) => (seen.get(`${e.name}|${e.idCardNo}|${e.hireDate?.toISOString()}`) ?? 0) > 1)
+    .map((e) => ({ id: e.id }));
 }
 
 /** 最新导入批次 */
@@ -417,34 +451,36 @@ export async function getDataQualityDetail(
     return { total: rows2.length, data: rows2.slice(skip, skip + pageSize), page, pageSize };
   }
 
-  if (key === "duplicate") {
-    // ① 完全相同
+  if (key === "exact-duplicate") {
+    const ids = (await listExactDuplicateIds()).map((x) => x.id);
     const exact = await prisma.employee.findMany({
-      where: { ...whereAlive, idCardNo: { not: null }, hireDate: { not: null } },
+      where: { id: { in: ids } },
       orderBy: [{ name: "asc" }, { hireDate: "asc" }],
       select: detailSelect,
     });
-    const seen = new Map<string, number>();
-    for (const e of exact) {
-      const k = `${e.name}|${e.idCardNo}|${e.hireDate?.toISOString()}`;
-      seen.set(k, (seen.get(k) ?? 0) + 1);
-    }
-    const exactRows = exact
-      .filter((e) => (seen.get(`${e.name}|${e.idCardNo}|${e.hireDate?.toISOString()}`) ?? 0) > 1)
-      .map((e) => shape(e as unknown as DetailRaw, "姓名 + 身份证号 + 入职日期 与另一条记录完全相同"));
+    const rows = await withStatus(
+      exact.map((e) =>
+        shape(e as unknown as DetailRaw, "姓名 + 身份证号 + 入职日期 与另一条记录完全相同")
+      )
+    );
+    return { total: rows.length, data: rows.slice(skip, skip + pageSize), page, pageSize };
+  }
 
-    // ② 无任何去重键
+  if (key === "no-identity-key") {
     const noKey = await prisma.employee.findMany({
       where: { ...whereAlive, idCardNo: null, phone: null, hireDate: null },
       orderBy: { id: "asc" },
       select: detailSelect,
     });
-    const noKeyRows = noKey.map((e) =>
-      shape(e as unknown as DetailRaw, "身份证号 / 手机号 / 入职日期 全为空，无法判定是否与他人重复")
+    const rows = await withStatus(
+      noKey.map((e) =>
+        shape(
+          e as unknown as DetailRaw,
+          "身份证号 / 手机号 / 入职日期 全为空 —— 系统无法判定是否与他人重复（待补录，不是已判定重复）"
+        )
+      )
     );
-
-    const all = await withStatus([...exactRows, ...noKeyRows]);
-    return { total: all.length, data: all.slice(skip, skip + pageSize), page, pageSize };
+    return { total: rows.length, data: rows.slice(skip, skip + pageSize), page, pageSize };
   }
 
   const whereMap = {

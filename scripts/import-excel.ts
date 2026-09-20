@@ -23,6 +23,13 @@ import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 
+// ---- 共享解析底座（第五阶段）：解析/归一化/状态判定只有这一份实现 ----
+import type { EmployeeRecord, EmployeeStatus, ParseIssue } from "../lib/excel-import/types";
+import { parseWorkbook } from "../lib/excel-import/parser";
+import { dateFromIso } from "../lib/excel-import/normalization";
+import { SPEC_BY_FIELD, STORED_SPECS } from "../lib/excel-import/field-mapping";
+type Issue = ParseIssue;
+
 // ------------------------------------------------------------
 // 配置
 // ------------------------------------------------------------
@@ -40,114 +47,16 @@ const EMPLOYEE_ID_PREFIX = process.env.EMPLOYEE_ID_PREFIX?.trim() || "THHR";
 const prisma = new PrismaClient();
 
 // ------------------------------------------------------------
-// 「数据库」Sheet 列映射（1-based 列号 → 内部字段）
-// 详见 docs/excel-analysis.md
 // ------------------------------------------------------------
-const COL = {
-  seqNo: 1, // 序号
-  storeName: 2, // 门店名称
-  hireDate: 3, // 入职时间
-  tenureText: 4, // 在职年限（公式）
-  name: 5, // 姓名
-  idCardNo: 6, // 身份证号
-  phone: 7, // 联系电话
-  jobGrade: 8, // 工种级别
-  positionNote: 9, // 职位备注
-  dormitory: 10, // 是否住宿舍
-  socialInsurancePurchased: 11, // 社保购买
-  emergencyContact1: 12, // 紧急联系人1
-  emergencyPhone1: 13, // 联系人电话
-  emergencyContact2: 14, // 紧急联系人2
-  emergencyPhone2: 15, // 联系人电话
-  laborContract: 16, // 劳动合同
-  socialInsuranceAgreement: 17, // 社保协议
-  fireSafetyCommitment: 18, // 消防承诺书
-  dormitoryWaiver: 19, // 宿舍免责协议
-  onboardingMedical: 20, // 入职体检
-  bankBranch: 21, // 工资卡的开户银行支行
-  bankAccountNo: 22, // 银行卡账号
-  salaryTerms: 23, // 薪资待遇
-  currentAddress: 24, // 现居住地址
-  recruiterName: 25, // 招聘人
-  resignReason: 26, // 离职原因
-  resignDateRaw: 27, // 备注（离职日期）
-  ageRaw: 28, // 年龄
-  interviewDate: 29, // 面试时间
-  interviewLocation: 30, // 面试地点
-  interviewResult: 31, // 面试结果
-  interviewerName: 32, // 面试人
-  interviewHired: 33, // 是否入职
-  docResume: 34, // 简历表
-  docInterviewEvaluation: 35, // 面试评估表
-  resignedTenureText: 36, // 在职年限（离职）（公式）
-  firstMonthGuarantee: 37, // 首月保障
-  remark: 38, // 备注
-  mentorName: 39, // 带教人
-  docOnboardingForm: 40, // 入职表
-  docInterviewEvaluation2: 41, // 面试评估表（重复列名）
-  certificateLevel: 42, // 证书级别
-  remark3: 43, // 备注（重复列名）
-  computed7Days: 44, // 是否满7天（公式）
-  computed2Months: 45, // 是否入职满2个月（公式）
-  minorNote: 46, // 未成年备注
-} as const;
-
-// ------------------------------------------------------------
-// 类型
-// ------------------------------------------------------------
-type IssueType =
-  | "MISSING_ID"
-  | "INVALID_ID"
-  | "FIELD_MISPLACED"
-  | "INVALID_DATE"
-  | "EMPTY_NAME"
-  | "DUPLICATE_KEY"
-  | "FALLBACK_MATCH"
-  | "PRECISION_RISK"
-  | "PRECISION_SUSPECT"
-  | "STATUS_CONFLICT"
-  | "RESIGN_DATE_MISSING"
-  | "OTHER";
-
-interface Issue {
-  row: number | null;
-  name: string | null;
-  field: string | null;
-  rawValue: string | null;
-  type: IssueType;
-  severity: "WARN" | "ERROR";
-  message: string;
-}
-
-interface ParsedRow {
-  row: number;
-  seqNo: number | null;
-  name: string | null;
-  /** 用于去重的键 */
-  idCardKey: string | null; // 18 位规范身份证
-  idCardRaw: string | null; // 原始（可能是 15/16/17 位等不完整值）
-  phone: string | null;
-  storeNameRaw: string | null;
-  jobGradeRaw: string | null;
-  hireDate: Date | null;
-  status: "ACTIVE" | "RESIGNED" | "CANDIDATE";
-  resignDate: Date | null;
-  resignDateRaw: string | null;
-  resignReason: string | null;
-  dataFlags: string[];
-  /** 直传 Employee 的字段 */
-  fields: Record<string, string | number | Date | null>;
-}
-
-// ------------------------------------------------------------
-// 工具：单元格读取
+// 解析：统一走共享底座 lib/excel-import（第五阶段）
+//
+// 正式导入与导入预览严禁各自实现一套解析 —— 曾经的两套实现导致预览
+// 漏掉「离职名册交叉比对」与「合并单元格防护」，差点把 171 名离职员工改回在职。
+// 本脚本只保留「写入数据库」这半段；列映射、归一化、状态判定、异常收集
+// 全部来自 lib/excel-import。
 // ------------------------------------------------------------
 
-/**
- * 把日期格式化为 yyyy-MM-dd
- * 统一使用 UTC 取值：本系统所有「纯日期」字段都以 UTC 零点存储，
- * 这样 toISOString().slice(0,10) 与任何时区的本地日期都一致，不会串日。
- */
+/** 把日期格式化为 yyyy-MM-dd（统一 UTC 取值，避免时区串日） */
 function isoDate(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
@@ -155,160 +64,118 @@ function isoDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/**
- * 读取单元格为「字符串」，尽量保留原始精度。
- * 关键点：
- *  - 数字超过 15 位有效数字（JS 安全整数）时标记精度风险；
- *  - 日期统一 yyyy-MM-dd；
- *  - 去掉首尾空白与全角空格。
- */
-function readCellText(
-  cell: ExcelJS.Cell,
-  onPrecisionRisk?: (raw: string, value: unknown) => void
-): string | null {
-  // ── 关键：ExcelJS 会把「合并单元格」主格的值回传给区域内所有从属格，
-  //    且 isMerged 对区域内每个格子都为 true。
-  //    「数据库」Sheet 表尾有 4 个说明性合并行（A1930:M1930 等），
-  //    若不排除从属格，会凭空产生姓名等值 → 生成幽灵员工。
-  //    判定方式：cell.master.address 与 cell.address 不同即为从属格。
-  if (cell.master && cell.master.address !== cell.address) {
-    return null;
-  }
-
-  const v = cell.value;
-
-  if (v === null || v === undefined) return null;
-
-  // 公式单元格：取计算结果；无结果则视为空（并在上层记录）
-  if (typeof v === "object" && !(v instanceof Date) && "result" in v) {
-    const r = (v as ExcelJS.CellFormulaValue).result;
-    if (r === null || r === undefined) return null;
-    if (r instanceof Date) return isoDate(r);
-    if (typeof r === "object") return null; // 错误值 #N/A 等
-    return String(r).replace(/\u3000/g, " ").trim() || null;
-  }
-
-  // 富文本
-  if (typeof v === "object" && !(v instanceof Date) && "richText" in v) {
-    const t = (v as ExcelJS.CellRichTextValue).richText
-      .map((p) => p.text)
-      .join("");
-    return t.replace(/\u3000/g, " ").trim() || null;
-  }
-
-  // 超链接
-  if (typeof v === "object" && !(v instanceof Date) && "text" in v) {
-    const t = String((v as ExcelJS.CellHyperlinkValue).text ?? "");
-    return t.replace(/\u3000/g, " ").trim() || null;
-  }
-
-  if (v instanceof Date) return isoDate(v);
-
-  if (typeof v === "number") {
-    if (!Number.isSafeInteger(v) && Number.isInteger(v)) {
-      // 超出 2^53，Excel 侧已丢失精度，无法还原
-      onPrecisionRisk?.(String(v), v);
-    }
-    // 优先使用 Excel 显示文本，避免 6.2E+18 形式
-    const t = cell.text;
-    if (t && t.trim() && !/[eE][+-]?\d+$/.test(t.trim())) {
-      return t.replace(/\u3000/g, " ").trim();
-    }
-    return String(v);
-  }
-
-  const s = String(v).replace(/\u3000/g, " ").trim();
-  return s === "" ? null : s;
-}
-
-/** 规范化身份证号（保留原始长度信息，末位 X 大写） */
-function normalizeIdCard(v: string | null): string | null {
-  if (!v) return null;
-  const d = v.replace(/[^\dXx]/g, "").toUpperCase();
-  return d === "" ? null : d;
-}
-
-/** 只保留数字（手机号 / 银行卡） */
-function digitsOnly(v: string | null): string | null {
-  if (!v) return null;
-  const d = v.replace(/[^\d]/g, "");
-  return d === "" ? null : d;
-}
-
 const RE_ID18 = /^\d{17}[\dX]$/;
-const RE_MOBILE = /^1\d{10}$/;
-const RE_BCARD = /^\d{12,19}$/;
 
-function looksIdCard(v: string | null): boolean {
-  return !!v && RE_ID18.test(v);
-}
-function looksMobile(v: string | null): boolean {
-  return !!v && RE_MOBILE.test(digitsOnly(v) ?? "");
-}
-function looksBankCard(v: string | null): boolean {
-  return !!v && RE_BCARD.test(digitsOnly(v) ?? "");
-}
-function looksBankName(v: string | null): boolean {
-  if (!v) return false;
-  return /银行|支行|储蓄|信用社|信用合作|农信|农商|邮储|分理处/.test(v);
-}
-
-/** 身份证号校验位（GB 11643-1999），仅用于标记，不用于丢弃数据 */
-function isValidIdChecksum(id: string | null): boolean {
-  if (!id || !RE_ID18.test(id)) return false;
-  const w = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
-  const c = ["1", "0", "X", "9", "8", "7", "6", "5", "4", "3", "2"];
-  let s = 0;
-  for (let i = 0; i < 17; i++) s += Number(id[i]) * w[i];
-  return c[s % 11] === id[17];
+/** 写入阶段使用的行结构（由共享解析结果转换而来） */
+interface ParsedRow {
+  row: number;
+  seqNo: number | null;
+  name: string | null;
+  /** 18 位规范身份证（可用于去重） */
+  idCardKey: string | null;
+  /** 原始身份证值（可能是 15/16/17 位等不完整值） */
+  idCardRaw: string | null;
+  phone: string | null;
+  storeNameRaw: string | null;
+  jobGradeRaw: string | null;
+  hireDate: Date | null;
+  status: EmployeeStatus;
+  resignDate: Date | null;
+  resignDateRaw: string | null;
+  resignReason: string | null;
+  dataFlags: string[];
+  fields: Record<string, string | number | Date | null>;
 }
 
-function genderFromId(id: string | null): string | null {
-  if (!id || id.length !== 18) return null;
-  const n = Number(id[16]);
-  if (!Number.isFinite(n)) return null;
-  return n % 2 === 1 ? "男" : "女";
+/**
+ * 共享解析结果 → 写入结构。
+ * 只有在这里才把日期转成 Date（写库需要）；其余值与预览看到的完全一致。
+ */
+function toParsedRow(r: EmployeeRecord): ParsedRow {
+  const fields: Record<string, string | number | Date | null> = {};
+  for (const [k, v] of Object.entries(r.values)) {
+    // hireDate / resignDate 由写入逻辑显式设置，不重复放 fields
+    if (k === "hireDate" || k === "resignDate") continue;
+    const kind = SPEC_BY_FIELD.get(k)?.kind;
+    fields[k] = kind === "date" ? dateFromIso(v as string | null) : v;
+  }
+  return {
+    row: r.rowNo,
+    seqNo: r.seqNo,
+    name: r.name,
+    idCardKey: r.idCardKey,
+    idCardRaw: (r.values.idCardNo as string | null) ?? null,
+    phone: r.phone,
+    storeNameRaw: r.storeNameRaw,
+    jobGradeRaw: r.jobGradeRaw,
+    hireDate: dateFromIso(r.hireDate),
+    status: r.status,
+    resignDate: dateFromIso(r.resignDate),
+    resignDateRaw: (r.values.resignDateRaw as string | null) ?? null,
+    resignReason: (r.values.resignReason as string | null) ?? null,
+    dataFlags: r.dataFlags,
+    fields,
+  };
 }
 
-/** 解析离职备注列：既可能是日期，也可能是自由文本 */
-function parseResignDate(raw: string | null): Date | null {
-  if (!raw) return null;
-  const s = raw.trim();
-  // yyyy-MM-dd / yyyy/MM/dd
-  let m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(s);
-  if (m) return safeDate(Number(m[1]), Number(m[2]), Number(m[3]));
-  // yyyy-MM
-  m = /^(\d{4})[-/.](\d{1,2})$/.exec(s);
-  if (m) return safeDate(Number(m[1]), Number(m[2]), 1);
-  // yyyy年MM月dd日
-  m = /^(\d{4})年(\d{1,2})月(\d{1,2})日?$/.exec(s);
-  if (m) return safeDate(Number(m[1]), Number(m[2]), Number(m[3]));
-  return null;
+
+// ------------------------------------------------------------
+// 「未变化」判定（第五阶段 · 需求 7）
+//
+// 幂等重跑时，绝大多数行会匹配到已有员工但字段完全一致 —— 这类行不应计为
+// 「更新」（否则每次重跑都产生 1920 条无意义的写库）。这里一次性加载全量员工
+// 快照到内存，逐行比对，命中则计为「未变化」并跳过写入，不增加任何额外的
+// 逐行数据库查询。
+// ------------------------------------------------------------
+
+/** 写库比对所用字段快照（一次性全量加载，内存比对） */
+const SNAP_SELECT: Record<string, boolean> = (() => {
+  const s: Record<string, boolean> = {
+    name: true,
+    idCardNo: true,
+    phone: true,
+    storeId: true,
+    positionId: true,
+    hireDate: true,
+    sourceRowNo: true,
+    sourceSheet: true,
+    dataFlags: true,
+  };
+  for (const sp of STORED_SPECS) s[sp.field] = true;
+  return s;
+})();
+
+/** findUnique 后用于补齐检索索引的最小字段集 */
+const AFTER_SELECT = {
+  id: true,
+  name: true,
+  idCardNo: true,
+  phone: true,
+  hireDate: true,
+  sourceRowNo: true,
+  sourceSheet: true,
+} as const;
+
+/** 归一化用于比对：null/undefined → ""，Date → yyyy-MM-dd，其余去空格 */
+function cmpVal(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).trim();
 }
 
-/** 构造一个「纯日期」值：UTC 零点，避免时区导致的日期串日 */
-function safeDate(y: number, mo: number, d: number): Date | null {
-  if (!Number.isFinite(y) || y < 1900 || y > 2200) return null;
-  if (mo < 1 || mo > 12) return null;
-  if (d < 1 || d > 31) return null;
-  const dt = new Date(Date.UTC(y, mo - 1, d));
-  if (
-    dt.getUTCFullYear() !== y ||
-    dt.getUTCMonth() !== mo - 1 ||
-    dt.getUTCDate() !== d
-  )
-    return null;
-  return dt;
-}
-
-/** 判断「备注（离职日期）」文本是否表达离职语义 */
-function textMeansResigned(raw: string | null): { yes: boolean; rehire: boolean } {
-  if (!raw) return { yes: false, rehire: false };
-  const s = raw;
-  const rehire = /重新入职|又入职|回归|再入职/.test(s);
-  if (rehire) return { yes: false, rehire: true };
-  if (/离职|辞职|自离|已离|被辞|劝退|开除/.test(s)) return { yes: true, rehire: false };
-  return { yes: false, rehire: false };
+/**
+ * 判断「写入数据 data」与「库内快照 snap」是否完全一致。
+ * 只比内容字段（STORED_SPECS + 两个外键），不比 importBatch / deletedAt 等
+ * 运行期字段 —— 否则每次重跑都会因批次号不同而被误判为「已更新」。
+ */
+function dataIsUnchanged(data: Record<string, unknown>, snap: Record<string, unknown>): boolean {
+  for (const sp of STORED_SPECS) {
+    if (cmpVal(data[sp.field]) !== cmpVal(snap[sp.field])) return false;
+  }
+  for (const fk of ["storeId", "positionId"]) {
+    if (cmpVal(data[fk]) !== cmpVal(snap[fk])) return false;
+  }
+  return true;
 }
 
 // ------------------------------------------------------------
@@ -415,515 +282,36 @@ async function main() {
     console.log("");
   }
 
-  // ---- 1. 读取 Excel（只读） ----
+  // ---- 1. 读取 Excel（只读）+ 共享解析 ----
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(EXCEL_PATH);
 
-  const ws = wb.getWorksheet(DB_SHEET);
-  if (!ws) {
-    console.error(`✗ 未找到「${DB_SHEET}」Sheet。现有：${wb.worksheets.map((w) => w.name).join(", ")}`);
+  // 表头校验、名册读取、逐行解析、异常收集全部在共享底座内完成，
+  // 与「导入预览」是同一份代码 —— 不存在两套口径。
+  const parseResult = parseWorkbook(wb);
+  if (!parseResult.ok) {
+    console.error(`✗ ${parseResult.error ?? "解析失败"}`);
     process.exit(1);
   }
-  console.log(`✓ 已读取「${DB_SHEET}」Sheet：${ws.rowCount} 行 × ${ws.columnCount} 列`);
-
-  // ---- 2. 校验表头（防止列顺序被改动导致错位迁移） ----
-  const headerMap = new Map<number, string>();
-  for (let c = 1; c <= ws.columnCount; c++) {
-    const t = readCellText(ws.getCell(HEADER_ROW, c));
-    if (t) headerMap.set(c, t);
-  }
-  const expected: Array<[number, string]> = [
-    [COL.storeName, "门店名称"],
-    [COL.hireDate, "入职时间"],
-    [COL.name, "姓名"],
-    [COL.idCardNo, "身份证号"],
-    [COL.phone, "联系电话"],
-    [COL.jobGrade, "工种级别"],
-  ];
-  let headerOk = true;
-  for (const [c, label] of expected) {
-    const actual = headerMap.get(c);
-    if (actual !== label) {
-      headerOk = false;
-      console.error(`✗ 表头校验失败：第 ${c} 列应为「${label}」，实际为「${actual ?? "空"}」`);
-    }
-  }
-  if (!headerOk) {
-    console.error("  表头与预期不一致，为避免错位迁移已终止。请检查 Excel 是否被调整过列顺序。");
-    process.exit(1);
-  }
-  console.log("✓ 表头校验通过（列顺序与 docs/excel-analysis.md 一致）");
-
-  // ---- 3. 读取「在职」「离职」名册，用于状态判定 ----
-  const rosterActive = new Set<string>();
-  const rosterResigned = new Set<string>();
-  const readRoster = (sheetName: string, into: Set<string>) => {
-    const sheet = wb.getWorksheet(sheetName);
-    if (!sheet) return 0;
-    let n = 0;
-    for (let r = DATA_START_ROW; r <= sheet.rowCount; r++) {
-      const nm = readCellText(sheet.getCell(r, COL.name));
-      if (!nm || nm.startsWith("=")) continue;
-      const hd = readCellText(sheet.getCell(r, COL.hireDate));
-      into.add(`${nm}|${hd ?? ""}`);
-      n++;
-    }
-    return n;
-  };
-  const nActive = readRoster(ROSTER_ACTIVE_SHEET, rosterActive);
-  const nResigned = readRoster(ROSTER_RESIGNED_SHEET, rosterResigned);
   console.log(
-    `✓ 名册读取：「在职」${nActive} 人 · 「离职」${nResigned} 人（仅用于辅助判定状态，数据仍以「数据库」Sheet 为准）`
+    `✓ 已读取「${DB_SHEET}」Sheet：数据区 ${parseResult.totalRows} 行 × 46 列（表头校验已通过）`
+  );
+
+  const rosterActive = parseResult.rosterActive;
+  const rosterResigned = parseResult.rosterResigned;
+  console.log(
+    `✓ 名册读取：「在职」${rosterActive.size} 人 · 「离职」${rosterResigned.size} 人（仅用于辅助判定状态，数据仍以「数据库」Sheet 为准）`
   );
   console.log("");
 
-  // ---- 4. 逐行解析 ----
-  const parsed: ParsedRow[] = [];
-  const rowsSkipped: { row: number; reason: string }[] = [];
-
-  for (let r = DATA_START_ROW; r <= ws.rowCount; r++) {
-    const cellText = (col: number) =>
-      readCellText(ws.getCell(r, col), (raw, val) => {
-        addIssue({
-          row: r,
-          name: null,
-          field: `col${col}`,
-          rawValue: raw,
-          type: "PRECISION_RISK",
-          severity: "WARN",
-          message: `数值超出 JS 安全整数范围（${String(val)}），可能已丢失精度，已按显示文本读取`,
-        });
-      });
-
-    const name = cellText(COL.name);
-
-    // 整行判空
-    const seqRaw = cellText(COL.seqNo);
-    if (
-      !name &&
-      !cellText(COL.storeName) &&
-      !cellText(COL.hireDate) &&
-      !cellText(COL.idCardNo)
-    ) {
-      rowsSkipped.push({ row: r, reason: "整行为空" });
-      continue;
-    }
-
-    // 有数据但没姓名 → 计入异常，不静默丢弃
-    if (!name) {
-      rowsSkipped.push({ row: r, reason: "姓名为空" });
-      addIssue({
-        row: r,
-        name: null,
-        field: "姓名",
-        rawValue: null,
-        type: "EMPTY_NAME",
-        severity: "WARN",
-        message: `第 ${r} 行有数据但「姓名」为空，已跳过导入（原始行仍保留在 Excel 中）`,
-      });
-      continue;
-    }
-
-    // ---------- 4.1 长数字字段：内容识别 + 列错位修复 ----------
-    const cIdCard = normalizeIdCard(cellText(COL.idCardNo));
-    const cPhone = digitsOnly(cellText(COL.phone));
-    let cBank = digitsOnly(cellText(COL.bankAccountNo));
-    let cBankBranch = cellText(COL.bankBranch);
-    const bankColRaw = cellText(COL.bankAccountNo);
-
-    let idCard: string | null = null;
-    let phone: string | null = null;
-    const flags: string[] = [];
-
-    // 场景 A：身份证列填的其实不是身份证，而电话列里才是身份证
-    //        （Excel 中约 row403+ 的历史区块存在此错位）
-    if (!looksIdCard(cIdCard) && looksIdCard(cPhone)) {
-      idCard = cPhone;
-      flags.push("身份证号填写在「联系电话」列，已按内容归位到身份证号字段");
-      addIssue({
-        row: r,
-        name,
-        field: "联系电话",
-        rawValue: cPhone ? `${cPhone.slice(0, 4)}${"*".repeat(10)}${cPhone.slice(-4)}` : null,
-        type: "FIELD_MISPLACED",
-        severity: "WARN",
-        message: "「联系电话」列内为 18 位身份证号，已归位到身份证号字段；原电话值缺失",
-      });
-      // 原身份证列若是银行卡号，归位到银行卡
-      if (looksBankCard(cIdCard)) {
-        if (!cBank) {
-          cBank = cIdCard;
-          flags.push("银行卡号填写在「身份证号」列，已按内容归位到银行卡账号字段");
-          addIssue({
-            row: r,
-            name,
-            field: "身份证号",
-            rawValue: cIdCard ? `****${cIdCard.slice(-4)}` : null,
-            type: "FIELD_MISPLACED",
-            severity: "WARN",
-            message: "「身份证号」列内为银行卡号，已归位到银行卡账号字段",
-          });
-        } else {
-          addIssue({
-            row: r,
-            name,
-            field: "身份证号",
-            rawValue: null,
-            type: "OTHER",
-            severity: "WARN",
-            message: "「身份证号」列内容为银行卡号，但银行卡账号字段已有值，原值保留在 Excel 中未迁移该格",
-          });
-        }
-      } else if (cIdCard) {
-        addIssue({
-          row: r,
-          name,
-          field: "身份证号",
-          rawValue: null,
-          type: "OTHER",
-          severity: "WARN",
-          message: `「身份证号」列内容无法识别为身份证或银行卡（长度 ${cIdCard.length}），未做迁移`,
-        });
-      }
-    } else if (looksIdCard(cIdCard)) {
-      // 正常情况
-      idCard = cIdCard;
-      if (looksIdCard(cPhone)) {
-        addIssue({
-          row: r,
-          name,
-          field: "联系电话",
-          rawValue: null,
-          type: "FIELD_MISPLACED",
-          severity: "WARN",
-          message: "「联系电话」列内为身份证号，与身份证号字段重复，已忽略该电话值",
-        });
-      }
-    } else if (cIdCard) {
-      // 身份证列有值但不是 18 位规范格式：原样保留，仅标记
-      idCard = cIdCard;
-      if (looksMobile(cIdCard)) {
-        flags.push("「身份证号」列内容疑似手机号");
-        addIssue({
-          row: r,
-          name,
-          field: "身份证号",
-          rawValue: null,
-          type: "INVALID_ID",
-          severity: "WARN",
-          message: `「身份证号」列内容为 11 位手机号格式，已原样保留在身份证号字段，请人工核对`,
-        });
-      } else if (looksBankCard(cIdCard)) {
-        addIssue({
-          row: r,
-          name,
-          field: "身份证号",
-          rawValue: null,
-          type: "INVALID_ID",
-          severity: "WARN",
-          message: `「身份证号」列内容为 ${cIdCard.length} 位数字（疑似银行卡号），已原样保留，请人工核对`,
-        });
-      } else {
-        addIssue({
-          row: r,
-          name,
-          field: "身份证号",
-          rawValue: null,
-          type: "INVALID_ID",
-          severity: "WARN",
-          message: `身份证号长度 ${cIdCard.length} 位（非标准 18 位），已按字符串原样保留`,
-        });
-      }
-    }
-
-    // 电话：只有在「不是身份证」的情况下才落到 phone（已在上文处理）
-    if (!looksIdCard(cPhone) && cPhone) {
-      phone = cPhone;
-      if (!looksMobile(cPhone) && cPhone.length > 11) {
-        addIssue({
-          row: r,
-          name,
-          field: "联系电话",
-          rawValue: null,
-          type: "OTHER",
-          severity: "WARN",
-          message: `联系电话长度为 ${cPhone.length} 位（非 11 位手机号），已按字符串原样保留`,
-        });
-      }
-    }
-
-    // 银行卡列填的是银行名称 → 归位到开户行
-    if (bankColRaw && !looksBankCard(bankColRaw) && looksBankName(bankColRaw)) {
-      if (!cBankBranch) {
-        cBankBranch = bankColRaw;
-        cBank = null;
-        flags.push("银行名称填写在「银行卡账号」列，已按内容归位到开户行字段");
-        addIssue({
-          row: r,
-          name,
-          field: "银行卡账号",
-          rawValue: bankColRaw,
-          type: "FIELD_MISPLACED",
-          severity: "WARN",
-          message: "「银行卡账号」列内容为银行/支行名称，已归位到开户行字段；银行卡号缺失",
-        });
-      } else {
-        cBank = null;
-        addIssue({
-          row: r,
-          name,
-          field: "银行卡账号",
-          rawValue: bankColRaw,
-          type: "FIELD_MISPLACED",
-          severity: "WARN",
-          message: "「银行卡账号」列内容为银行名称，开户行字段已有值，未做覆盖",
-        });
-      }
-    } else if (bankColRaw && !looksBankCard(bankColRaw)) {
-      addIssue({
-        row: r,
-        name,
-        field: "银行卡账号",
-        rawValue: bankColRaw,
-        type: "OTHER",
-        severity: "WARN",
-        message: "「银行卡账号」列内容非纯数字，未识别为银行卡号，已原样保留在备注标记中",
-      });
-      flags.push("银行卡账号为非数字内容");
-    }
-
-    // 身份证业务校验（仅提示）
-    if (idCard && RE_ID18.test(idCard) && !isValidIdChecksum(idCard)) {
-      addIssue({
-        row: r,
-        name,
-        field: "身份证号",
-        rawValue: null,
-        type: "INVALID_ID",
-        severity: "WARN",
-        message: "身份证号校验位不通过（GB 11643 加权校验），已原样保留，请人工核对",
-      });
-    }
-    if (!idCard) {
-      addIssue({
-        row: r,
-        name,
-        field: "身份证号",
-        rawValue: null,
-        type: "MISSING_ID",
-        severity: "WARN",
-        message: "身份证号为空，去重将回退到「姓名+入职日期」策略",
-      });
-    }
-
-    // ---------- 4.2 日期 ----------
-    const hireRaw = cellText(COL.hireDate);
-    let hireDate: Date | null = null;
-    if (hireRaw) {
-      // ExcelJS 已把日期单元格转成字符串 yyyy-MM-dd
-      const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(hireRaw);
-      if (m) hireDate = safeDate(Number(m[1]), Number(m[2]), Number(m[3]));
-      if (!hireDate) {
-        const p = parseResignDate(hireRaw);
-        if (p) hireDate = p;
-      }
-      if (!hireDate) {
-        addIssue({
-          row: r,
-          name,
-          field: "入职时间",
-          rawValue: hireRaw,
-          type: "INVALID_DATE",
-          severity: "WARN",
-          message: "入职时间无法解析为标准日期，已置空但原文保留在本报告中",
-        });
-      } else if (hireDate.getFullYear() < 1990 || hireDate.getFullYear() > 2100) {
-        addIssue({
-          row: r,
-          name,
-          field: "入职时间",
-          rawValue: hireRaw,
-          type: "INVALID_DATE",
-          severity: "WARN",
-          message: `入职时间「${hireRaw}」明显超出合理范围（疑似 Excel 序列号误填），已原样保留，请人工核对`,
-        });
-        flags.push(`入职日期异常（${hireRaw}）`);
-      }
-    }
-
-    const interviewRaw = cellText(COL.interviewDate);
-    let interviewDate: Date | null = null;
-    if (interviewRaw) {
-      const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(interviewRaw);
-      if (m) interviewDate = safeDate(Number(m[1]), Number(m[2]), Number(m[3]));
-      if (!interviewDate) {
-        addIssue({
-          row: r,
-          name,
-          field: "面试时间",
-          rawValue: interviewRaw,
-          type: "INVALID_DATE",
-          severity: "WARN",
-          message: "面试时间无法解析为标准日期，已置空但原文保留在本报告中",
-        });
-      }
-    }
-
-    // ---------- 4.3 离职信息与状态判定 ----------
-    const resignRawText = cellText(COL.resignDateRaw);
-    const resignReason = cellText(COL.resignReason);
-    let resignDate = parseResignDate(resignRawText);
-    if (resignRawText && !resignDate) {
-      // 可能是日期被 Excel 存成数字序列的文本，尝试再次解析
-      const m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.exec(resignRawText);
-      if (m) resignDate = safeDate(Number(m[1]), Number(m[2]), Number(m[3]));
-    }
-
-    const rosterKey = `${name}|${hireDate ? isoDate(hireDate) : ""}`;
-    const inActiveRoster = rosterActive.has(rosterKey);
-    const inResignedRoster = rosterResigned.has(rosterKey);
-    const resignText = textMeansResigned(resignRawText);
-
-    const signals: string[] = [];
-    if (inResignedRoster) signals.push("离职名册");
-    if (resignDate) signals.push("离职日期");
-    if (resignReason) signals.push("离职原因");
-    if (resignText.yes) signals.push("备注文本含离职");
-
-    let status: ParsedRow["status"] = signals.length > 0 ? "RESIGNED" : "ACTIVE";
-
-    // 冲突：在职名册里却有离职信号
-    if (inActiveRoster && signals.length > 0) {
-      addIssue({
-        row: r,
-        name,
-        field: "状态",
-        rawValue: signals.join("+"),
-        type: "STATUS_CONFLICT",
-        severity: "WARN",
-        message: `该员工同时出现在「在职」名册且带有离职信号（${signals.join(
-          "+"
-        )}），已按【离职】处理，请人工复核`,
-      });
-      flags.push("在职名册与离职信号冲突");
-    }
-    // 离职名册但库中无任何离职信息
-    if (inResignedRoster && !resignDate && !resignReason && !resignText.yes) {
-      addIssue({
-        row: r,
-        name,
-        field: "离职日期",
-        rawValue: null,
-        type: "RESIGN_DATE_MISSING",
-        severity: "WARN",
-        message: "出自「离职」名册，但「数据库」Sheet 中无离职日期与离职原因，状态按离职处理，离职日期留空待补录",
-      });
-      flags.push("离职日期缺失");
-    }
-    // 文本型离职备注
-    if (resignText.yes && !resignDate) {
-      addIssue({
-        row: r,
-        name,
-        field: "备注（离职日期）",
-        rawValue: resignRawText,
-        type: "RESIGN_DATE_MISSING",
-        severity: "WARN",
-        message: `离职备注为自由文本「${resignRawText}」，无法解析出具体日期，已原样保留在 resignDateRaw 字段`,
-      });
-      flags.push("离职日期为文本，未解析出具体日期");
-    }
-    if (resignText.rehire) {
-      addIssue({
-        row: r,
-        name,
-        field: "备注（离职日期）",
-        rawValue: resignRawText,
-        type: "OTHER",
-        severity: "WARN",
-        message: `备注含「重新入职」语义（${resignRawText}），未判定为离职，按在职处理`,
-      });
-      flags.push("备注含重新入职语义");
-    }
-    // 离职却没有离职日期
-    if (status === "RESIGNED" && !resignDate) flags.push("离职但无离职日期");
-
-    // 年龄
-    const ageRaw = cellText(COL.ageRaw);
-    let age: number | null = null;
-    if (ageRaw) {
-      const n = Number(ageRaw.replace(/[^\d]/g, ""));
-      if (Number.isFinite(n) && n > 0 && n < 120) age = n;
-    }
-
-    // ---------- 4.4 组装字段 ----------
-    const seqNoNum = seqRaw ? Number(seqRaw.replace(/[^\d]/g, "")) : NaN;
-
-    const fields: ParsedRow["fields"] = {
-      storeNameRaw: cellText(COL.storeName),
-      jobGradeRaw: cellText(COL.jobGrade),
-      positionNote: cellText(COL.positionNote),
-      dormitory: cellText(COL.dormitory),
-      socialInsurancePurchased: cellText(COL.socialInsurancePurchased),
-      emergencyContact1: cellText(COL.emergencyContact1),
-      emergencyPhone1: digitsOnly(cellText(COL.emergencyPhone1)),
-      emergencyContact2: cellText(COL.emergencyContact2),
-      emergencyPhone2: digitsOnly(cellText(COL.emergencyPhone2)),
-      laborContract: cellText(COL.laborContract),
-      socialInsuranceAgreement: cellText(COL.socialInsuranceAgreement),
-      fireSafetyCommitment: cellText(COL.fireSafetyCommitment),
-      dormitoryWaiver: cellText(COL.dormitoryWaiver),
-      onboardingMedical: cellText(COL.onboardingMedical),
-      bankBranch: cBankBranch,
-      bankAccountNo: cBank,
-      salaryTerms: cellText(COL.salaryTerms),
-      currentAddress: cellText(COL.currentAddress),
-      recruiterName: cellText(COL.recruiterName),
-      resignReason,
-      ageRaw,
-      age,
-      interviewDate,
-      interviewLocation: cellText(COL.interviewLocation),
-      interviewResult: cellText(COL.interviewResult),
-      interviewerName: cellText(COL.interviewerName),
-      interviewHired: cellText(COL.interviewHired),
-      docResume: cellText(COL.docResume),
-      docInterviewEvaluation: cellText(COL.docInterviewEvaluation),
-      resignedTenureText: cellText(COL.resignedTenureText),
-      firstMonthGuarantee: cellText(COL.firstMonthGuarantee),
-      remark: cellText(COL.remark),
-      mentorName: cellText(COL.mentorName),
-      docOnboardingForm: cellText(COL.docOnboardingForm),
-      docInterviewEvaluation2: cellText(COL.docInterviewEvaluation2),
-      certificateLevel: cellText(COL.certificateLevel),
-      remark3: cellText(COL.remark3),
-      computed7Days: cellText(COL.computed7Days),
-      computed2Months: cellText(COL.computed2Months),
-      minorNote: cellText(COL.minorNote),
-      tenureTextAtImport: cellText(COL.tenureText),
-      gender: genderFromId(idCard),
-    };
-
-    parsed.push({
-      row: r,
-      seqNo: Number.isFinite(seqNoNum) ? seqNoNum : null,
-      name,
-      idCardKey: idCard && RE_ID18.test(idCard) ? idCard : null,
-      idCardRaw: idCard,
-      phone,
-      storeNameRaw: fields.storeNameRaw as string | null,
-      jobGradeRaw: fields.jobGradeRaw as string | null,
-      hireDate,
-      status,
-      resignDate,
-      resignDateRaw: resignRawText,
-      resignReason,
-      dataFlags: flags,
-      fields,
-    });
-  }
+  // ---- 2. 解析结果 → 写入结构 ----
+  const parsed: ParsedRow[] = parseResult.rows.map(toParsedRow);
+  const rowsSkipped: { row: number; reason: string }[] = parseResult.skipped;
+  // 解析期异常（列错位 / 身份证异常 / 日期无法解析 / 源数据未提供 等）全部并入报告
+  issues.push(...parseResult.issues);
 
   console.log(`✓ 解析完成：有效行 ${parsed.length}，跳过 ${rowsSkipped.length} 行`);
+  console.log("");
   console.log("");
 
   // ---- 5. 建立门店 / 职位 主数据（保留 Excel 历史取值） ----
@@ -1028,6 +416,18 @@ async function main() {
 
   for (const e of existing) registerEmployee(e);
 
+  // 一次性加载全量员工快照（仅用于「未变化」比对，避免逐行查询）
+  const snapshotById = new Map<number, any>();
+  {
+    const all = await prisma.employee.findMany({
+      where: { deletedAt: null },
+      select: SNAP_SELECT,
+    });
+    for (const e of all as any[]) {
+      snapshotById.set(e.id as number, e);
+    }
+  }
+
   // 从 EmployeeSourceRow 表恢复「Excel 行号 → 员工」的完整映射，
   // 这是保证重复执行导入幂等的关键：一行 Excel 一旦有归属，下次必定还能找到。
   const existingSourceRows = await prisma.employeeSourceRow.findMany({
@@ -1055,6 +455,7 @@ async function main() {
 
   let inserted = 0;
   let updated = 0;
+  let unchanged = 0;
   let duplicated = 0;
   let failed = 0;
   let matchByIdCardHire = 0;
@@ -1326,24 +727,24 @@ async function main() {
         resolvedId = created.id;
         inserted++;
       } else {
-        await prisma.employee.update({ where: { id: targetId }, data: data as never });
-        // 目标已存在：补齐索引（身份证 / 电话可能在本行才出现）
-        const after = await prisma.employee.findUnique({
-          where: { id: targetId },
-          select: {
-            id: true,
-            name: true,
-            idCardNo: true,
-            phone: true,
-            hireDate: true,
-            sourceRowNo: true,
-            sourceSheet: true,
-          },
-        });
+        const snap = snapshotById.get(targetId);
+        const isUnchanged = snap ? dataIsUnchanged(data, snap) : false;
+        let after: any = snap;
+        if (!isUnchanged) {
+          await prisma.employee.update({ where: { id: targetId }, data: data as never });
+          // 目标已存在：补齐索引（身份证 / 电话可能在本行才出现）
+          after = (await prisma.employee.findUnique({
+            where: { id: targetId },
+            select: AFTER_SELECT,
+          })) as any;
+          if (!inRunDup) updated++;
+        } else {
+          // 匹配到已有员工且所有字段完全一致 → 未变化，跳过写入
+          unchanged++;
+        }
         if (after) registerEmployee(after);
         if (!touchedThisRun.has(targetId)) touchedThisRun.set(targetId, p.row);
         resolvedId = targetId;
-        if (!inRunDup) updated++;
       }
     } catch (e) {
       failed++;
@@ -1398,6 +799,7 @@ async function main() {
   console.log("── 导入结果 ──────────────────────────────");
   console.log(`  新增      : ${inserted}`);
   console.log(`  更新      : ${updated}`);
+  console.log(`  未变化    : ${unchanged}`);
   console.log(`  运行内重复: ${duplicated}`);
   console.log(`  跳过      : ${rowsSkipped.length}`);
   console.log(`  失败      : ${failed}`);
@@ -1464,12 +866,13 @@ async function main() {
       totalRows: parsed.length + rowsSkipped.length,
       inserted,
       updated,
+      unchanged,
       skipped: rowsSkipped.length,
       duplicated,
       failed,
       issueCount: issues.length,
       status: batchStatus,
-      message: `新增 ${inserted}，更新 ${updated}，重复 ${duplicated}，跳过 ${rowsSkipped.length}，失败 ${failed}`,
+      message: `新增 ${inserted}，更新 ${updated}，未变化 ${unchanged}，重复 ${duplicated}，跳过 ${rowsSkipped.length}，失败 ${failed}`,
       startedAt,
       finishedAt: new Date(),
     },
@@ -1505,6 +908,7 @@ async function main() {
     rowsSkipped,
     inserted,
     updated,
+    unchanged,
     duplicated,
     failed,
     matchByIdCardHire,
@@ -1553,6 +957,7 @@ interface ReportInput {
   rowsSkipped: { row: number; reason: string }[];
   inserted: number;
   updated: number;
+  unchanged: number;
   duplicated: number;
   failed: number;
   // 身份证 + 入职日期
@@ -1621,6 +1026,7 @@ function buildReport(o: ReportInput): string {
     PRECISION_SUSPECT: "数值精度存疑",
     STATUS_CONFLICT: "在离职状态冲突",
     RESIGN_DATE_MISSING: "离职日期缺失或为文本",
+    SOURCE_MISSING: "源数据未提供（非业务错误）",
     OTHER: "其他",
   };
 
@@ -1656,6 +1062,7 @@ function buildReport(o: ReportInput): string {
     `| 原始 Excel 数据行数（有姓名，参与导入） | **${o.parsedCount}** | 有效业务数据行 |`,
     `| 成功导入数量（新增） | **${o.inserted}** | 写入为全新员工记录 |`,
     `| 成功导入数量（更新） | **${o.updated}** | 匹配到已有员工并更新字段（重复执行导入时的主要路径） |`,
+    `| 未变化数量 | **${o.unchanged}** | 匹配到已有员工且所有字段完全一致，未写入（幂等重跑不产生无意义写库） |`,
     `| 跳过数量 | **${o.rowsSkipped.length}** | 整行为空或姓名为空 |`,
     `| 重复数量 | **${o.duplicated}** | 同一次运行中同一人同一段任职出现多行，已合并 |`,
     `| 异常数量 | **${o.issues.length}** | 明细见第 6 节，全部落库在 \`ImportIssue\` 表 |`,
