@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { getDashboardStats } from "@/lib/employee-service";
+import { getDashboardStats, countEmployeeRows, getRecentEmployees } from "@/lib/employee-service";
 import { Button, Card, StatCard, Alert, Badge, StatusBadge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
 import { EMPLOYEE_STATUS_LABEL } from "@/lib/constants";
@@ -15,34 +15,20 @@ export default async function DashboardPage() {
   const stats = await getDashboardStats();
 
   // 数据库概览（技术侧可观测性，不属于业务 KPI）
+  // 员工相关的计数统一走 employee-service，页面不直连 prisma.employee
   const [storeRows, deptRows, positionRows, dictRows, employeeRows, auditRows, lastBatch] =
     await Promise.all([
       prisma.store.count(),
       prisma.department.count(),
       prisma.position.count(),
       prisma.dictOption.count(),
-      prisma.employee.count(),
+      countEmployeeRows(),
       prisma.auditLog.count(),
       prisma.importBatch.findFirst({ orderBy: { startedAt: "desc" } }),
     ]);
 
-  // 最近新增员工（实时查询）
-  const recent = await prisma.employee.findMany({
-    where: { deletedAt: null },
-    orderBy: { createdAt: "desc" },
-    take: 6,
-    select: {
-      id: true,
-      employeeId: true,
-      name: true,
-      status: true,
-      hireDate: true,
-      storeNameRaw: true,
-      jobGradeRaw: true,
-      store: { select: { name: true } },
-      position: { select: { name: true } },
-    },
-  });
+  // 最近新增员工（实时查询，走 employee-service）
+  const recent = await getRecentEmployees(6);
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-5">

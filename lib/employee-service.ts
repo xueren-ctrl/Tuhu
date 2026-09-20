@@ -649,3 +649,41 @@ export async function getDepartmentSummary(departmentId: number) {
     ),
   };
 }
+
+// ------------------------------------------------------------
+// 首页 Dashboard 专用查询
+//
+// 说明：首页原本直连 prisma 查这两项，违反「employee-service 是员工数据
+// 唯一访问入口」的约定（虽然查的是同一张 Employee 表，不构成第二份数据源）。
+// 现统一收敛到本文件，页面不再直接访问 prisma.employee。
+// ------------------------------------------------------------
+
+/** 员工表总行数（含已软删除档案），供首页「数据库概览」展示 */
+export async function countEmployeeRows(): Promise<number> {
+  return prisma.employee.count();
+}
+
+/** 最近新增员工（默认 6 条），供首页「最近新增」列表 */
+export async function getRecentEmployees(take = 6) {
+  const rows = await prisma.employee.findMany({
+    where: { deletedAt: null },
+    orderBy: { createdAt: "desc" },
+    take,
+    select: {
+      id: true,
+      employeeId: true,
+      name: true,
+      status: true,
+      hireDate: true,
+      storeNameRaw: true,
+      jobGradeRaw: true,
+      store: { select: { name: true } },
+      position: { select: { name: true } },
+    },
+  });
+  return rows.map((r) => ({
+    ...r,
+    storeName: r.store?.name ?? null,
+    positionName: r.position?.name ?? null,
+  }));
+}

@@ -1,13 +1,14 @@
 /**
  * 清理验收测试产生的临时数据
- * 覆盖第一阶段（acceptance-test.mjs）与第二阶段（stage2-test.mjs）的测试数据。
+ * 覆盖第一阶段（acceptance-test.mjs）、第二阶段（stage2-test.mjs）
+ * 与第二阶段开发验收（stage2-acceptance.mjs）的测试数据。
  */
 import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
-const TEST_EMP_PATTERNS = ["验收测试员工", "阶段二测试员工"];
-const TEST_STORE_PATTERNS = ["验收测试门店", "阶段二测试门店"];
-const TEST_DEPT_PATTERNS = ["阶段二测试部门"];
+const TEST_EMP_PATTERNS = ["验收测试员工", "阶段二测试员工", "测试员工001"];
+const TEST_STORE_PATTERNS = ["验收测试门店", "阶段二测试门店", "测试门店"];
+const TEST_DEPT_PATTERNS = ["阶段二测试部门", "测试部门"];
 
 async function main() {
   // ---- 1. 测试员工（含软删除的）----
