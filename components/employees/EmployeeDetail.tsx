@@ -10,7 +10,41 @@ import { formatDate, formatDateTime } from "@/lib/format";
 
 type Emp = Record<string, unknown>;
 
-export default function EmployeeDetail({ employee }: { employee: Emp }) {
+export interface HistoryRow {
+  id: number;
+  source: string;
+  fieldLabel: string;
+  oldValue: string | null;
+  newValue: string | null;
+  operator: string;
+  operatedAt: string;
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  CREATE: "新增",
+  UPDATE: "编辑",
+  BATCH_UPDATE: "批量修改",
+  SOFT_DELETE: "停用",
+  RESTORE: "恢复",
+};
+
+const SOURCE_TONE: Record<string, "green" | "blue" | "amber" | "red" | "gray"> = {
+  CREATE: "green",
+  UPDATE: "blue",
+  BATCH_UPDATE: "amber",
+  SOFT_DELETE: "red",
+  RESTORE: "green",
+};
+
+const HISTORY_TAB = "__history__";
+
+export default function EmployeeDetail({
+  employee,
+  history = [],
+}: {
+  employee: Emp;
+  history?: HistoryRow[];
+}) {
   const [tab, setTab] = useState<string>("basic");
   const [showAll, setShowAll] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -215,8 +249,71 @@ export default function EmployeeDetail({ employee }: { employee: Emp }) {
               </span>
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setTab(HISTORY_TAB)}
+            className={
+              "rounded-t-md border-b-2 px-3 py-2 text-[12.5px] transition-colors " +
+              (tab === HISTORY_TAB
+                ? "border-brand-600 font-medium text-brand-700"
+                : "border-transparent text-slate-500 hover:text-slate-800")
+            }
+          >
+            变更记录
+            <span className="ml-1.5 text-[10.5px] text-slate-400">{history.length}</span>
+          </button>
         </div>
 
+        {tab === HISTORY_TAB ? (
+          <div className="p-4">
+            {history.length === 0 ? (
+              <p className="py-6 text-center text-[12.5px] text-slate-400">
+                暂无变更记录。该员工建档后的每一次修改都会自动记录在这里。
+              </p>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[12.5px]">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-left text-slate-500">
+                        <th className="px-3 py-2 font-medium">时间</th>
+                        <th className="px-3 py-2 font-medium">来源</th>
+                        <th className="px-3 py-2 font-medium">字段</th>
+                        <th className="px-3 py-2 font-medium">修改前</th>
+                        <th className="px-3 py-2 font-medium">修改后</th>
+                        <th className="px-3 py-2 font-medium">操作人</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.map((h) => (
+                        <tr key={h.id} className="border-b border-slate-100">
+                          <td className="px-3 py-2 whitespace-nowrap tabular-nums text-slate-600">
+                            {formatDateTime(h.operatedAt)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <Badge tone={SOURCE_TONE[h.source] ?? "gray"}>
+                              {SOURCE_LABEL[h.source] ?? h.source}
+                            </Badge>
+                          </td>
+                          <td className="px-3 py-2 text-slate-700">{h.fieldLabel}</td>
+                          <td className="px-3 py-2 text-slate-500">{h.oldValue ?? "—"}</td>
+                          <td className="px-3 py-2 font-medium text-slate-800">
+                            {h.newValue ?? "—"}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">{h.operator}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-4 border-t border-[var(--hr-border)] pt-3 text-[11.5px] text-slate-400">
+                  身份证号 / 银行卡号 / 手机号 / 住址 / 薪资等敏感字段的记录值
+                  <strong>已脱敏</strong>，与列表页展示口径一致，避免历史表成为新的泄露面。
+                </p>
+              </>
+            )}
+          </div>
+        ) : (
         <div className="p-4">
           <DescGrid
             columns={3}
@@ -232,6 +329,7 @@ export default function EmployeeDetail({ employee }: { employee: Emp }) {
             空值显示为「—」，表示 Excel 中该字段本身为空（已按 null 处理，未做猜测填充）。
           </p>
         </div>
+        )}
       </Card>
 
       {/* 全部字段一览（排查用） */}

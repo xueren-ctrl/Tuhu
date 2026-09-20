@@ -6,9 +6,19 @@
 import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
-const TEST_EMP_PATTERNS = ["验收测试员工", "阶段二测试员工", "测试员工001"];
-const TEST_STORE_PATTERNS = ["验收测试门店", "阶段二测试门店", "测试门店"];
-const TEST_DEPT_PATTERNS = ["阶段二测试部门", "测试部门"];
+const TEST_EMP_PATTERNS = [
+  "验收测试员工",
+  "阶段二测试员工",
+  "测试员工001",
+  "阶段三测试员工",
+];
+const TEST_STORE_PATTERNS = [
+  "验收测试门店",
+  "阶段二测试门店",
+  "测试门店",
+  "阶段三测试门店",
+];
+const TEST_DEPT_PATTERNS = ["阶段二测试部门", "测试部门", "阶段三测试部门"];
 
 async function main() {
   // ---- 1. 测试员工（含软删除的）----

@@ -28,6 +28,14 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/employees", label: "员工档案", icon: "▦", ready: true },
       { href: "/employees/new", label: "新增员工", icon: "＋", ready: true },
+      { href: "/employees/batch", label: "批量编辑", icon: "⇉", ready: true },
+    ],
+  },
+  {
+    title: "数据治理（第三阶段）",
+    items: [
+      { href: "/stores", label: "门店管理", icon: "⌂", ready: true },
+      { href: "/data-quality", label: "数据质量中心", icon: "◎", ready: true },
     ],
   },
   {

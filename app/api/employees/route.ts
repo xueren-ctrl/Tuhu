@@ -3,6 +3,7 @@ import {
   createEmployee,
   listEmployees,
 } from "@/lib/employee-service";
+import { operatorFromRequest } from "@/lib/operator";
 import {
   employeeCreateSchema,
   employeeQuerySchema,
@@ -48,7 +49,10 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    const created = await createEmployee(parsed.data as Record<string, unknown>);
+    const created = await createEmployee(
+      parsed.data as Record<string, unknown>,
+      operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: created }, { status: 201 });
   } catch (e) {
     console.error("[POST /api/employees]", (e as Error).message);

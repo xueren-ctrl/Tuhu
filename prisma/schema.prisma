@@ -40,8 +40,32 @@ model Store {
   updatedAt DateTime @updatedAt
 
   employees Employee[]
+  aliases   StoreAlias[]
 
   @@index([status])
+}
+
+// ------------------------------------------------------------
+// 门店别名（第三阶段新增）
+// 用途：同一家门店在历史 Excel 里可能有多种写法（如「A店」「A途虎」「A服务店」）。
+// 把非标准写法定为别名后，查询与统计统一归到标准门店（Store）名下。
+//
+// 关键设计：
+// 1. 别名只存「字符串 + 指向标准门店的外键」，**不复制任何员工数据**。
+// 2. 新增别名时会把 storeNameRaw 等于该别名的员工重新挂到标准门店
+//    （只改 storeId 外键，storeNameRaw 原文保留不删，可追溯）。
+// 3. alias 全局唯一：一个别名只能属于一家门店，避免归属歧义。
+// ------------------------------------------------------------
+model StoreAlias {
+  id        Int      @id @default(autoincrement())
+  storeId   Int
+  alias     String   @unique // 别名原文，如「A途虎」
+  note      String? // 备注 / 来源说明
+  createdAt DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
 }
 
 // ------------------------------------------------------------
@@ -208,6 +232,9 @@ model Employee {
   /** 该员工在原始 Excel 中对应的全部数据行（一行员工可能由多行 Excel 合并而来） */
   sourceRows EmployeeSourceRow[]
 
+  /** 该员工的字段变更历史（第三阶段新增，所有修改自动留痕） */
+  histories EmployeeHistory[]
+
   @@index([name])
   @@index([phone])
   @@index([idCardNo])
@@ -328,4 +355,40 @@ model AuditLog {
 
   @@index([entity, entityId])
   @@index([createdAt])
+}
+
+// ------------------------------------------------------------
+// 员工字段变更历史（第三阶段新增）
+//
+// 需求：记录 employeeId / 字段名称 / 修改前 / 修改后 / 操作时间 / 操作人，
+//       所有员工修改操作自动记录。
+//
+// 设计要点：
+// 1. 一个字段一行（fieldName / oldValue / newValue），便于按字段检索与还原；
+//    一次提交改 3 个字段就写 3 行，用同一 batchKey 归组。
+// 2. 同时存内部主键 employeeId 与业务编号 employeeCode（THHR…）：
+//    前者用于关联，后者用于**离职/删档后仍可读**（外键级联删除也就不会丢历史）。
+// 3. 敏感字段（身份证 / 银行卡 / 手机号 / 住址 / 薪资）只记录**脱敏后**的值，
+//    与列表接口的脱敏口径一致，避免历史表成为新的泄露面。
+// 4. 记录来源用 source 区分单条编辑 / 批量修改 / 新增 / 软删除 / 恢复。
+// ------------------------------------------------------------
+model EmployeeHistory {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int
+  employeeCode String? // 业务编号快照（THHR + 年份 + 6 位流水），便于脱库检索
+  batchKey     String? // 同一次操作的多字段归组
+  source       String   @default("UPDATE") // CREATE | UPDATE | BATCH_UPDATE | SOFT_DELETE | RESTORE
+  fieldName    String // 字段名（Prisma 字段名）
+  fieldLabel   String? // 字段中文名（界面展示用）
+  oldValue     String? // 修改前（已脱敏）
+  newValue     String? // 修改后（已脱敏）
+  operator     String   @default("system") // 操作人（当前版本未启用登录，默认为系统）
+  operatedAt   DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, operatedAt])
+  @@index([operatedAt])
+  @@index([fieldName])
+  @@index([batchKey])
 }

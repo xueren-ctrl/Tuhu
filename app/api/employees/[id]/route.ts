@@ -6,6 +6,7 @@ import {
   updateEmployee,
 } from "@/lib/employee-service";
 import { employeeUpdateSchema, formatZodError } from "@/lib/validation";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +52,11 @@ export async function PUT(req: Request, ctx: Ctx) {
         { status: 400 }
       );
     }
-    const updated = await updateEmployee(numId, parsed.data as Record<string, unknown>);
+    const updated = await updateEmployee(
+      numId,
+      parsed.data as Record<string, unknown>,
+      operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: updated });
   } catch (e) {
     console.error("[PUT /api/employees/:id]", (e as Error).message);
@@ -75,10 +80,10 @@ export async function DELETE(req: Request, ctx: Ctx) {
     }
     const url = new URL(req.url);
     if (url.searchParams.get("restore") === "1") {
-      const r = await restoreEmployee(numId);
+      const r = await restoreEmployee(numId, operatorFromRequest(req));
       return NextResponse.json({ ok: true, data: r, mode: "restore" });
     }
-    const r = await softDeleteEmployee(numId);
+    const r = await softDeleteEmployee(numId, operatorFromRequest(req));
     return NextResponse.json({ ok: true, data: r, mode: "soft-delete" });
   } catch (e) {
     console.error("[DELETE /api/employees/:id]", (e as Error).message);

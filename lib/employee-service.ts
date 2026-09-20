@@ -5,6 +5,12 @@ import { EMPLOYEE_STATUS, UNASSIGNED, UNASSIGNED_LABEL } from "./constants";
 import { nextEmployeeId } from "./employee-id";
 import { genderFromIdCard } from "./format";
 import type { EmployeeQueryInput } from "./validation";
+import {
+  DEFAULT_OPERATOR,
+  diffFields,
+  recordEmployeeEvent,
+  recordEmployeeHistory,
+} from "./history-service";
 
 /**
  * 员工业务层 —— 全系统唯一的员工数据访问入口。
@@ -103,7 +109,9 @@ export function buildEmployeeWhere(
     and.push({ deletedAt: null });
   }
 
-  // 通用关键词：姓名 / 手机号 / 身份证 / 员工编号
+  // 通用关键词：姓名 / 手机号 / 身份证 / 员工编号 / 门店名（含别名）/ 工种
+  // 「含别名」这一条很关键：同一家门店无论用标准名还是别名检索，
+  // 结果必须完全一致 —— 这是门店别名功能的验收点。
   if (q.keyword?.trim()) {
     const kw = q.keyword.trim();
     and.push({
@@ -114,6 +122,9 @@ export function buildEmployeeWhere(
         { employeeId: { contains: kw } },
         { storeNameRaw: { contains: kw } },
         { jobGradeRaw: { contains: kw } },
+        { store: { name: { contains: kw } } },
+        { store: { aliases: { some: { alias: { contains: kw } } } } },
+        { department: { name: { contains: kw } } },
       ],
     });
   }
@@ -204,7 +215,7 @@ export async function getEmployeeById(id: number, opts?: { mask?: boolean }) {
 }
 
 /** 新增员工：自动生成 employee_id，写入数据库 */
-export async function createEmployee(input: Record<string, unknown>) {
+export async function createEmployee(input: Record<string, unknown>, operator?: string) {
   const name = String(input.name ?? "").trim();
   if (!name) throw new Error("姓名必填");
 
@@ -268,6 +279,16 @@ export async function createEmployee(input: Record<string, unknown>) {
     return emp;
   });
 
+  // 变更记录：新增事件（第三阶段）
+  await recordEmployeeEvent({
+    employeeId: created.id,
+    employeeCode: created.employeeId,
+    source: "CREATE",
+    label: "新增员工",
+    value: created.employeeId,
+    operator,
+  });
+
   return created;
 }
 
@@ -284,7 +305,8 @@ const IMMUTABLE_FIELDS = new Set([
 /** 编辑员工：employee_id / createdAt 不可改，updatedAt 自动更新 */
 export async function updateEmployee(
   id: number,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  operator?: string
 ) {
   const existing = await prisma.employee.findUnique({ where: { id } });
   if (!existing) throw new Error("员工不存在");
@@ -339,8 +361,44 @@ export async function updateEmployee(
       detail: JSON.stringify({ changedFields: Object.keys(data) }),
     },
   });
+
+  // 变更记录：逐字段 diff（第三阶段）—— 只写真正变化的字段
+  const changes = diffFields(
+    existing as unknown as Record<string, unknown>,
+    updated as unknown as Record<string, unknown>,
+    Array.from(new Set([...Object.keys(data), ...HISTORY_TRACKED_FIELDS]))
+  );
+  await recordEmployeeHistory({
+    employeeId: id,
+    employeeCode: updated.employeeId,
+    source: "UPDATE",
+    operator,
+    changes,
+  });
+
   return updated;
 }
+
+/**
+ * 参与变更记录比对的字段。
+ *
+ * 这里刻意把「外键」和「同名原文列」一起纳入：
+ * 改门店时 storeId 与 storeNameRaw 会同时变，只记外键对业务同事不直观。
+ * 敏感的原文列（身份证 / 银行卡 / 手机号 / 住址 / 薪资）会由
+ * recordEmployeeHistory 统一脱敏，不会把明文写进历史表。
+ */
+const HISTORY_TRACKED_FIELDS: string[] = [
+  "storeId",
+  "storeNameRaw",
+  "departmentId",
+  "departmentNameRaw",
+  "positionId",
+  "jobGradeRaw",
+  "status",
+  "resignDate",
+  "resignDateRaw",
+  "resignReason",
+];
 
 /** 软删除（停用）——不做物理删除，保留历史档案 */
 export async function softDeleteEmployee(id: number, actor?: string) {
@@ -358,6 +416,14 @@ export async function softDeleteEmployee(id: number, actor?: string) {
       entityId: String(id),
       summary: `停用员工 ${existing.name}（${existing.employeeId}）`,
     },
+  });
+  await recordEmployeeEvent({
+    employeeId: id,
+    employeeCode: existing.employeeId,
+    source: "SOFT_DELETE",
+    label: "停用档案",
+    value: new Date().toISOString().slice(0, 10),
+    operator: actor,
   });
   return r;
 }
@@ -377,7 +443,164 @@ export async function restoreEmployee(id: number, actor?: string) {
       summary: `恢复员工 ${r.name}（${r.employeeId}）`,
     },
   });
+  await recordEmployeeEvent({
+    employeeId: id,
+    employeeCode: r.employeeId,
+    source: "RESTORE",
+    label: "恢复档案",
+    value: null,
+    operator: actor,
+  });
   return r;
+}
+
+// ------------------------------------------------------------
+// 批量编辑（第三阶段新增）
+//
+// 需求：按「部门为空 / 岗位为空 / 门店为空」筛出员工，批量修改部门 / 岗位 / 门店。
+// 约定：
+// 1. 只允许改这三个归属字段 —— 状态、日期、身份信息一律不参与批量修改，
+//    避免一次误操作改坏大量档案。
+// 2. 逐条写 EmployeeHistory（来源 BATCH_UPDATE，同一次操作共享 batchKey）。
+// 3. 同步维护 *NameRaw 原文列，规则与单条编辑完全一致，
+//    因此修改后所有人员视图、分布统计立刻同步（它们都是实时查询）。
+// ------------------------------------------------------------
+
+/** 批量编辑允许修改的字段白名单 */
+export const BATCH_EDITABLE_FIELDS = ["storeId", "departmentId", "positionId"] as const;
+export type BatchEditableField = (typeof BATCH_EDITABLE_FIELDS)[number];
+
+export interface BatchUpdateResult {
+  matched: number;
+  updated: number;
+  unchanged: number;
+  failed: number;
+  batchKey: string;
+  changedFields: string[];
+  failures: { id: number; name: string; message: string }[];
+}
+
+/**
+ * 批量修改员工的归属字段。
+ * @param ids 明确指定要修改的员工（与 filter 二选一）
+ * @param filter 按查询条件筛选（复用列表页同一套 where 构造）
+ */
+export async function batchUpdateEmployees(opts: {
+  ids?: number[];
+  filter?: EmployeeQueryInput;
+  patch: Partial<Record<BatchEditableField, number | null>>;
+  operator?: string;
+}): Promise<BatchUpdateResult> {
+  const { ids, filter, patch } = opts;
+  const operator = opts.operator ?? DEFAULT_OPERATOR;
+
+  const cleanPatch: Record<string, number | null> = {};
+  for (const f of BATCH_EDITABLE_FIELDS) {
+    if (f in patch) cleanPatch[f] = patch[f] ?? null;
+  }
+  const changedFields = Object.keys(cleanPatch);
+  if (!changedFields.length) throw new Error("没有选择要修改的字段");
+
+  // 目标集合
+  let targetIds: number[];
+  if (ids?.length) {
+    targetIds = Array.from(new Set(ids.filter((n) => Number.isFinite(n) && n > 0)));
+  } else if (filter) {
+    const rows = await prisma.employee.findMany({
+      where: buildEmployeeWhere(filter),
+      select: { id: true },
+    });
+    targetIds = rows.map((r) => r.id);
+  } else {
+    throw new Error("必须指定要修改的员工或筛选条件");
+  }
+
+  const batchKey = `batch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const result: BatchUpdateResult = {
+    matched: targetIds.length,
+    updated: 0,
+    unchanged: 0,
+    failed: 0,
+    batchKey,
+    changedFields,
+    failures: [],
+  };
+  if (!targetIds.length) return result;
+
+  // 关联对象名称（用于同步 *NameRaw）
+  const [store, dept, position] = await Promise.all([
+    "storeId" in cleanPatch && cleanPatch.storeId
+      ? prisma.store.findUnique({ where: { id: cleanPatch.storeId } })
+      : null,
+    "departmentId" in cleanPatch && cleanPatch.departmentId
+      ? prisma.department.findUnique({ where: { id: cleanPatch.departmentId } })
+      : null,
+    "positionId" in cleanPatch && cleanPatch.positionId
+      ? prisma.position.findUnique({ where: { id: cleanPatch.positionId } })
+      : null,
+  ]);
+
+  const employees = await prisma.employee.findMany({
+    where: { id: { in: targetIds } },
+    select: {
+      id: true,
+      employeeId: true,
+      name: true,
+      storeId: true,
+      storeNameRaw: true,
+      departmentId: true,
+      departmentNameRaw: true,
+      positionId: true,
+      jobGradeRaw: true,
+    },
+  });
+
+  for (const e of employees) {
+    const data: Record<string, unknown> = { ...cleanPatch };
+    if ("storeId" in cleanPatch) data.storeNameRaw = store?.name ?? null;
+    if ("departmentId" in cleanPatch) data.departmentNameRaw = dept?.name ?? null;
+    if ("positionId" in cleanPatch) data.jobGradeRaw = position?.name ?? null;
+
+    const changed = changedFields.some((f) => e[f as BatchEditableField] !== cleanPatch[f]);
+    if (!changed) {
+      result.unchanged++;
+      continue;
+    }
+
+    try {
+      const updated = await prisma.employee.update({ where: { id: e.id }, data });
+      await recordEmployeeHistory({
+        employeeId: e.id,
+        employeeCode: e.employeeId,
+        source: "BATCH_UPDATE",
+        batchKey,
+        operator,
+        changes: diffFields(
+          e as unknown as Record<string, unknown>,
+          updated as unknown as Record<string, unknown>,
+          ["storeId", "storeNameRaw", "departmentId", "departmentNameRaw", "positionId", "jobGradeRaw"]
+        ),
+      });
+      result.updated++;
+    } catch (err) {
+      result.failed++;
+      result.failures.push({ id: e.id, name: e.name, message: (err as Error).message });
+    }
+  }
+
+  // 批量属于高影响操作，额外记一条审计日志（便于回溯"谁在什么时候一次性改了多少人"）
+  await prisma.auditLog.create({
+    data: {
+      actor: operator,
+      action: "BATCH_UPDATE",
+      entity: "Employee",
+      entityId: batchKey,
+      summary: `批量修改员工归属：匹配 ${result.matched} 人，实际修改 ${result.updated} 人`,
+      detail: JSON.stringify({ changedFields, patch: cleanPatch }),
+    },
+  });
+
+  return result;
 }
 
 /** 首页 Dashboard 统计 —— 全部实时从数据库计算，禁止写死 */

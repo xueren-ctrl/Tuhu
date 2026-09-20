@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { getEmployeeById } from "@/lib/employee-service";
+import { listEmployeeHistory } from "@/lib/history-service";
 import { Alert } from "@/components/ui";
 import EmployeeDetail from "@/components/employees/EmployeeDetail";
 
@@ -21,6 +22,9 @@ export default async function EmployeeDetailPage({
   const employee = await getEmployeeById(numId);
   if (!employee) notFound();
 
+  // 变更记录（第三阶段）：每次修改自动留痕
+  const history = await listEmployeeHistory(numId);
+
   return (
     <div className="mx-auto max-w-[1300px] space-y-4">
       {saved === "1" ? (
@@ -28,7 +32,10 @@ export default async function EmployeeDetailPage({
           员工已成功写入数据库，员工编号已自动生成。下方数据来自数据库实时查询。
         </Alert>
       ) : null}
-      <EmployeeDetail employee={employee as unknown as Record<string, unknown>} />
+      <EmployeeDetail
+        employee={employee as unknown as Record<string, unknown>}
+        history={history}
+      />
     </div>
   );
 }

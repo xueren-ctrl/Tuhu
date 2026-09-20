@@ -1,0 +1,52 @@
+import { NextResponse } from "next/server";
+import { addStoreAlias, listStoreAllNames } from "@/lib/store-service";
+import { DEFAULT_OPERATOR } from "@/lib/history-service";
+
+export const dynamic = "force-dynamic";
+
+type Ctx = { params: Promise<{ id: string }> };
+
+/** GET /api/stores/:id/aliases —— 该门店的标准名 + 全部别名 */
+export async function GET(_req: Request, ctx: Ctx) {
+  try {
+    const { id } = await ctx.params;
+    const numId = Number(id);
+    if (!Number.isFinite(numId) || numId <= 0) {
+      return NextResponse.json({ ok: false, error: "无效的门店 ID" }, { status: 400 });
+    }
+    const names = await listStoreAllNames(numId);
+    return NextResponse.json({ ok: true, data: names });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
+  }
+}
+
+/**
+ * POST /api/stores/:id/aliases —— 新增别名
+ * body: { alias: string, note?: string, operator?: string }
+ *
+ * 副作用（按需求「查询时统一归属」）：把门店原文列写着该别名的员工
+ * 重新挂到标准门店（只改 storeId 外键，原文列保留），并逐条写变更记录。
+ */
+export async function POST(req: Request, ctx: Ctx) {
+  try {
+    const { id } = await ctx.params;
+    const numId = Number(id);
+    if (!Number.isFinite(numId) || numId <= 0) {
+      return NextResponse.json({ ok: false, error: "无效的门店 ID" }, { status: 400 });
+    }
+    const body = (await req.json()) as { alias?: string; note?: string; operator?: string };
+    if (!body.alias || !body.alias.trim()) {
+      return NextResponse.json({ ok: false, error: "别名不能为空" }, { status: 400 });
+    }
+    const result = await addStoreAlias({
+      storeId: numId,
+      alias: body.alias,
+      note: body.note ?? null,
+      operator: body.operator ?? DEFAULT_OPERATOR,
+    });
+    return NextResponse.json({ ok: true, data: result }, { status: 201 });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
+  }
+}
