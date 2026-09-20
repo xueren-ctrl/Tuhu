@@ -32,10 +32,13 @@ const NAV: NavGroup[] = [
     ],
   },
   {
-    title: "数据治理（第三阶段）",
+    title: "数据治理（第三、四阶段）",
     items: [
       { href: "/stores", label: "门店管理", icon: "⌂", ready: true },
+      { href: "/stores/merge", label: "门店合并", icon: "⊕", ready: true },
       { href: "/data-quality", label: "数据质量中心", icon: "◎", ready: true },
+      { href: "/employees/department-auto", label: "部门自动归属", icon: "⇄", ready: true },
+      { href: "/import", label: "Excel 导入预览", icon: "⇧", ready: true },
     ],
   },
   {

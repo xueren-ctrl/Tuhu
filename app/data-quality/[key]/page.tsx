@@ -8,6 +8,7 @@ import {
   type DqCategoryKey,
 } from "@/lib/data-quality-service";
 import { EMPLOYEE_STATUS_LABEL } from "@/lib/constants";
+import IssueActions from "@/components/data-quality/IssueActions";
 
 export const dynamic = "force-dynamic";
 
@@ -84,6 +85,7 @@ export default async function DataQualityDetailPage({ params, searchParams }: Pr
                 <th className="px-3 py-2 font-medium">手机号</th>
                 <th className="px-3 py-2 font-medium">身份证号</th>
                 <th className="px-3 py-2 font-medium">问题说明</th>
+                <th className="px-3 py-2 font-medium">处理</th>
               </tr>
             </thead>
             <tbody>
@@ -116,11 +118,21 @@ export default async function DataQualityDetailPage({ params, searchParams }: Pr
                       <span className="ml-1 text-slate-400">（Excel 第 {r.sourceRowNo} 行）</span>
                     )}
                   </td>
+                  <td className="px-3 py-2">
+                    <IssueActions
+                      issueType={key}
+                      employeeId={r.id}
+                      employeeCode={r.employeeId}
+                      status={r.issueStatus}
+                      handler={r.handler}
+                      result={r.result}
+                    />
+                  </td>
                 </tr>
               ))}
               {result.data.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-3 py-10 text-center text-slate-400">
+                  <td colSpan={11} className="px-3 py-10 text-center text-slate-400">
                     ✅ 该类问题当前为 0 条
                   </td>
                 </tr>

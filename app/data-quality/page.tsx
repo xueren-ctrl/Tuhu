@@ -32,17 +32,18 @@ export default async function DataQualityPage() {
         可以修，但必须由人确认后再改，且每次修改都会写入员工的变更记录。
       </Alert>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <StatCard label="员工总数" value={s.totalEmployees} tone="blue" />
-        <StatCard label="问题条目合计" value={s.totalIssues} sub="同一人可能落在多类" tone="amber" />
-        <StatCard label="受影响员工（去重）" value={s.affectedEmployees} tone="red" />
+        <StatCard label="检出问题" value={s.totalIssues} sub="各类相加，可重复" tone="slate" />
+        <StatCard label="待处理" value={s.pendingTotal} sub={`已处理 ${s.handledTotal} 条`} tone="amber" />
+        <StatCard label="受影响员工（去重）" value={s.affectedEmployees} sub="已关闭的不计" tone="red" />
         <StatCard
           label="数据完整率"
           value={`${(
             ((s.totalEmployees - s.affectedEmployees) / Math.max(1, s.totalEmployees)) *
             100
           ).toFixed(1)}%`}
-          sub={`${s.totalEmployees - s.affectedEmployees} / ${s.totalEmployees} 人无任何问题`}
+          sub={`${s.totalEmployees - s.affectedEmployees} / ${s.totalEmployees} 人无待处理问题`}
           tone="green"
         />
       </div>
@@ -78,9 +79,14 @@ export default async function DataQualityPage() {
             >
               <div className="flex items-baseline gap-2">
                 <span className="text-[28px] font-semibold tabular-nums text-slate-800">
-                  {r.count}
+                  {r.pending}
                 </span>
-                <span className="text-[12.5px] text-slate-500">条</span>
+                <span className="text-[12.5px] text-slate-500">条待处理</span>
+                {r.handled > 0 && (
+                  <span className="ml-1 text-[12px] text-slate-400">
+                    （检出 {r.count}，已处理 {r.handled}）
+                  </span>
+                )}
               </div>
               <div className="mt-2 text-[12.5px] leading-relaxed text-slate-600">
                 <div>
@@ -115,14 +121,40 @@ export default async function DataQualityPage() {
         </ul>
       </Card>
 
-      <Alert tone="warn">
-        当前版本<strong>没有自动修复按钮</strong>（按需求本阶段只做数据治理的「看见 + 可修」，
-        不做批量清洗）。可批量修的三类（无部门 / 无岗位 / 无门店）请用
-        <Link href="/employees/batch" className="mx-1 underline">
-          批量编辑
-        </Link>
-        工具处理；状态冲突需要 HR 逐人确认口径。
-      </Alert>
+      <Card title="处理入口（从「发现问题」走向「解决问题」）">
+        <ul className="space-y-2 text-[12.5px] leading-relaxed text-slate-600">
+          <li>
+            <strong className="text-slate-800">无部门 / 无岗位 / 无门店</strong>：
+            量少用
+            <Link href="/employees/batch" className="mx-1 underline">
+              批量编辑
+            </Link>
+            ；量大（1902 人无部门）用
+            <Link href="/employees/department-auto" className="mx-1 underline">
+              部门自动归属
+            </Link>
+            按规则批量生成。
+          </li>
+          <li>
+            <strong className="text-slate-800">状态冲突</strong>：属于口径问题，需要 HR 逐人确认，
+            在明细页逐条关闭并写明处理结果。
+          </li>
+          <li>
+            <strong className="text-slate-800">门店被拆成多条</strong>：用
+            <Link href="/stores/merge" className="mx-1 underline">
+              门店合并
+            </Link>
+            把同义写法归到同一家店（员工只改门店外键，不删数据）。
+          </li>
+          <li>
+            <strong className="text-slate-800">Excel 数据更新</strong>：用
+            <Link href="/import" className="mx-1 underline">
+              导入预览
+            </Link>
+            ，先看清 Diff 再决定写不写，绝不会「上传即覆盖」。
+          </li>
+        </ul>
+      </Card>
     </div>
   );
 }

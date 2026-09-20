@@ -41,6 +41,7 @@ model Store {
 
   employees Employee[]
   aliases   StoreAlias[]
+  rules     DepartmentRule[]
 
   @@index([status])
 }
@@ -88,6 +89,7 @@ model Department {
   updatedAt   DateTime @updatedAt
 
   employees Employee[]
+  rules     DepartmentRule[]
 
   @@index([status])
 }
@@ -108,6 +110,7 @@ model Position {
   updatedAt DateTime @updatedAt
 
   employees Employee[]
+  rules     DepartmentRule[]
 
   @@index([status])
 }
@@ -234,6 +237,9 @@ model Employee {
 
   /** 该员工的字段变更历史（第三阶段新增，所有修改自动留痕） */
   histories EmployeeHistory[]
+
+  /** 该员工的数据质量工单（第四阶段新增） */
+  qualityIssues QualityIssue[]
 
   @@index([name])
   @@index([phone])
@@ -391,4 +397,110 @@ model EmployeeHistory {
   @@index([operatedAt])
   @@index([fieldName])
   @@index([batchKey])
+}
+
+// ------------------------------------------------------------
+// 部门自动归属规则（第四阶段新增）
+//
+// 用途：按「门店 / 岗位 / 员工类型」三维度自动生成部门推荐，
+//       解决 1902 名员工无部门归属的问题（Excel 未提供该信息）。
+//
+// 设计：
+// 1. 规则只描述「什么样的人归到哪个部门」，不写死任何人 —— 只生成**推荐**，
+//    由人在页面上预览、确认后才批量写入，且写入走标准更新流程（自带变更记录）。
+// 2. 三个维度都是可选的，未填表示不限制；已填的维度之间是 AND 关系。
+// 3. priority 越小优先级越高；一名员工命中多条规则时取优先级最高的那条。
+// 4. employeeType 说明：源数据里**没有独立的「员工类型」字段**，
+//    因此这一维用「工种级别原文 jobGradeRaw 包含该文本」来匹配
+//    （如填「店长」可命中「技术店长」「副店长」等）。这一点在页面上明确标注，
+//    不让用户误以为源数据里真有一个员工类型字段。
+// ------------------------------------------------------------
+model DepartmentRule {
+  id            Int       @id @default(autoincrement())
+  departmentId  Int
+  storeId       Int? // 按门店匹配（为空=不限）
+  positionId    Int? // 按岗位匹配（为空=不限）
+  employeeType  String? // 按工种级别原文包含匹配（为空=不限）
+  priority      Int       @default(100) // 越小越优先
+  enabled       Boolean   @default(true)
+  remark        String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  store      Store?     @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  position   Position?  @relation(fields: [positionId], references: [id], onDelete: SetNull)
+
+  @@index([enabled, priority])
+  @@index([departmentId])
+  @@index([storeId])
+  @@index([positionId])
+}
+
+// ------------------------------------------------------------
+// 数据质量问题工单（第四阶段新增）
+//
+// 用途：把数据质量中心从「只展示问题」升级为「有处理流程」——
+//       每个问题可以有人认领、处理、关闭，关闭后统计口径立即变化。
+//
+// 设计：
+// 1. (issueType, employeeId) 唯一 —— 同一员工同一类问题只有一张工单，
+//    重复点击「关闭」是幂等的 upsert，不会产生重复记录。
+// 2. 只存员工的**内部主键 + 业务编号快照**，不复制任何档案字段。
+// 3. 状态：OPEN（待处理）/ CLOSED（已关闭）/ IGNORED（已忽略）。
+//    统计口径：待处理 = 检出总数 - (CLOSED + IGNORED)。
+// 4. 关闭是「人工确认这条不用管了」，不等于数据被改好 ——
+//    因此 result 字段记录处理结果说明，避免后人看不懂为什么关掉。
+// ------------------------------------------------------------
+model QualityIssue {
+  id          Int       @id @default(autoincrement())
+  issueType   String // 与 data-quality-service 的类别 key 一致
+  employeeId  Int
+  employeeCode String? // 业务编号快照（THHR…）
+  status      String    @default("OPEN") // OPEN | CLOSED | IGNORED
+  handler     String? // 处理人
+  handledAt   DateTime? // 处理时间
+  result      String? // 处理结果说明
+  note        String? // 备注
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([issueType, employeeId])
+  @@index([issueType, status])
+  @@index([status])
+}
+
+// ------------------------------------------------------------
+// Excel 重新导入预览批次（第四阶段新增）
+//
+// 用途：避免「上传即覆盖」。流程固定为
+//   上传 → 解析 → 生成 Diff → 人工确认 → 才正式写入
+//
+// 设计：
+// 1. 上传的文件原样存到 data/import/，预览只记录**元信息与 Diff 结果**，
+//    确认时基于同一份文件重新解析再写入，保证「所见即所写」。
+// 2. 预览阶段**不碰 Employee 表**（这是验收点：预览后数据库必须零变化）。
+// 3. diffJson 存完整差异明细（含每个员工的逐字段修改前后），
+//    便于确认页展示，也便于事后审计。
+// 4. 状态：PENDING → COMMITTED / DISCARDED。已提交或已丢弃的批次不能重复提交。
+// ------------------------------------------------------------
+model ImportPreview {
+  id          String   @id // 预览批次号，如 PREVIEW-20260920-xxxx
+  fileName    String
+  fileSize    Int
+  storedPath  String // 服务器上的文件相对路径（data/import/…）
+  sheetName   String
+  totalRows   Int // 数据区总行数
+  validRows   Int // 有效业务行数
+  skippedRows Int // 跳过的空行
+  diffJson    String // Diff 明细 JSON
+  summaryJson String // 汇总 JSON（新增 / 修改 / 状态变化 / 门店变化 数量）
+  status      String   @default("PENDING") // PENDING | COMMITTED | DISCARDED
+  operator    String?
+  createdAt   DateTime @default(now())
+  committedAt DateTime?
+
+  @@index([status, createdAt])
 }

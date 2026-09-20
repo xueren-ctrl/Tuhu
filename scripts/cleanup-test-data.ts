@@ -11,14 +11,21 @@ const TEST_EMP_PATTERNS = [
   "阶段二测试员工",
   "测试员工001",
   "阶段三测试员工",
+  "阶段四测试员工",
 ];
 const TEST_STORE_PATTERNS = [
   "验收测试门店",
   "阶段二测试门店",
   "测试门店",
   "阶段三测试门店",
+  "阶段四测试门店",
 ];
-const TEST_DEPT_PATTERNS = ["阶段二测试部门", "测试部门", "阶段三测试部门"];
+const TEST_DEPT_PATTERNS = [
+  "阶段二测试部门",
+  "测试部门",
+  "阶段三测试部门",
+  "阶段四测试部门",
+];
 
 async function main() {
   // ---- 1. 测试员工（含软删除的）----
@@ -65,7 +72,30 @@ async function main() {
     console.log(`- 已清理测试职位 ${p.name}`);
   }
 
-  // ---- 5. 测试审计日志 ----
+  // ---- 5. 测试部门规则（第四阶段）----
+  const rules = await prisma.departmentRule.findMany({
+    where: {
+      OR: [
+        { remark: { contains: "验收脚本" } },
+        { department: { name: { contains: "阶段四测试部门" } } },
+      ],
+    },
+  });
+  for (const r of rules) {
+    await prisma.departmentRule.delete({ where: { id: r.id } });
+    console.log(`- 已清理测试部门规则 id=${r.id}`);
+  }
+
+  // ---- 6. 测试导入预览批次（第四阶段）----
+  const previews = await prisma.importPreview.findMany({
+    where: { fileName: { contains: "stage4" } },
+  });
+  for (const v of previews) {
+    await prisma.importPreview.delete({ where: { id: v.id } });
+    console.log(`- 已清理测试导入预览 ${v.id}`);
+  }
+
+  // ---- 7. 测试审计日志 ----
   const logs = await prisma.auditLog.deleteMany({
     where: {
       OR: [

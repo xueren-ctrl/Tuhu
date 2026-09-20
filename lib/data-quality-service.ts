@@ -20,6 +20,7 @@
  */
 import { prisma } from "./prisma";
 import { maskByField } from "./mask";
+import { countHandledByType, listHandledEmployeeIds } from "./quality-issue-service";
 
 export type DqCategoryKey =
   | "status-conflict"
@@ -85,7 +86,12 @@ export const DQ_CATEGORIES: DqCategoryMeta[] = [
 export interface DqSummaryRow {
   key: DqCategoryKey;
   label: string;
+  /** 检出的总数 */
   count: number;
+  /** 已处理（关闭 + 忽略）的工单数 */
+  handled: number;
+  /** 待处理 = count − handled */
+  pending: number;
   severity: "high" | "medium" | "low";
   batchFixable: boolean;
 }
@@ -96,7 +102,11 @@ export interface DqSummary {
   rows: DqSummaryRow[];
   /** 问题总数（各类相加，同一员工可能落在多类里） */
   totalIssues: number;
-  /** 至少命中一类问题的员工数（去重） */
+  /** 已处理工单总数 */
+  handledTotal: number;
+  /** 待处理问题总数 */
+  pendingTotal: number;
+  /** 至少还有一类「待处理」问题的员工数（去重，已关闭的不计） */
   affectedEmployees: number;
   /** 参考信息：不算问题的合法情况 */
   notes: {
@@ -150,25 +160,38 @@ export async function getDataQualitySummary(): Promise<DqSummary> {
     duplicate: exactDupGroups + noKeyCount,
   };
 
-  const rows = DQ_CATEGORIES.map<DqSummaryRow>((c) => ({
-    key: c.key,
-    label: c.label,
-    count: counts[c.key],
-    severity: c.severity,
-    batchFixable: c.batchFixable,
-  }));
+  // 工单进度：已处理（关闭 + 忽略）的数量，按类别统计
+  const handled = await countHandledByType();
+
+  const rows = DQ_CATEGORIES.map<DqSummaryRow>((c) => {
+    const h = handled[c.key] ?? 0;
+    return {
+      key: c.key,
+      label: c.label,
+      count: counts[c.key],
+      handled: h,
+      pending: Math.max(0, counts[c.key] - h),
+      severity: c.severity,
+      batchFixable: c.batchFixable,
+    };
+  });
 
   return {
     totalEmployees,
     rows,
     totalIssues: rows.reduce((s, r) => s + r.count, 0),
+    handledTotal: rows.reduce((s, r) => s + r.handled, 0),
+    pendingTotal: rows.reduce((s, r) => s + r.pending, 0),
     affectedEmployees: await countAffectedEmployees(),
     notes: { rehireGroups, departmentOnly: deptOnly },
     generatedAt: new Date().toISOString(),
   };
 }
 
-/** 至少命中一类问题的员工数（去重，用一次性 id 集合算，避免多次扫表） */
+/**
+ * 至少还有一类「待处理」问题的员工数。
+ * 注意：某类问题若已被关闭/忽略，该员工在此类上不计入受影响。
+ */
 async function countAffectedEmployees(): Promise<number> {
   const whereAlive = { deletedAt: null } as const;
   const [dept, pos, store, nokey] = await Promise.all([
@@ -184,10 +207,23 @@ async function countAffectedEmployees(): Promise<number> {
     }),
   ]);
   const set = new Set<number>();
-  for (const list of [dept, pos, store, nokey]) for (const r of list) set.add(r.id);
+  // 已关闭 / 已忽略的工单需要从「受影响」里剔除
+  const pairs: [string, { id: number }[]][] = [
+    ["no-department", dept],
+    ["no-position", pos],
+    ["no-store", store],
+    ["duplicate", nokey],
+  ];
+  for (const [type, list] of pairs) {
+    const handledIds = await listHandledEmployeeIds(type);
+    const done = new Set([...handledIds.closed, ...handledIds.ignored]);
+    for (const r of list) if (!done.has(r.id)) set.add(r.id);
+  }
 
   const conflicts = await getStatusConflictEmployeeIds();
-  for (const id of conflicts) set.add(id);
+  const conflictHandled = await listHandledEmployeeIds("status-conflict");
+  const conflictDone = new Set([...conflictHandled.closed, ...conflictHandled.ignored]);
+  for (const id of conflicts) if (!conflictDone.has(id)) set.add(id);
   return set.size;
 }
 
@@ -264,6 +300,11 @@ export interface DqDetailRow {
   reason: string;
   /** 溯源行号（状态冲突类才有） */
   sourceRowNo: number | null;
+  /** 工单状态：OPEN 待处理 / CLOSED 已关闭 / IGNORED 已忽略 */
+  issueStatus: string;
+  handler: string | null;
+  handledAt: string | null;
+  result: string | null;
 }
 
 interface DetailOptions {
@@ -305,6 +346,10 @@ type DetailRaw = {
 
 function shape(r: DetailRaw, reason: string, sourceRowNo: number | null = null): DqDetailRow {
   return {
+    issueStatus: "OPEN",
+    handler: null,
+    handledAt: null,
+    result: null,
     id: r.id,
     employeeId: r.employeeId,
     name: r.name,
@@ -331,6 +376,28 @@ export async function getDataQualityDetail(
   const skip = (page - 1) * pageSize;
   const whereAlive = { deletedAt: null } as const;
 
+  const withStatus = async (rows: DqDetailRow[]): Promise<DqDetailRow[]> => {
+    if (!rows.length) return rows;
+    const issues = await prisma.qualityIssue.findMany({
+      where: { issueType: key, employeeId: { in: rows.map((r) => r.id) } },
+      select: { employeeId: true, status: true, handler: true, handledAt: true, result: true },
+    });
+    const byId = new Map(issues.map((i) => [i.employeeId, i]));
+    return rows.map((r) => {
+      const i = byId.get(r.id);
+      return i
+        ? {
+            ...r,
+            issueStatus: i.status,
+            handler: i.handler,
+            handledAt: i.handledAt ? i.handledAt.toISOString() : null,
+            result: i.result,
+          }
+        : r;
+    });
+  };
+
+
   if (key === "status-conflict") {
     const all = await loadStatusConflicts();
     const pks = all.map((r) => r.employeePk).filter((x): x is number => x !== null);
@@ -346,7 +413,8 @@ export async function getDataQualityDetail(
         return shape(e, `同时出现在在职名册且带有离职信号（${c.rawValue ?? "离职名册"}）`, c.sourceRowNo);
       })
       .filter((x): x is DqDetailRow => x !== null);
-    return { total: rows.length, data: rows.slice(skip, skip + pageSize), page, pageSize };
+    const rows2 = await withStatus(rows);
+    return { total: rows2.length, data: rows2.slice(skip, skip + pageSize), page, pageSize };
   }
 
   if (key === "duplicate") {
@@ -375,7 +443,7 @@ export async function getDataQualityDetail(
       shape(e as unknown as DetailRaw, "身份证号 / 手机号 / 入职日期 全为空，无法判定是否与他人重复")
     );
 
-    const all = [...exactRows, ...noKeyRows];
+    const all = await withStatus([...exactRows, ...noKeyRows]);
     return { total: all.length, data: all.slice(skip, skip + pageSize), page, pageSize };
   }
 
@@ -402,12 +470,10 @@ export async function getDataQualityDetail(
     }),
   ]);
 
-  return {
-    total,
-    data: rows.map((r) => shape(r as unknown as DetailRaw, reasonMap[key])),
-    page,
-    pageSize,
-  };
+  const data = await withStatus(
+    rows.map((r) => shape(r as unknown as DetailRaw, reasonMap[key]))
+  );
+  return { total, data, page, pageSize };
 }
 
 /** 合法重新入职参考列表（不算问题，供 HR 对照） */
