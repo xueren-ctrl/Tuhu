@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDashboardStats } from "@/lib/employee-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 

@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { mergeStores } from "@/lib/store-merge-service";
 import { operatorFromRequest } from "@/lib/operator";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 /**
- * POST /api/stores/merge —— 合并门店
+ * POST /api/stores/merge —— 合并门店（仅 ADMIN，第六阶段）
  * body: { mainStoreId: number, mergeStoreIds: number[] }
  *
  * 行为（需求书四条硬要求）：
@@ -15,6 +16,8 @@ export const dynamic = "force-dynamic";
  *   4. 每次归属变更都写 EmployeeHistory
  */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req, { roles: ["ADMIN"] });
+  if (auth instanceof Response) return auth;
   try {
     const body = (await req.json()) as { mainStoreId?: number; mergeStoreIds?: number[] };
     const mainStoreId = Number(body.mainStoreId);
@@ -28,7 +31,7 @@ export async function POST(req: Request) {
     const result = await mergeStores({
       mainStoreId,
       mergeStoreIds,
-      operator: operatorFromRequest(req),
+      operator: await operatorFromRequest(req),
     });
     return NextResponse.json({ ok: true, data: result });
   } catch (e) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { addStoreAlias, listStoreAllNames } from "@/lib/store-service";
 import { DEFAULT_OPERATOR } from "@/lib/history-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +9,8 @@ type Ctx = { params: Promise<{ id: string }> };
 
 /** GET /api/stores/:id/aliases —— 该门店的标准名 + 全部别名 */
 export async function GET(_req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(_req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);

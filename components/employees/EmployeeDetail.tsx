@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Alert, Badge, Button, Card, DescGrid, Modal, StatusBadge } from "@/components/ui";
 import { EMPLOYEE_FIELDS, EMPLOYEE_GROUPS } from "@/lib/constants";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { computeTenure, renderBool } from "@/lib/tenure";
 
 /** 员工详情：字段按分组 / Tab 展示，避免 40+ 字段堆在一页 */
 
@@ -37,6 +38,15 @@ const SOURCE_TONE: Record<string, "green" | "blue" | "amber" | "red" | "gray"> =
 };
 
 const HISTORY_TAB = "__history__";
+
+function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-[11.5px] text-slate-400">{label}</div>
+      <div className="mt-0.5 text-[13.5px] text-slate-800">{children}</div>
+    </div>
+  );
+}
 
 export default function EmployeeDetail({
   employee,
@@ -91,6 +101,17 @@ export default function EmployeeDetail({
     if (!v) return null;
     return formatDate(String(v));
   };
+
+  // 任职时长相关结论：全部从 hireDate / resignDate **实时**推算，
+  // 绝不读取 computed7Days / computed2Months / tenureTextAtImport 等「导入快照」字段。
+  const tenure = useMemo(
+    () =>
+      computeTenure(
+        employee.hireDate as string | null,
+        employee.resignDate as string | null
+      ),
+    [employee.hireDate, employee.resignDate]
+  );
 
   const dataFlags: string[] = useMemo(() => {
     const s = employee.dataFlags;
@@ -226,6 +247,32 @@ export default function EmployeeDetail({
             原文已保留在「离职信息」分组中，后续可人工补录。
           </Alert>
         ) : null}
+      </Card>
+
+      {/* 任职时长：实时计算（不依赖导入快照字段） */}
+      <Card title="任职时长（实时计算 · 仅依据入职 / 离职日期）">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+          <DetailItem label="在职年限">
+            <span className="text-[15px] font-semibold text-brand-700">
+              {tenure.tenureText}
+            </span>
+          </DetailItem>
+          <DetailItem label="是否满 7 天">
+            {renderBool(tenure.past7Days)}
+          </DetailItem>
+          <DetailItem label="是否入职满 2 个月">
+            {renderBool(tenure.past2Months)}
+          </DetailItem>
+          <DetailItem label="计算基准">
+            {tenure.active ? "在职（截至今天）" : "已离职（截至离职日）"}
+          </DetailItem>
+        </div>
+        <p className="mt-3 border-t border-[var(--hr-border)] pt-2 text-[11.5px] text-slate-400">
+          以上数值由系统根据<strong>入职日期</strong>
+          {!tenure.active ? "与<strong>离职日期</strong>" : ""}
+          实时推算，与 Excel「导入快照」字段独立、互不依赖。下方「其他字段与导入快照」分组中的
+          「在职年限（导入快照）/ 是否满 7 天（快照）」等仅作历史留档，**不参与任何判定**。
+        </p>
       </Card>
 
       {/* 分组 Tab */}

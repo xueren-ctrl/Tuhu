@@ -9,6 +9,7 @@
  * 3. 只记「真正变化」的字段：值相同不写记录（否则批量操作会灌入大量噪声）。
  */
 import { prisma } from "./prisma";
+import type { Prisma } from "@prisma/client";
 import { EMPLOYEE_FIELD_MAP, SENSITIVE_FIELDS } from "./constants";
 import { maskByField } from "./mask";
 
@@ -83,11 +84,12 @@ export async function recordEmployeeHistory(opts: {
   operator?: string;
   batchKey?: string;
   changes: HistoryChange[];
+  tx?: Prisma.TransactionClient;
 }): Promise<number> {
   const changes = opts.changes.filter((c) => !sameValue(c.oldValue, c.newValue));
   if (!changes.length) return 0;
 
-  await prisma.employeeHistory.createMany({
+  await (opts.tx ?? prisma).employeeHistory.createMany({
     data: changes.map((c) => ({
       employeeId: opts.employeeId,
       employeeCode: opts.employeeCode ?? null,
@@ -111,8 +113,9 @@ export async function recordEmployeeEvent(opts: {
   label: string;
   value?: string | null;
   operator?: string;
+  tx?: Prisma.TransactionClient;
 }): Promise<number> {
-  await prisma.employeeHistory.create({
+  await (opts.tx ?? prisma).employeeHistory.create({
     data: {
       employeeId: opts.employeeId,
       employeeCode: opts.employeeCode ?? null,

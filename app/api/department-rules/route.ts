@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { createRule, listRules } from "@/lib/department-rule-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/department-rules —— 部门自动归属规则列表 */
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireApiUser(req, { roles: ["ADMIN"] });
+  if (auth instanceof Response) return auth;
   try {
     const data = await listRules();
     return NextResponse.json({ ok: true, total: data.length, data });

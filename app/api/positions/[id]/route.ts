@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { setPositionStatus, updatePosition } from "@/lib/settings-service";
 import { formatZodError, positionSchema } from "@/lib/validation";
+import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +10,8 @@ type Ctx = { params: Promise<{ id: string }> };
 
 /** PUT /api/positions/:id —— 编辑职位 */
 export async function PUT(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);
@@ -22,7 +26,11 @@ export async function PUT(req: Request, ctx: Ctx) {
         { status: 400 }
       );
     }
-    const updated = await updatePosition(numId, parsed.data as Record<string, unknown>);
+    const updated = await updatePosition(
+      numId,
+      parsed.data as Record<string, unknown>,
+      await operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: updated });
   } catch (e) {
     return NextResponse.json(
@@ -34,6 +42,8 @@ export async function PUT(req: Request, ctx: Ctx) {
 
 /** PATCH /api/positions/:id —— 启用 / 停用职位 */
 export async function PATCH(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);
@@ -42,9 +52,16 @@ export async function PATCH(req: Request, ctx: Ctx) {
     }
     const body = (await req.json()) as { status?: string };
     if (body.status !== "ACTIVE" && body.status !== "INACTIVE") {
-      return NextResponse.json({ ok: false, error: "status 只能是 ACTIVE 或 INACTIVE" }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: "status 只能是 ACTIVE 或 INACTIVE" },
+        { status: 400 }
+      );
     }
-    const updated = await setPositionStatus(numId, body.status);
+    const updated = await setPositionStatus(
+      numId,
+      body.status,
+      await operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: updated });
   } catch (e) {
     return NextResponse.json(

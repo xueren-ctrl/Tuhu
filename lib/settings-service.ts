@@ -1,9 +1,12 @@
 import { prisma } from "./prisma";
 
 /**
- * 基础设置 —— 门店 / 职位
+ * 基础设置 —— 门店 / 职位 / 部门
  * 员工的门店、职位字段优先从这些基础数据中选择；
  * 但迁移 Excel 时保留的历史门店/职位原文（storeNameRaw / jobGradeRaw）不会被覆盖。
+ *
+ * 第六阶段（登录 + 审计）：所有变更类函数都接受可选 `actor?: string | null`，
+ * 并把真实操作人写入 auditLog，便于事后追溯「谁改的」。
  */
 
 // ---------------------------- 门店 ----------------------------
@@ -42,7 +45,7 @@ export async function listStores(opts?: {
   }));
 }
 
-export async function createStore(input: Record<string, unknown>) {
+export async function createStore(input: Record<string, unknown>, actor?: string | null) {
   const name = String(input.name ?? "").trim();
   if (!name) throw new Error("门店名称必填");
   const dup = await prisma.store.findUnique({ where: { name } });
@@ -53,13 +56,18 @@ export async function createStore(input: Record<string, unknown>) {
       action: "CREATE",
       entity: "Store",
       entityId: String(s.id),
+      actor: actor ?? null,
       summary: `新增门店 ${name}`,
     },
   });
   return s;
 }
 
-export async function updateStore(id: number, input: Record<string, unknown>) {
+export async function updateStore(
+  id: number,
+  input: Record<string, unknown>,
+  actor?: string | null
+) {
   const existing = await prisma.store.findUnique({ where: { id } });
   if (!existing) throw new Error("门店不存在");
   const name = input.name !== undefined ? String(input.name).trim() : existing.name;
@@ -74,6 +82,7 @@ export async function updateStore(id: number, input: Record<string, unknown>) {
       action: "UPDATE",
       entity: "Store",
       entityId: String(id),
+      actor: actor ?? null,
       summary: `编辑门店 ${existing.name} -> ${s.name}`,
     },
   });
@@ -81,13 +90,18 @@ export async function updateStore(id: number, input: Record<string, unknown>) {
 }
 
 /** 停用门店（软停用，不删除，保留历史关联） */
-export async function setStoreStatus(id: number, status: "ACTIVE" | "INACTIVE") {
+export async function setStoreStatus(
+  id: number,
+  status: "ACTIVE" | "INACTIVE",
+  actor?: string | null
+) {
   const s = await prisma.store.update({ where: { id }, data: { status } });
   await prisma.auditLog.create({
     data: {
       action: "UPDATE",
       entity: "Store",
       entityId: String(id),
+      actor: actor ?? null,
       summary: `${status === "ACTIVE" ? "启用" : "停用"}门店 ${s.name}`,
     },
   });
@@ -129,7 +143,7 @@ export async function listPositions(opts?: {
   }));
 }
 
-export async function createPosition(input: Record<string, unknown>) {
+export async function createPosition(input: Record<string, unknown>, actor?: string | null) {
   const name = String(input.name ?? "").trim();
   if (!name) throw new Error("职位名称必填");
   const dup = await prisma.position.findUnique({ where: { name } });
@@ -140,13 +154,18 @@ export async function createPosition(input: Record<string, unknown>) {
       action: "CREATE",
       entity: "Position",
       entityId: String(p.id),
+      actor: actor ?? null,
       summary: `新增职位 ${name}`,
     },
   });
   return p;
 }
 
-export async function updatePosition(id: number, input: Record<string, unknown>) {
+export async function updatePosition(
+  id: number,
+  input: Record<string, unknown>,
+  actor?: string | null
+) {
   const existing = await prisma.position.findUnique({ where: { id } });
   if (!existing) throw new Error("职位不存在");
   const name = input.name !== undefined ? String(input.name).trim() : existing.name;
@@ -161,6 +180,7 @@ export async function updatePosition(id: number, input: Record<string, unknown>)
       action: "UPDATE",
       entity: "Position",
       entityId: String(id),
+      actor: actor ?? null,
       summary: `编辑职位 ${existing.name} -> ${p.name}`,
     },
   });
@@ -169,7 +189,8 @@ export async function updatePosition(id: number, input: Record<string, unknown>)
 
 export async function setPositionStatus(
   id: number,
-  status: "ACTIVE" | "INACTIVE"
+  status: "ACTIVE" | "INACTIVE",
+  actor?: string | null
 ) {
   const p = await prisma.position.update({ where: { id }, data: { status } });
   await prisma.auditLog.create({
@@ -177,6 +198,7 @@ export async function setPositionStatus(
       action: "UPDATE",
       entity: "Position",
       entityId: String(id),
+      actor: actor ?? null,
       summary: `${status === "ACTIVE" ? "启用" : "停用"}职位 ${p.name}`,
     },
   });
@@ -219,7 +241,7 @@ export async function listDepartments(opts?: {
   }));
 }
 
-export async function createDepartment(input: Record<string, unknown>) {
+export async function createDepartment(input: Record<string, unknown>, actor?: string | null) {
   const name = String(input.name ?? "").trim();
   if (!name) throw new Error("部门名称必填");
   const dup = await prisma.department.findUnique({ where: { name } });
@@ -230,13 +252,18 @@ export async function createDepartment(input: Record<string, unknown>) {
       action: "CREATE",
       entity: "Department",
       entityId: String(d.id),
+      actor: actor ?? null,
       summary: `新增部门 ${name}`,
     },
   });
   return d;
 }
 
-export async function updateDepartment(id: number, input: Record<string, unknown>) {
+export async function updateDepartment(
+  id: number,
+  input: Record<string, unknown>,
+  actor?: string | null
+) {
   const existing = await prisma.department.findUnique({ where: { id } });
   if (!existing) throw new Error("部门不存在");
   const name = input.name !== undefined ? String(input.name).trim() : existing.name;
@@ -251,6 +278,7 @@ export async function updateDepartment(id: number, input: Record<string, unknown
       action: "UPDATE",
       entity: "Department",
       entityId: String(id),
+      actor: actor ?? null,
       summary: `编辑部门 ${existing.name} -> ${d.name}`,
     },
   });
@@ -258,13 +286,18 @@ export async function updateDepartment(id: number, input: Record<string, unknown
 }
 
 /** 停用部门（软停用，不删除，保留历史关联） */
-export async function setDepartmentStatus(id: number, status: "ACTIVE" | "INACTIVE") {
+export async function setDepartmentStatus(
+  id: number,
+  status: "ACTIVE" | "INACTIVE",
+  actor?: string | null
+) {
   const d = await prisma.department.update({ where: { id }, data: { status } });
   await prisma.auditLog.create({
     data: {
       action: "UPDATE",
       entity: "Department",
       entityId: String(id),
+      actor: actor ?? null,
       summary: `${status === "ACTIVE" ? "启用" : "停用"}部门 ${d.name}`,
     },
   });

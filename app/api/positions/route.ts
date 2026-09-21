@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { createPosition, listPositions } from "@/lib/settings-service";
 import { formatZodError, positionSchema } from "@/lib/validation";
+import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/positions —— 职位列表 */
 export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const url = new URL(req.url);
     const rows = await listPositions({
@@ -27,6 +31,8 @@ export async function GET(req: Request) {
 
 /** POST /api/positions —— 新增职位 */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const body = await req.json();
     const parsed = positionSchema.safeParse(body);
@@ -36,7 +42,10 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    const created = await createPosition(parsed.data as Record<string, unknown>);
+    const created = await createPosition(
+      parsed.data as Record<string, unknown>,
+      await operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: created }, { status: 201 });
   } catch (e) {
     return NextResponse.json(

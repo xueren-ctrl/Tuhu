@@ -12,6 +12,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:users": "tsx scripts/seed-users.ts",
     "db:studio": "prisma studio",
     "import:excel": "tsx scripts/import-excel.ts",
     "import:excel:reset": "tsx scripts/import-excel.ts --reset",
@@ -22,6 +23,7 @@
     "test:stage2:acceptance": "node scripts/stage2-acceptance.mjs",
     "test:stage3": "node scripts/stage3-test.mjs",
     "test:stage5": "tsx scripts/stage5-test.mjs",
+    "test:stage6": "tsx scripts/stage6-test.mjs",
     "test:cleanup": "tsx scripts/cleanup-test-data.ts",
     "backup": "tsx scripts/backup-db.ts"
   },

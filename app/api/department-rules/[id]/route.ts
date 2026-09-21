@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteRule, updateRule } from "@/lib/department-rule-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,8 @@ export async function PUT(req: Request, ctx: Ctx) {
 
 /** DELETE /api/department-rules/:id —— 删除规则 */
 export async function DELETE(_req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(_req, { roles: ["ADMIN"] });
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);

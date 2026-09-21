@@ -1,17 +1,24 @@
+import { getApiUser } from "./auth";
 import { DEFAULT_OPERATOR } from "./history-service";
 
 /**
- * 解析操作人。
+ * 解析当前请求的真实操作人。
  *
- * 当前版本未启用登录（AUTH_ENABLED=false），因此：
- * 1. 优先取请求头 `x-operator`（接入登录后改从会话取，前端无需改动）；
- * 2. 取不到则记为「系统（未启用登录）」。
+ * 第六阶段（启用登录）后规则：
+ * 1. **只**从服务端 Session 取身份（HttpOnly Cookie → 数据库会话），
+ *    绝不信任客户端提交的 `x-operator` 头（伪造该头无法冒充他人）。
+ * 2. 优先返回 `displayName`，为空时回落到 `username`。
+ * 3. 仅当没有有效会话时（例如离线脚本直连），回落到 DEFAULT_OPERATOR。
+ *    受保护的所有 API / 页面都会先经 requireApiUser / requirePageUser 守卫，
+ *    因此正常请求下一定能拿到真实登录用户。
  *
- * 这么设计是为了让变更记录里「操作人」这一列从第一天起就是有意义的，
- * 而不是等做完权限系统再回头补历史（那时的历史已经无法追溯）。
+ * 注意：本函数已变为异步，调用方必须 `await`。
  */
-export function operatorFromRequest(req: Request): string {
-  const header = req.headers.get("x-operator");
-  if (header && header.trim()) return header.trim().slice(0, 64);
+export async function operatorFromRequest(req: Request): Promise<string> {
+  const user = await getApiUser(req);
+  if (user) {
+    const name = user.displayName?.trim() || user.username?.trim();
+    if (name) return name.slice(0, 64);
+  }
   return DEFAULT_OPERATOR;
 }

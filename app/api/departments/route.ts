@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { createDepartment, listDepartments } from "@/lib/settings-service";
 import { departmentSchema, formatZodError } from "@/lib/validation";
+import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/departments —— 部门列表（支持搜索与停用筛选） */
 export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const url = new URL(req.url);
     const rows = await listDepartments({
@@ -27,6 +31,8 @@ export async function GET(req: Request) {
 
 /** POST /api/departments —— 新增部门 */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const body = await req.json();
     const parsed = departmentSchema.safeParse(body);
@@ -36,7 +42,10 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    const created = await createDepartment(parsed.data as Record<string, unknown>);
+    const created = await createDepartment(
+      parsed.data as Record<string, unknown>,
+      await operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: created }, { status: 201 });
   } catch (e) {
     return NextResponse.json(

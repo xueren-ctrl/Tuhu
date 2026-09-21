@@ -5,6 +5,7 @@ import {
   getPositionDistribution,
   getStoreDistribution,
 } from "@/lib/employee-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,8 @@ export const dynamic = "force-dynamic";
  *   ?detail=1  附带 storeDistribution / departmentDistribution / positionDistribution
  */
 export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const url = new URL(req.url);
     const withDetail =

@@ -4,6 +4,7 @@ import {
   listEmployees,
 } from "@/lib/employee-service";
 import { operatorFromRequest } from "@/lib/operator";
+import { requireApiUser } from "@/lib/auth";
 import {
   employeeCreateSchema,
   employeeQuerySchema,
@@ -17,6 +18,8 @@ export const dynamic = "force-dynamic";
  * 员工列表：搜索 / 筛选 / 分页 / 排序 全部由数据库实时查询完成。
  */
 export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const url = new URL(req.url);
     const raw = Object.fromEntries(url.searchParams.entries());
@@ -51,7 +54,7 @@ export async function POST(req: Request) {
     }
     const created = await createEmployee(
       parsed.data as Record<string, unknown>,
-      operatorFromRequest(req)
+      await operatorFromRequest(req)
     );
     return NextResponse.json({ ok: true, data: created }, { status: 201 });
   } catch (e) {

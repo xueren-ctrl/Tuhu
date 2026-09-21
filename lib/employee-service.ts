@@ -262,6 +262,7 @@ export async function createEmployee(input: Record<string, unknown>, operator?: 
     });
     await tx.auditLog.create({
       data: {
+        actor: operator ?? null,
         action: "CREATE",
         entity: "Employee",
         entityId: String(emp.id),
@@ -354,6 +355,7 @@ export async function updateEmployee(
   const updated = await prisma.employee.update({ where: { id }, data });
   await prisma.auditLog.create({
     data: {
+      actor: operator ?? null,
       action: "UPDATE",
       entity: "Employee",
       entityId: String(id),

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createStore, listStores } from "@/lib/settings-service";
 import { formatZodError, storeSchema } from "@/lib/validation";
+import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +38,7 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    const created = await createStore(parsed.data as Record<string, unknown>);
+    const created = await createStore(parsed.data as Record<string, unknown>, await operatorFromRequest(req));
     return NextResponse.json({ ok: true, data: created }, { status: 201 });
   } catch (e) {
     return NextResponse.json(

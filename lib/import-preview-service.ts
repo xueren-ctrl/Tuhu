@@ -15,7 +15,7 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import {
@@ -114,6 +114,8 @@ export interface PreviewDetail extends PreviewSummary {
   operator: string | null;
   diff: DiffResult;
   dbVersion: string;
+  fileSha256: string | null;
+  lastCommitDbVersion: string | null;
   attemptCount: number;
   successCount: number;
   failedCount: number;
@@ -158,6 +160,8 @@ type PreviewRow = {
   sheetName: string;
   diffJson: string;
   dbVersion: string;
+  fileSha256: string | null;
+  lastCommitDbVersion: string | null;
   attemptCount: number;
   successCount: number;
   failedCount: number;
@@ -178,6 +182,8 @@ function shape(row: PreviewRow): PreviewDetail {
     summary: JSON.parse(row.summaryJson) as DiffResult["summary"],
     diff: JSON.parse(row.diffJson) as DiffResult,
     dbVersion: row.dbVersion,
+    fileSha256: row.fileSha256,
+    lastCommitDbVersion: row.lastCommitDbVersion,
     attemptCount: row.attemptCount,
     successCount: row.successCount,
     failedCount: row.failedCount,
@@ -198,6 +204,8 @@ const DETAIL_SELECT = {
   sheetName: true,
   diffJson: true,
   dbVersion: true,
+  fileSha256: true,
+  lastCommitDbVersion: true,
   attemptCount: true,
   successCount: true,
   failedCount: true,
@@ -223,6 +231,7 @@ export async function createPreview(opts: {
 
   const diff = await computeDiff(parsed, { includeRaw: false });
   const dbVersion = await computeDbVersion();
+  const fileSha256 = createHash("sha256").update(opts.buffer).digest("hex");
 
   await fs.mkdir(IMPORT_DIR, { recursive: true });
   const id = newPreviewId();
@@ -235,6 +244,7 @@ export async function createPreview(opts: {
       id,
       fileName: opts.fileName,
       fileSize: opts.buffer.length,
+      fileSha256,
       storedPath: path.join("data", "import", storedName),
       sheetName: parsed.sheetName,
       totalRows: parsed.totalRows,
@@ -337,13 +347,19 @@ export async function commitPreview(opts: {
     throw new Error(`该批次状态为 ${row.status}，不能提交`);
   }
 
-  // ---- ① 版本复核（仅首次提交；重试是我们自己造成的变更，不再拦截） ----
-  if (row.status === PREVIEW_STATUS.PENDING && row.dbVersion) {
+  // ---- ① 版本复核（每一次提交都做，含重试） ----
+  // 首次提交以预览创建时冻结的 dbVersion 为基线；
+  // 重试以「上一次提交后的数据库指纹」为基线（防止「预览后→首次提交→又被别人改」）。
+  const versionBaseline =
+    row.status === PREVIEW_STATUS.PENDING
+      ? row.dbVersion
+      : (row.lastCommitDbVersion ?? row.dbVersion);
+  if (versionBaseline) {
     const now = await computeDbVersion();
-    if (now !== row.dbVersion) {
+    if (now !== versionBaseline) {
       await prisma.importPreview.update({
         where: { id: row.id },
-        data: { status: PREVIEW_STATUS.PENDING, resultJson: JSON.stringify({
+        data: { resultJson: JSON.stringify({
           previewId: row.id,
           updated: 0, created: 0, unchanged: 0, failed: 0, attempted: 0,
           failures: [],
@@ -351,13 +367,22 @@ export async function commitPreview(opts: {
         } satisfies CommitResult) },
       });
       throw new VersionConflictError(
-        "数据库在生成预览后发生变化（员工 / 门店 / 职位 / 部门 / 别名被修改过），为避免「页面看到 A、实际写入 B」已拒绝提交。请重新生成预览。"
+        "数据库在生成预览 / 上次提交后发生变化（员工 / 门店 / 职位 / 部门 / 别名被修改过），为避免「页面看到 A、实际写入 B」已拒绝提交。请重新生成预览。"
       );
     }
   }
 
   // ---- ② 重新解析（与预览同一套解析器，取真实值） ----
   const buf = await fs.readFile(path.join(process.cwd(), row.storedPath));
+  // ②-a 文件完整性校验：重新读取的文件必须和预览时一致，防止「预览 A、写入 B」
+  if (row.fileSha256) {
+    const currentHash = createHash("sha256").update(buf).digest("hex");
+    if (currentHash !== row.fileSha256) {
+      throw new FileChangedError(
+        "上传文件在预览后发生了变化（SHA256 不匹配）。为防止「预览 A、写入 B」，已拒绝提交。请重新上传并生成预览。"
+      );
+    }
+  }
   const parsed = await parseBuffer(buf);
   if (!parsed.ok) throw new Error(parsed.error ?? "重新解析失败");
   const diff = await computeDiff(parsed, { includeRaw: true });
@@ -412,14 +437,19 @@ export async function commitPreview(opts: {
         result.unchanged++;
         continue;
       }
-      await prisma.employee.update({ where: { id: m.employeeId }, data: patch as never });
-      await recordEmployeeHistory({
-        employeeId: m.employeeId,
-        employeeCode: m.employeeCode,
-        source: "BATCH_UPDATE",
-        batchKey,
-        operator,
-        changes: historyChanges,
+      // 同一员工的「档案更新 + 变更历史」必须落在同一个事务里：
+      // 任一步失败整体回滚（仅回滚该员工），不影响其他员工。
+      await prisma.$transaction(async (tx) => {
+        await tx.employee.update({ where: { id: m.employeeId }, data: patch as never });
+        await recordEmployeeHistory({
+          employeeId: m.employeeId,
+          employeeCode: m.employeeCode,
+          source: "BATCH_UPDATE",
+          batchKey,
+          operator,
+          changes: historyChanges,
+          tx,
+        });
       });
       result.updated++;
     } catch (e) {
@@ -472,21 +502,26 @@ export async function commitPreview(opts: {
         data.positionId = p ? p.id : null;
       }
 
-      const created = await prisma.employee.create({
-        data: { ...data, employeeId: await nextEmployeeIdSafe() } as never,
-      });
-      await prisma.employeeSourceRow.upsert({
-        where: { sheet_rowNo: { sheet: parsed.sheetName, rowNo: rec.rowNo } },
-        create: { sheet: parsed.sheetName, rowNo: rec.rowNo, employeeId: created.id },
-        update: { employeeId: created.id },
-      });
-      await recordEmployeeHistory({
-        employeeId: created.id,
-        employeeCode: created.employeeId,
-        source: "CREATE",
-        batchKey,
-        operator,
-        changes: [{ field: "__CREATED__", oldValue: null, newValue: created.employeeId }],
+      // 编号分配与「建档 + 溯源映射 + 变更历史」整体落在一个事务里
+      const employeeId = await nextEmployeeIdSafe();
+      await prisma.$transaction(async (tx) => {
+        const created = await tx.employee.create({
+          data: { ...data, employeeId } as never,
+        });
+        await tx.employeeSourceRow.upsert({
+          where: { sheet_rowNo: { sheet: parsed.sheetName, rowNo: rec.rowNo } },
+          create: { sheet: parsed.sheetName, rowNo: rec.rowNo, employeeId: created.id },
+          update: { employeeId: created.id },
+        });
+        await recordEmployeeHistory({
+          employeeId: created.id,
+          employeeCode: created.employeeId,
+          source: "CREATE",
+          batchKey,
+          operator,
+          changes: [{ field: "__CREATED__", oldValue: null, newValue: created.employeeId }],
+          tx,
+        });
       });
       result.created++;
     } catch (e) {
@@ -511,6 +546,10 @@ export async function commitPreview(opts: {
         ? PREVIEW_STATUS.PARTIAL
         : PREVIEW_STATUS.FAILED;
 
+  // 提交本身改变了数据库：把「提交后指纹」同时写回 dbVersion 与
+  // lastCommitDbVersion，后者作为下一次重试的版本基线。
+  const newDbVersion = await computeDbVersion();
+
   await prisma.importPreview.update({
     where: { id: row.id },
     data: {
@@ -521,8 +560,8 @@ export async function commitPreview(opts: {
       unchangedCount: base.unchangedCount + result.unchanged,
       resultJson: JSON.stringify(result),
       summaryJson: JSON.stringify(diff.summary),
-      // 提交本身改变了数据库，刷新指纹，便于下次重试前后比对
-      dbVersion: await computeDbVersion(),
+      dbVersion: newDbVersion,
+      lastCommitDbVersion: newDbVersion,
     },
   });
 
@@ -562,5 +601,13 @@ export class VersionConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "VersionConflictError";
+  }
+}
+
+/** 文件被替换专用错误，便于 API 层返回 409（FILE_CHANGED） */
+export class FileChangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FileChangedError";
   }
 }

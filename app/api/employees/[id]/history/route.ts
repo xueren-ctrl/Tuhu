@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { listEmployeeHistory } from "@/lib/history-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -7,6 +8,8 @@ type Ctx = { params: Promise<{ id: string }> };
 
 /** GET /api/employees/:id/history —— 该员工的字段变更历史 */
 export async function GET(_req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(_req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);

@@ -158,7 +158,6 @@ export default function DepartmentAutoPanel({ stores, departments, positions }: 
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(operator.trim() ? { "x-operator": operator.trim() } : {}),
         },
         body: JSON.stringify({ action: "apply", overrideExisting }),
       });
@@ -384,18 +383,11 @@ export default function DepartmentAutoPanel({ stores, departments, positions }: 
       {preview && preview.affected > 0 && (
         <Card title="③ 确认执行">
           <div className="grid gap-3 md:grid-cols-3">
-            <Field label="操作人（可选）">
-              <Input
-                placeholder="如：HR-李四"
-                value={operator}
-                onChange={(e) => setOperator(e.target.value)}
-              />
-            </Field>
-          </div>
-          <div className="mt-3">
-            <Button variant="primary" disabled={busy} onClick={() => void apply()}>
-              {busy ? "提交中…" : "确认批量更新部门"}
-            </Button>
+            <div className="mt-3">
+              <Button variant="primary" disabled={busy} onClick={() => void apply()}>
+                {busy ? "提交中…" : "确认批量更新部门"}
+              </Button>
+            </div>
           </div>
         </Card>
       )}

@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSelectOptions } from "@/lib/settings-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/options —— 门店 / 职位下拉选项 */
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const data = await getSelectOptions();
     return NextResponse.json({ ok: true, ...data });

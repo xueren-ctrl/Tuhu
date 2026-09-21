@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createPreview, listPreviews } from "@/lib/import-preview-service";
 import { operatorFromRequest } from "@/lib/operator";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,6 +24,8 @@ const MAX_BYTES = 20 * 1024 * 1024;
  * multipart/form-data，字段名 file
  */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const form = await req.formData();
     const file = form.get("file");
@@ -53,7 +56,7 @@ export async function POST(req: Request) {
     const data = await createPreview({
       buffer,
       fileName: blob.name,
-      operator: operatorFromRequest(req),
+      operator: await operatorFromRequest(req),
     });
     return NextResponse.json({ ok: true, data }, { status: 201 });
   } catch (e) {
@@ -62,7 +65,9 @@ export async function POST(req: Request) {
 }
 
 /** GET /api/import/preview —— 预览批次列表 */
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const data = await listPreviews();
     return NextResponse.json({ ok: true, total: data.length, data });

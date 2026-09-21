@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { batchUpdateEmployees } from "@/lib/employee-service";
 import { DEFAULT_OPERATOR } from "@/lib/history-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,8 @@ interface BatchBody {
  * 每次修改都逐条写 EmployeeHistory，来源 BATCH_UPDATE，同一次共享 batchKey。
  */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const body = (await req.json()) as BatchBody;
 

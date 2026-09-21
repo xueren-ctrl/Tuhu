@@ -7,6 +7,7 @@ import {
 } from "@/lib/employee-service";
 import { employeeUpdateSchema, formatZodError } from "@/lib/validation";
 import { operatorFromRequest } from "@/lib/operator";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,8 @@ type Ctx = { params: Promise<{ id: string }> };
 
 /** GET /api/employees/:id —— 详情（完整字段） */
 export async function GET(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);
@@ -55,7 +58,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     const updated = await updateEmployee(
       numId,
       parsed.data as Record<string, unknown>,
-      operatorFromRequest(req)
+      await operatorFromRequest(req)
     );
     return NextResponse.json({ ok: true, data: updated });
   } catch (e) {
@@ -72,6 +75,8 @@ export async function PUT(req: Request, ctx: Ctx) {
  * 第一阶段统一为软删除 / 停用，不做物理删除；?restore=1 可恢复。
  */
 export async function DELETE(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);
@@ -80,10 +85,10 @@ export async function DELETE(req: Request, ctx: Ctx) {
     }
     const url = new URL(req.url);
     if (url.searchParams.get("restore") === "1") {
-      const r = await restoreEmployee(numId, operatorFromRequest(req));
+      const r = await restoreEmployee(numId, await operatorFromRequest(req));
       return NextResponse.json({ ok: true, data: r, mode: "restore" });
     }
-    const r = await softDeleteEmployee(numId, operatorFromRequest(req));
+    const r = await softDeleteEmployee(numId, await operatorFromRequest(req));
     return NextResponse.json({ ok: true, data: r, mode: "soft-delete" });
   } catch (e) {
     console.error("[DELETE /api/employees/:id]", (e as Error).message);

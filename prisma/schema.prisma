@@ -348,6 +348,29 @@ model AppUser {
 }
 
 // ------------------------------------------------------------
+// 服务端会话（第六阶段新增）
+//
+// 登录成功后由服务端创建，HttpOnly Cookie 里**只存 sessionId**。
+// 所有页面 / API 的真实身份都来自这里，绝不听信前端 localStorage
+// 或客户端伪造的 x-operator 头。
+//
+// 字段对齐 spec：userId / username / role / createdAt / expiresAt。
+// ------------------------------------------------------------
+model Session {
+  id            String   @id // sessionId（随机 hex）
+  userId        Int
+  username      String
+  displayName   String?
+  role          String   // ADMIN | HR
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  lastActiveAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ------------------------------------------------------------
 // 操作审计日志（HR 敏感数据系统，保留变更痕迹）
 // ------------------------------------------------------------
 model AuditLog {
@@ -492,6 +515,7 @@ model ImportPreview {
   fileName    String
   fileSize    Int
   storedPath  String // 服务器上的文件相对路径（data/import/…）
+  fileSha256  String? // 上传文件原始 SHA256（预览创建时计算），提交时复核文件未被替换
   sheetName   String
   totalRows   Int // 数据区总行数
   validRows   Int // 有效业务行数
@@ -505,6 +529,13 @@ model ImportPreview {
   // 预览生成瞬间冻结的数据库状态；提交前重新计算并比对，
   // 不一致说明「预览之后有人改过数据」，直接拒绝提交（防止「页面看到 A、写入 B」）。
   dbVersion   String   @default("")
+
+  // ---- 第六阶段：重试版本基线 ----
+  // 每次提交成功后都会重新计算并写回「提交后的数据库指纹」。
+  // 重试时以它为基线复核（而非预览创建时的 dbVersion），
+  // 这样「首次提交改了库 → 重试前库又被别人改」才能被识别并拒绝，
+  // 要求重新生成预览。首次提交用 dbVersion；重试用此值（首次提交成功后才有）。
+  lastCommitDbVersion String?
 
   // ---- 第五阶段：提交结果 ----
   attemptCount  Int     @default(0) // 提交尝试次数（含重试）

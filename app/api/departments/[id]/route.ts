@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { setDepartmentStatus, updateDepartment } from "@/lib/settings-service";
 import { departmentSchema, formatZodError } from "@/lib/validation";
+import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +11,9 @@ type Ctx = { params: Promise<{ id: string }> };
 /** PUT /api/departments/:id —— 编辑部门 */
 export async function PUT(req: Request, ctx: Ctx) {
   try {
+    const guard = await requireApiUser(req);
+    if (guard instanceof Response) return guard;
+
     const { id } = await ctx.params;
     const numId = Number(id);
     if (!Number.isFinite(numId) || numId <= 0) {
@@ -22,7 +27,11 @@ export async function PUT(req: Request, ctx: Ctx) {
         { status: 400 }
       );
     }
-    const updated = await updateDepartment(numId, parsed.data as Record<string, unknown>);
+    const updated = await updateDepartment(
+      numId,
+      parsed.data as Record<string, unknown>,
+      await operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: updated });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
@@ -32,6 +41,9 @@ export async function PUT(req: Request, ctx: Ctx) {
 /** PATCH /api/departments/:id —— 启用 / 停用部门 */
 export async function PATCH(req: Request, ctx: Ctx) {
   try {
+    const guard = await requireApiUser(req);
+    if (guard instanceof Response) return guard;
+
     const { id } = await ctx.params;
     const numId = Number(id);
     if (!Number.isFinite(numId) || numId <= 0) {
@@ -44,7 +56,11 @@ export async function PATCH(req: Request, ctx: Ctx) {
         { status: 400 }
       );
     }
-    const updated = await setDepartmentStatus(numId, body.status);
+    const updated = await setDepartmentStatus(
+      numId,
+      body.status,
+      await operatorFromRequest(req)
+    );
     return NextResponse.json({ ok: true, data: updated });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });

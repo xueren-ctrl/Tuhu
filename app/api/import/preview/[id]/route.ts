@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import {
   VersionConflictError,
+  FileChangedError,
   commitPreview,
   discardPreview,
   getPreview,
 } from "@/lib/import-preview-service";
 import { operatorFromRequest } from "@/lib/operator";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,7 +15,9 @@ export const runtime = "nodejs";
 type Ctx = { params: Promise<{ id: string }> };
 
 /** GET /api/import/preview/:id —— 查看预览明细（含完整 Diff） */
-export async function GET(_req: Request, ctx: Ctx) {
+export async function GET(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const data = await getPreview(id);
@@ -25,7 +29,9 @@ export async function GET(_req: Request, ctx: Ctx) {
 }
 
 /** DELETE /api/import/preview/:id —— 丢弃（不写入任何数据） */
-export async function DELETE(_req: Request, ctx: Ctx) {
+export async function DELETE(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const data = await discardPreview(id);
@@ -45,11 +51,13 @@ export async function DELETE(_req: Request, ctx: Ctx) {
  *  - 预览后数据库被改动 → 409，要求重新生成预览。
  */
 export async function POST(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const url = new URL(req.url);
     const retry = url.searchParams.get("retry") === "1";
-    const data = await commitPreview({ id, operator: operatorFromRequest(req), retry });
+    const data = await commitPreview({ id, operator: await operatorFromRequest(req), retry });
 
     // 有失败项：用 207 明确告诉调用方「不是全部成功」，避免前端误判为成功
     if (data.failed > 0) {
@@ -62,6 +70,9 @@ export async function POST(req: Request, ctx: Ctx) {
   } catch (e) {
     if (e instanceof VersionConflictError) {
       return NextResponse.json({ ok: false, error: e.message, code: "VERSION_CONFLICT" }, { status: 409 });
+    }
+    if (e instanceof FileChangedError) {
+      return NextResponse.json({ ok: false, error: e.message, code: "FILE_CHANGED" }, { status: 409 });
     }
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
   }

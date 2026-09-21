@@ -4,6 +4,7 @@ import {
   getDataQualityDetail,
   type DqCategoryKey,
 } from "@/lib/data-quality-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,8 @@ const VALID = new Set(DQ_CATEGORIES.map((c) => c.key));
 
 /** GET /api/data-quality/:key —— 某一类问题的明细（分页，敏感字段脱敏） */
 export async function GET(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { key } = await ctx.params;
     if (!VALID.has(key as DqCategoryKey)) {

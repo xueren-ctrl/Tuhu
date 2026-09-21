@@ -37,7 +37,7 @@ export async function POST(req: Request) {
       result?: string;
       note?: string;
     };
-    const operator = operatorFromRequest(req);
+    const operator = await operatorFromRequest(req);
     if (!body.issueType) {
       return NextResponse.json({ ok: false, error: "缺少 issueType" }, { status: 400 });
     }

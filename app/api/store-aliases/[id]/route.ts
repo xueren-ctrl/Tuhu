@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { removeStoreAlias } from "@/lib/store-service";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,8 @@ type Ctx = { params: Promise<{ id: string }> };
  * 否则会出现「删个别名导致几十人归属被清空」的危险副作用。
  */
 export async function DELETE(_req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(_req, { roles: ["ADMIN"] });
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);
