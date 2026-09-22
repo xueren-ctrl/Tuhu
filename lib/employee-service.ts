@@ -459,6 +459,9 @@ export async function restoreEmployee(id: number, actor?: string) {
 // ------------------------------------------------------------
 // 批量编辑（第三阶段新增）
 //
+// ------------------------------------------------------------
+// 批量编辑（第三阶段新增；Stage 7.1.1 事务收口）
+//
 // 需求：按「部门为空 / 岗位为空 / 门店为空」筛出员工，批量修改部门 / 岗位 / 门店。
 // 约定：
 // 1. 只允许改这三个归属字段 —— 状态、日期、身份信息一律不参与批量修改，
@@ -467,34 +470,63 @@ export async function restoreEmployee(id: number, actor?: string) {
 // 3. 原始溯源列（storeNameRaw / departmentNameRaw / jobGradeRaw）**保留不动**：
 //    它们是 Excel 的历史证据（Stage 7.1 起），治理变更只动外键字段，
 //    原文列继续可追溯「Excel 里当时写的到底是什么」。
+// 4. **Stage 7.1.1 全批原子事务**：每个员工的「档案修改 + 变更历史」与
+//    批次审计日志全部在同一个 prisma.$transaction 中完成 ——
+//    任一步失败（含 History 写入失败、审计写入失败）→ 整批回滚，
+//    绝不出现「员工改了一半、或员工改了但历史没写、或历史写了但审计没记」。
+//    因此本函数的 failed 永远为 0：要么全部成功，要么整体抛错（调用方捕获）。
 // ------------------------------------------------------------
 
-/** 批量编辑允许修改的字段白名单 */
 export const BATCH_EDITABLE_FIELDS = ["storeId", "departmentId", "positionId"] as const;
 export type BatchEditableField = (typeof BATCH_EDITABLE_FIELDS)[number];
+
+/** 批量修改被事务回滚时抛出（API 层可据此返回 409/400） */
+export class BatchUpdateAbortedError extends Error {
+  constructor(detail: string) {
+    super("批量修改已整体回滚（员工档案与变更历史均未保留任何改动）：" + detail);
+    this.name = "BatchUpdateAbortedError";
+  }
+}
 
 export interface BatchUpdateResult {
   matched: number;
   updated: number;
   unchanged: number;
+  /** Stage 7.1.1 全批原子：0（无失败），或整批回滚后为被回滚的匹配数（仅用于调用方统计） */
   failed: number;
   batchKey: string;
   changedFields: string[];
+  /** 全批原子模式下：true 表示发生过回滚（配合 failed>0 出现，调用方应视为整体失败） */
+  aborted?: boolean;
   failures: { id: number; name: string; message: string }[];
 }
 
 /**
- * 批量修改员工的归属字段。
+ * 批量修改员工的归属字段（**全批原子事务**，Stage 7.1.1）。
+ *
  * @param ids 明确指定要修改的员工（与 filter 二选一）
  * @param filter 按查询条件筛选（复用列表页同一套 where 构造）
+ * @param tx 可选：外部传入的事务客户端（部门自动归属整批复用时使用，
+ *           不传则自动开一个独立事务）。**传入 tx 时本函数不再自行包事务**，
+ *           原子性由外层事务保证。
+ *
+ * 返回口径（规格第三节）：
+ *   - 成功：matched = 目标人数；updated = 实际值变化的；unchanged = 值未变的；
+ *     failed = 0；批次审计 + 逐条历史全部落库。
+ *   - 任一步失败：整批回滚（员工档案保持执行前状态、无任何历史、无审计），
+ *     抛 BatchUpdateAbortedError；不返回「表面 failed 实际已部分修改」的结果。
  */
-export async function batchUpdateEmployees(opts: {
-  ids?: number[];
-  filter?: EmployeeQueryInput;
-  patch: Partial<Record<BatchEditableField, number | null>>;
-  operator?: string;
-}): Promise<BatchUpdateResult> {
-  const { ids, filter, patch } = opts;
+export async function batchUpdateEmployees(
+  opts: {
+    ids?: number[];
+    filter?: EmployeeQueryInput;
+    patch: Partial<Record<BatchEditableField, number | null>>;
+    operator?: string;
+    tx?: Prisma.TransactionClient;
+  }
+): Promise<BatchUpdateResult> {
+  const { ids, filter, patch, tx } = opts;
+  const db = tx ?? prisma;
   const operator = opts.operator ?? DEFAULT_OPERATOR;
 
   const cleanPatch: Record<string, number | null> = {};
@@ -509,7 +541,7 @@ export async function batchUpdateEmployees(opts: {
   if (ids?.length) {
     targetIds = Array.from(new Set(ids.filter((n) => Number.isFinite(n) && n > 0)));
   } else if (filter) {
-    const rows = await prisma.employee.findMany({
+    const rows = await db.employee.findMany({
       where: buildEmployeeWhere(filter),
       select: { id: true },
     });
@@ -530,41 +562,35 @@ export async function batchUpdateEmployees(opts: {
   };
   if (!targetIds.length) return result;
 
-  // Stage 7.1：只改治理字段（storeId / departmentId / positionId）。
-  // 原始溯源字段（storeNameRaw / departmentNameRaw / jobGradeRaw）**一律保留不动**，
-  // 避免「治理字段改了、原文也改了」造成溯源断裂 —— 原文是 Excel 的历史证据，必须原样保留。
+  const runInTx = async (t: Prisma.TransactionClient): Promise<BatchUpdateResult> => {
+    const employees = await t.employee.findMany({
+      where: { id: { in: targetIds } },
+      select: {
+        id: true,
+        employeeId: true,
+        name: true,
+        storeId: true,
+        departmentId: true,
+        positionId: true,
+      },
+    });
 
-  const employees = await prisma.employee.findMany({
-    where: { id: { in: targetIds } },
-    select: {
-      id: true,
-      employeeId: true,
-      name: true,
-      storeId: true,
-      departmentId: true,
-      positionId: true,
-    },
-  });
+    for (const e of employees) {
+      const data: Record<string, unknown> = { ...cleanPatch };
 
-  for (const e of employees) {
-    const data: Record<string, unknown> = { ...cleanPatch };
+      const changed = changedFields.some((f) => e[f as BatchEditableField] !== cleanPatch[f]);
+      if (!changed) {
+        result.unchanged++;
+        continue;
+      }
 
-    const changed = changedFields.some((f) => e[f as BatchEditableField] !== cleanPatch[f]);
-    if (!changed) {
-      result.unchanged++;
-      continue;
-    }
-
-    try {
-      const updated = await prisma.employee.update({
+      // ① 档案修改（事务内）
+      await t.employee.update({
         where: { id: e.id },
         data,
-        select: {
-          storeId: true,
-          departmentId: true,
-          positionId: true,
-        },
+        select: { storeId: true, departmentId: true, positionId: true },
       });
+      // ② 变更历史（同一事务，写失败 → 整批回滚）
       await recordEmployeeHistory({
         employeeId: e.id,
         employeeCode: e.employeeId,
@@ -573,29 +599,47 @@ export async function batchUpdateEmployees(opts: {
         operator,
         changes: diffFields(
           e as unknown as Record<string, unknown>,
-          updated as unknown as Record<string, unknown>,
+          {
+            storeId: cleanPatch.storeId ?? e.storeId,
+            departmentId: cleanPatch.departmentId ?? e.departmentId,
+            positionId: cleanPatch.positionId ?? e.positionId,
+          },
           ["storeId", "departmentId", "positionId"]
         ),
+        tx: t,
       });
       result.updated++;
-    } catch (err) {
-      result.failed++;
-      result.failures.push({ id: e.id, name: e.name, message: (err as Error).message });
     }
+
+    // ③ 批次审计（与业务修改同事务 —— 失败则整批回滚，不留「员工改了但没审计」）
+    await t.auditLog.create({
+      data: {
+        actor: operator,
+        action: "BATCH_UPDATE",
+        entity: "Employee",
+        entityId: batchKey,
+        summary: `批量修改员工归属：匹配 ${result.matched} 人，实际修改 ${result.updated} 人`,
+        detail: JSON.stringify({ changedFields, patch: cleanPatch, batchKey, at: new Date().toISOString() }),
+      },
+    });
+    return result;
+  };
+
+  try {
+    if (tx) {
+      // 外层已提供事务（如部门自动归属整批），直接在其中执行
+      await runInTx(tx);
+    } else {
+      await prisma.$transaction(async (t) => {
+        await runInTx(t);
+      });
+    }
+  } catch (err) {
+    // 整批回滚：员工档案 / 变更历史 / 批次审计 全部恢复到执行前状态
+    result.aborted = true;
+    result.failed = result.matched;
+    throw new BatchUpdateAbortedError((err as Error).message);
   }
-
-  // 批量属于高影响操作，额外记一条审计日志（便于回溯"谁在什么时候一次性改了多少人"）
-  await prisma.auditLog.create({
-    data: {
-      actor: operator,
-      action: "BATCH_UPDATE",
-      entity: "Employee",
-      entityId: batchKey,
-      summary: `批量修改员工归属：匹配 ${result.matched} 人，实际修改 ${result.updated} 人`,
-      detail: JSON.stringify({ changedFields, patch: cleanPatch }),
-    },
-  });
-
   return result;
 }
 

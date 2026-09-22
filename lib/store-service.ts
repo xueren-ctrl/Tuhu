@@ -242,7 +242,12 @@ export interface AliasCandidate {
  * 无后缀的几乎全是离职，即后者是历史写法）。
  */
 export async function findAliasCandidates(): Promise<AliasCandidate[]> {
-  const stores = await prisma.store.findMany({ select: { id: true, name: true } });
+  // Stage 7.1.1：候选检测只针对 ACTIVE 门店 —— 已合并停用（INACTIVE）的旧门店
+  // 不再进入新的自动候选，避免「已合并门店被重新推荐为待合并」。
+  const stores = await prisma.store.findMany({
+    where: { status: "ACTIVE" },
+    select: { id: true, name: true },
+  });
   const grouped = await prisma.employee.groupBy({
     by: ["storeId", "status"],
     where: { deletedAt: null },

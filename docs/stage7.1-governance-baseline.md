@@ -1,6 +1,6 @@
 # Stage 7.1 数据治理安全底座 —— 当前数据库真实基线报告
 
-> 生成时间：2026-09-22
+> 生成时间：2026-09-22（Stage 7.1）· 追加：2026-09-22（Stage 7.1.1 收口）
 > 数据来源：直接查询当前 `data/hr.db`（实时统计，非旧文档数字）
 > 本阶段**不执行**任何生产批量治理，只建安全底座 + 出预览 + 全量测试。
 > 本报告**不含**任何真实身份证号 / 手机号 / 银行卡号 / 详细个人信息。
@@ -142,9 +142,9 @@
 
 | 工具 | 预览 | 确认 | 执行 | 版本保护 |
 |---|---|---|---|---|
-| 部门自动归属 | `POST /api/departments/auto {action:preview}`（全量统计 + 快照） | 页面「确认批量更新部门」 | `{action:apply, snapshot}` | 服务端复核 snapshot，变化→409 |
-| 批量编辑 | 列表页勾选/筛选 → 预览匹配数 | 确认框 | `POST /api/employees/batch` | 执行数量=预览数量 |
-| 门店合并 | `findMergeClusters`（只读候选 + 每组预览） | 每组单独确认 | `POST /api/stores/merge`（单组） | 事务原子，失败整体回滚 |
+| 部门自动归属 | `POST /api/departments/auto {action:preview}`（全量统计 + 快照） | 页面「确认批量更新部门」 | `{action:apply, snapshot}` | 服务端复核 snapshot，变化→409 STALE_PREVIEW；全批原子事务，失败整体回滚 |
+| 批量编辑 | 列表页勾选/筛选 → 预览匹配数 | 确认框 | `POST /api/employees/batch`（全批原子事务） | 失败 409 BATCH_ABORTED，三表零残留 |
+| 门店合并 | `findMergeClusters`（只读候选 + 每组预览）+ `GET /api/stores/merge`（快照） | 每组单独确认 | `POST /api/stores/merge`（携带 snapshot，单组事务） | ACTIVE/同名/逐店实时校验 + 快照漂移→409 STALE_MERGE_PREVIEW；整簇事务原子 |
 
 「预览数量 = 执行数量」：`batchUpdateEmployees / applyDepartmentAuto / mergeStores`
 三者统一约束 —— `matched = updated + unchanged + failed`，失败不留半修改。
@@ -153,7 +153,7 @@
 
 ## 六、新增测试（`scripts/stage7-1-test.mjs`，副本库 + 真实 HTTP）
 
-`npm run test:stage7.1` —— 15 项全过（13 项规格要求 + 2 项补充门禁）：
+`npm run test:stage7.1` —— 20 项全过（13 项规格要求 + 5 项 7.1.1 收口 + 2 项门禁/补充）：
 
 | 编号 | 断言 |
 |---|---|
@@ -171,6 +171,11 @@
 | G7-12 | 测试结束生产库员工数量不变（1920） |
 | G7-13 | 无测试残留（合成数据可被 cleanup 识别） |
 | G7-ADMIN | HR 访问 ADMIN-only 治理接口 → 403 |
+| **G7-14** | 批量原子回滚（触发器确定性失败：员工/历史/审计三表零残留，409 BATCH_ABORTED） |
+| **G7-15** | 门店合并 预览数量=执行数量（4 人），straggler（原文写旧名但无 storeId）不自动迁 |
+| **G7-16** | INACTIVE 门店不可作被合并来源/不可作主门店，且不进入候选簇 |
+| **G7-17** | 无启用规则时：affected=0，unmatched=baseCount=实时无部门人数（口径一致） |
+| **G7-18** | 清理后零残留（员工/迁移/straggler/部门/规则/门店/别名 全清空） |
 
 ---
 
@@ -180,12 +185,82 @@
 |---|---|
 | `npm run typecheck` | ✅ 0 错误 |
 | `npm run build` | ✅ Compiled successfully |
-| `npm run check:auth` | ✅ 认证覆盖率 100% |
+| `npm run check:auth` | ✅ 41/41 业务 handler，认证覆盖率 100% |
 | `npm run test:stage5` | ✅ 18 / 18 |
 | `npm run test:stage6` | ✅ 25 / 25 |
 | `npm run test:stage6:security` | ✅ 14 / 14 |
 | `npm run test:tenure` | ✅ 22 / 22 |
-| `npm run test:stage7.1`（新增） | ✅ 15 / 15 |
+| `npm run test:stage7.1`（含 7.1.1） | ✅ 20 / 20 |
+
+---
+
+## 七·补，Stage 7.1.1 事务与门店合并执行一致性收口（追加）
+
+> 在 7.1 已建好的「治理安全底座」之上，把**批量写入的事务原子性**与
+> **门店合并的执行前校验/预览快照**彻底收口，并补 5 项确定性测试。
+> 仍**不执行**任何生产批量治理；生产 `data/hr.db` 零污染（员工 1920 / ACTIVE 门店 66 实测不变）。
+
+### A. 批量修改全批原子事务（`lib/employee-service.ts`）
+- `batchUpdateEmployees()` 重写：每个员工的「档案修改 + 变更历史」与批次审计
+  全部在**同一个 `prisma.$transaction`** 中完成（`runInTx(t)`）。
+  任一步失败（含历史写入失败、审计写入失败）→ **整批回滚**，绝不出现
+  「员工改了一半 / 员工改了但历史没写 / 历史写了但审计没记」。
+- 因此该函数 `failed` 恒为 0：要么全成功，要么整体抛错。
+  新增 `BatchUpdateAbortedError`（携带「已整体回滚」语义），
+  `POST /api/employees/batch` 捕获它 → **409 `BATCH_ABORTED`**。
+- 支持可选 `tx` 参数：外部事务传入时不再自开事务，原子性由外层保证
+  （供部门自动归属整批复用）。
+
+### B. 部门自动归属继承全批原子（`lib/department-rule-service.ts`）
+- `applyDepartmentAuto()` 整批走**一个** `prisma.$transaction`：
+  每个部门组的 `batchUpdateEmployees({ tx })` + 部门治理批次审计
+  全部在同一事务中；任一组失败 → **所有部门组整体回滚**。
+- 成功时 `matched = updated + unchanged`；失败时抛 `BatchUpdateAbortedError`。
+- 携带 `snapshot` 时先 `assertSnapshotFresh`（任一变化 → 409 STALE_PREVIEW），
+  执行**绝不消费预览 items**，重跑 `matchAllEmployees` 全量，数量恒等于全量 affected。
+
+### C. 门店合并：删 straggler + ACTIVE 候选 + 预览快照 + 服务端校验（`lib/store-merge-service.ts`）
+- **删 stragglers 自动迁移**：`mergeStores()` 只迁 `Employee.storeId === 源门店`，
+  不再「顺带把原文列仍写旧名、未真正归属的员工也统一过来」。
+  `storeNameRaw` 写旧名但 `storeId` 为空的员工**绝不自动改挂**（历史证据保留，人工判断）。
+- **候选只 ACTIVE**：`findAliasCandidates()` / `findMergeClusters()` 均过滤
+  `Store.status === ACTIVE`；并查集与 reason 查找统一用 `validPairs`（只含 ACTIVE 门店的候选对）。
+  已合并停用的旧门店不再进入新候选、不可作主店/来源。
+- **预览快照 + 陈旧拒绝**：新增 `previewStoreMerge()`（只读，生成
+  `MergePreviewSnapshot`：dbVersion + 逐店人数 + 迁移总数 + 主店前置人数）
+  与 `assertMergeSnapshotFresh()`（任一漂移 → 抛 `StaleMergePreviewError` → **409 `STALE_MERGE_PREVIEW`**）。
+- **服务端业务校验（不信任客户端）**：`mergeStores()` 执行前重查库 ——
+  主店/被合并店必须存在且 ACTIVE、同名门店记录拒绝自动合并（人工处理）、
+  逐店人数实时重算（写库数量以实时值为准，预览数量 = 执行数量）。
+- `GET /api/stores/merge` 返回预览+快照；`POST` 支持 `snapshot`，
+  状态类错误（停用/同名/不存在）→ 409 `MERGE_STATE_CHANGED`，参数类 → 400。
+- 前端 `StoreMergePanel` 改为「先 GET 预览取快照 → 确认后 POST 携带 snapshot →
+  409 提示重新预览」，绝不按旧数据静默执行。
+
+### D. unmatched 口径（规格确认）
+- 无启用规则时：`matchAllEmployees` 返回 `{ matched: [], unmatched: emps.length,
+  baseCount: emps.length }` → preview `affected=0`、`unmatched = baseCount = 实时无部门人数`。
+- 即「无规则」时**所有无部门员工都是未匹配**（不是 0，也不是报错）。
+- G7-17 实测：无规则 `affected=0 / unmatched=1932 / noDept=1932`（三者一致）。
+
+### E. 新增 5 项确定性测试（G7-14 ~ G7-18，见第六节）
+- G7-14 用 SQLite 触发器 `trg71_batch_fail`（`BEFORE UPDATE ... WHEN new.departmentId=测试部门`
+  抛 `RAISE(ABORT)`）制造「批量写库必失败」，验证 409 BATCH_ABORTED 后
+  员工档案 / EmployeeHistory / AuditLog 三表**前后数量完全一致（零残留）**。
+- G7-15 验证门店合并「预览 moveCount = 执行 employeesMoved = 4」，且
+  `storeNameRaw=旧名但 storeId=null` 的 straggler **保持 storeId=null 不被迁移**。
+- G7-16 验证 INACTIVE 门店既不能作来源、也不能作主门店（均 409），且不进候选簇。
+- G7-17 验证无规则口径（affected=0 / unmatched=baseCount=实时无部门数）。
+- G7-18 验证 cleanup 后合成数据（员工/迁移/straggler/部门/规则/门店/别名）全部清零。
+
+### F. 回归与生产验证
+- 全量回归：typecheck / build / check:auth(41/41 100%) / stage5(18) /
+  stage6(25) / stage6:security(14) / tenure(22) / stage7.1(**20/20**) 全部通过。
+- 生产 `data/hr.db` 实测：**员工 1920 · ACTIVE 门店 66 · 门店总数 66**，零污染。
+
+### G. 边界（本收口**不做**，等下一步指令）
+16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
+Excel 导出 / 招聘 / 薪资 / 社保。
 
 ---
 

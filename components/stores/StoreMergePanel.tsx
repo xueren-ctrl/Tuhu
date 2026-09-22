@@ -32,7 +32,7 @@ export default function StoreMergePanel({ clusters }: Props) {
       clusters.map((c, i) => [i, c.stores.filter((s) => s.id !== c.suggestedMainId).map((s) => s.id)])
     )
   );
-  const [msg, setMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ tone: "ok" | "err" | "stale"; text: string } | null>(null);
   const [busyIdx, setBusyIdx] = useState<number | null>(null);
   const [results, setResults] = useState<Record<number, MergeResult>>({});
 
@@ -83,6 +83,25 @@ export default function StoreMergePanel({ clusters }: Props) {
       setMsg({ tone: "err", text: "请至少勾选一家要合并进来的门店" });
       return;
     }
+
+    // ① 先走服务端预览（校验 ACTIVE / 同名 / 实时人数，取快照）
+    setBusyIdx(clusterIdx);
+    setMsg(null);
+    let snapshot: unknown = null;
+    try {
+      const pvRes = await fetch(
+        `/api/stores/merge?mainStoreId=${main}&mergeStoreIds=${ids.join(",")}`,
+        { cache: "no-store" }
+      );
+      const pj = await pvRes.json();
+      if (!pvRes.ok || !pj.ok) throw new Error(pj.error ?? "合并前校验未通过");
+      snapshot = pj.data?.snapshot ?? null;
+    } catch (e) {
+      setBusyIdx(null);
+      setMsg({ tone: "err", text: (e as Error).message + "（未执行任何修改，可重新勾选或刷新页面）" });
+      return;
+    }
+
     const pv = previewOf(clusterIdx);
     if (
       !confirm(
@@ -94,18 +113,31 @@ export default function StoreMergePanel({ clusters }: Props) {
           `员工数据不会删除；被合并的门店名会保留为别名；门店记录本身停用不删除。` +
           `\n\n本组为一个事务：中途失败会整体回滚，不会留下改了一半的数据。`
       )
-    )
+    ) {
+      setBusyIdx(null);
       return;
+    }
 
-    setBusyIdx(clusterIdx);
-    setMsg(null);
     try {
       const r = await fetch("/api/stores/merge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mainStoreId: main, mergeStoreIds: ids }),
+        body: JSON.stringify({ mainStoreId: main, mergeStoreIds: ids, snapshot }),
       });
       const j = await r.json();
+      if (r.status === 409) {
+        // 预览后数据库已变化 / 门店状态已变 → 提示重新预览，绝不静默执行
+        setBusyIdx(null);
+        setMsg({
+          tone: "stale",
+          text:
+            j.code === "STALE_MERGE_PREVIEW"
+              ? "预览已过期：数据库在预览后发生了变化，本次未执行。请刷新本页面重新预览后再合并。"
+              : "门店状态已变化（已有门店被停用或不存在），本次未执行。请刷新本页面重新预览。",
+        });
+        router.refresh();
+        return;
+      }
       if (!r.ok || !j.ok) throw new Error(j.error ?? "合并失败（事务已整体回滚，可安全重试）");
       setResults((prev) => ({ ...prev, [clusterIdx]: j.data as MergeResult }));
       setMsg({
@@ -125,7 +157,7 @@ export default function StoreMergePanel({ clusters }: Props) {
 
   return (
     <div className="space-y-3">
-      {msg && <Alert tone={msg.tone === "ok" ? "success" : "error"}>{msg.text}</Alert>}
+      {msg && <Alert tone={msg.tone === "ok" ? "success" : msg.tone === "stale" ? "warn" : "error"}>{msg.text}</Alert>}
 
       {clusters.map((c, idx) => {
         const main = mainId[idx] ?? c.suggestedMainId;

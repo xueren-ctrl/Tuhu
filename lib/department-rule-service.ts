@@ -20,6 +20,7 @@
 import { prisma } from "./prisma";
 import { DEFAULT_OPERATOR } from "./history-service";
 import { computeDbVersion } from "./import-preview-service";
+import type { Prisma } from "@prisma/client";
 
 export interface RuleRow {
   id: number;
@@ -386,13 +387,20 @@ export async function assertSnapshotFresh(
 }
 
 /**
- * 执行自动归属（Stage 7.1 整改）
+ * 执行自动归属（Stage 7.1.1 整批原子事务）
  *
  * 两种入口：
  *  1. 携带 snapshot（推荐）：先复核版本，库有变化直接拒绝（StalePreviewError → 409）；
  *  2. 不带 snapshot：重新计算完整匹配集合并直接执行（数量恒等于全量匹配数）。
  * 执行**绝不消费预览的 items**，而是重新跑 matchAllEmployees 的完整结果，
  * 因此即使展示明细被截断，实际写入数量也等于全量 affected。
+ *
+ * **事务模型（规格第四节）**：整个部门自动归属走一个 prisma.$transaction ——
+ * 每个部门组的 batchUpdateEmployees（内含逐人 档案+历史+批次审计）全部在
+ * 同一事务中执行，部门治理批次审计（type=department-auto）也写在事务内。
+ * 任一部失败 → 整批回滚：没有「员工成功但 History 失败」的中间态。
+ * 成功时 matched = updated + unchanged；失败时抛 BatchUpdateAbortedError，
+ * 本次 apply 的全部修改（含已「完成」的部门组）整体回滚。
  */
 export async function applyDepartmentAuto(opts: {
   overrideExisting?: boolean;
@@ -416,16 +424,8 @@ export async function applyDepartmentAuto(opts: {
     };
   }
 
-  const { batchUpdateEmployees } = await import("./employee-service");
-  // 按部门分组提交，次数可控且每次的变更记录语义清晰
-  const result = {
-    matched: 0,
-    updated: 0,
-    unchanged: 0,
-    failed: 0,
-    batchKey: "" as string | null,
-    byDepartment: [] as { departmentId: number; departmentName: string; updated: number }[],
-  };
+  const { batchUpdateEmployees, BatchUpdateAbortedError } = await import("./employee-service");
+  const operator = opts.operator ?? DEFAULT_OPERATOR;
 
   const byDept = new Map<number, { ids: number[]; name: string; ruleIds: number[] }>();
   for (const it of matched) {
@@ -435,42 +435,60 @@ export async function applyDepartmentAuto(opts: {
     byDept.set(it.departmentId, g);
   }
 
-  for (const [departmentId, g] of byDept) {
-    const r = await batchUpdateEmployees({
-      ids: g.ids,
-      patch: { departmentId },
-      operator: opts.operator ?? DEFAULT_OPERATOR,
-    });
-    result.matched += r.matched;
-    result.updated += r.updated;
-    result.unchanged += r.unchanged;
-    result.failed += r.failed;
-    result.batchKey = r.batchKey;
-    result.byDepartment.push({ departmentId, departmentName: g.name, updated: r.updated });
+  const result = {
+    matched: 0,
+    updated: 0,
+    unchanged: 0,
+    failed: 0,
+    batchKey: "" as string | null,
+    byDepartment: [] as { departmentId: number; departmentName: string; updated: number }[],
+  };
 
-    // 批次审计：记录「改了哪几个部门 / 各多少人 / 命中了哪些规则」
-    await prisma.auditLog.create({
-      data: {
-        actor: opts.operator ?? DEFAULT_OPERATOR,
-        action: "BATCH_UPDATE",
-        entity: "Department",
-        entityId: String(departmentId),
-        summary: `部门自动归属：${g.name} 批量写入 ${g.ids.length} 人`,
-        detail: JSON.stringify({
-          batchKey: r.batchKey,
-          type: "department-auto",
-          departmentId,
-          departmentName: g.name,
-          employeeCount: g.ids.length,
-          updated: r.updated,
-          unchanged: r.unchanged,
-          failed: r.failed,
-          ruleIds: g.ruleIds,
-          overrideExisting: opts.overrideExisting ?? false,
-          at: new Date().toISOString(),
-        }),
-      },
+  try {
+    // 整批原子：所有部门组 + 部门治理批次审计在同一个事务里
+    await prisma.$transaction(async (tx) => {
+      for (const [departmentId, g] of byDept) {
+        const r = await batchUpdateEmployees({
+          ids: g.ids,
+          patch: { departmentId },
+          operator,
+          tx: tx as Prisma.TransactionClient,
+        });
+        result.matched += r.matched;
+        result.updated += r.updated;
+        result.unchanged += r.unchanged;
+        result.batchKey = r.batchKey;
+        result.byDepartment.push({ departmentId, departmentName: g.name, updated: r.updated });
+
+        // 部门治理批次审计（与业务修改同事务；detail 含 batchKey / 类型 / 数量 / 规则）
+        await tx.auditLog.create({
+          data: {
+            actor: operator,
+            action: "BATCH_UPDATE",
+            entity: "Department",
+            entityId: String(departmentId),
+            summary: `部门自动归属：${g.name} 批量写入 ${g.ids.length} 人`,
+            detail: JSON.stringify({
+              batchKey: r.batchKey,
+              type: "department-auto",
+              departmentId,
+              departmentName: g.name,
+              employeeCount: g.ids.length,
+              updated: r.updated,
+              ruleIds: g.ruleIds,
+              overrideExisting: opts.overrideExisting ?? false,
+              at: new Date().toISOString(),
+            }),
+          },
+        });
+      }
     });
+  } catch (e) {
+    if (e instanceof BatchUpdateAbortedError) {
+      // 整批已回滚（员工档案 / 变更历史 / 审计全部未保留任何改动）
+      throw e;
+    }
+    throw e;
   }
 
   return result;

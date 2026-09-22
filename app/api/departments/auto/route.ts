@@ -5,6 +5,7 @@ import {
   StalePreviewError,
   type AutoPreviewSnapshot,
 } from "@/lib/department-rule-service";
+import { BatchUpdateAbortedError } from "@/lib/employee-service";
 import { operatorFromRequest } from "@/lib/operator";
 import { requireApiUser } from "@/lib/auth";
 
@@ -55,10 +56,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, mode: "apply", data });
     }
     return NextResponse.json({ ok: false, error: "action 只能是 preview 或 apply" }, { status: 400 });
-  } catch (e) {
-    if (e instanceof StalePreviewError) {
-      return NextResponse.json({ ok: false, code: "STALE_PREVIEW", error: e.message }, { status: 409 });
+    } catch (e) {
+      if (e instanceof StalePreviewError) {
+        return NextResponse.json({ ok: false, code: "STALE_PREVIEW", error: e.message }, { status: 409 });
+      }
+      if (e instanceof BatchUpdateAbortedError) {
+        // Stage 7.1.1 整批原子：本次 apply 的所有修改（员工 / 历史 / 审计）已整体回滚
+        return NextResponse.json(
+          { ok: false, code: "BATCH_ABORTED", error: e.message },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
     }
-    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
-  }
 }

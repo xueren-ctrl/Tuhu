@@ -15,6 +15,7 @@ import { prisma } from "./prisma";
 import { DEFAULT_OPERATOR, recordEmployeeHistory } from "./history-service";
 import { EMPLOYEE_STATUS } from "./constants";
 import { findAliasCandidates } from "./store-service";
+import { computeDbVersion } from "./import-preview-service";
 
 export interface MergeClusterStore {
   id: number;
@@ -43,8 +44,21 @@ function newBatchKey(prefix: string): string {
  */
 export async function findMergeClusters(): Promise<MergeCluster[]> {
   const pairs = await findAliasCandidates();
+  if (!pairs.length) return [];
 
-  const stores = await prisma.store.findMany({ select: { id: true, name: true, code: true, status: true } });
+  // Stage 7.1.1：候选只允许 ACTIVE 门店参与（INACTIVE 的旧门店不再进入新候选）。
+  // 候选对若含已停用门店，直接剔除 —— 簇里每个门店都必须 ACTIVE。
+  const activeStores = await prisma.store.findMany({
+    where: { status: "ACTIVE" },
+    select: { id: true, name: true, code: true, status: true },
+  });
+  const activeIds = new Set(activeStores.map((s) => s.id));
+  const validPairs = pairs.filter(
+    (p) => activeIds.has(p.standardId) && activeIds.has(p.aliasId)
+  );
+  if (!validPairs.length) return [];
+
+  const stores = activeStores;
   const grouped = await prisma.employee.groupBy({
     by: ["storeId", "status"],
     where: { deletedAt: null },
@@ -75,7 +89,7 @@ export async function findMergeClusters(): Promise<MergeCluster[]> {
     if (ra !== rb) parent.set(ra, rb);
   };
   const roots: number[] = [];
-  for (const p of pairs) {
+  for (const p of validPairs) {
     union(p.standardId, p.aliasId);
     if (!roots.includes(p.standardId)) roots.push(p.standardId);
     if (!roots.includes(p.aliasId)) roots.push(p.aliasId);
@@ -110,7 +124,7 @@ export async function findMergeClusters(): Promise<MergeCluster[]> {
 
     const sorted = [...list].sort((a, b) => b.active - a.active || b.total - a.total || a.id - b.id);
     const reason =
-      pairs.find((p) => ids.includes(p.standardId) && ids.includes(p.aliasId))?.reason ?? "名称高度相似";
+      validPairs.find((p) => ids.includes(p.standardId) && ids.includes(p.aliasId))?.reason ?? "名称高度相似";
     out.push({ suggestedMainId: sorted[0].id, stores: list, reason });
   }
   return out.sort((a, b) => b.stores.length - a.stores.length);
@@ -127,6 +141,158 @@ export interface MergeResult {
   batchKey: string;
   /** 合并后主门店的实时人数 */
   mainTotalAfter: number;
+}
+
+// ------------------------------------------------------------
+// Stage 7.1.1：门店合并预览快照 + 陈旧预览拒绝执行
+//
+// 与部门自动归属的 AutoPreviewSnapshot 同一套原则：
+// 预览时冻结 dbVersion + 各店人数指纹；执行前复核，
+// 任一变化（门店被改 / 员工归属被改 / 版本指纹变化）→ 409 STALE_MERGE_PREVIEW。
+// ------------------------------------------------------------
+
+/** 门店合并预览快照（执行前必须携带并复核） */
+export interface MergePreviewSnapshot {
+  dbVersion: string;
+  mainStoreId: number;
+  mergeStoreIds: number[];
+  /** 各被合并门店当时的员工人数（storeId → total） */
+  perStoreCount: Record<number, number>;
+  /** 迁移员工总数（= perStoreCount 之和） */
+  moveCount: number;
+  mainTotalBefore: number;
+}
+
+export class StaleMergePreviewError extends Error {
+  constructor(detail: string) {
+    super("门店合并预览已过期（数据库在预览后发生变化），请重新预览后再执行。" + detail);
+    this.name = "StaleMergePreviewError";
+  }
+}
+
+/**
+ * 门店合并预览（**只读，不写库**）。
+ * 生成快照供执行时复核；同时做服务端的业务前置校验，
+ * 把「该拒绝的请求」挡在执行之前。
+ * @returns 快照 + 逐店明细 + 预期结果（别名/迁移数/合并后人数）
+ */
+export async function previewStoreMerge(opts: {
+  mainStoreId: number;
+  mergeStoreIds: number[];
+}): Promise<{
+  snapshot: MergePreviewSnapshot;
+  preview: {
+    mainStore: { id: number; name: string; total: number };
+    mergedStores: { id: number; name: string; total: number; active: number; status: string }[];
+    aliasesToCreate: string[];
+    moveCount: number;
+    mainTotalAfter: number;
+  };
+}> {
+  const main = await prisma.store.findUnique({ where: { id: opts.mainStoreId } });
+  if (!main) throw new Error("主门店不存在");
+  if (main.status !== "ACTIVE") {
+    throw new Error("主门店已停用，不能选作主门店（请先重新启用或换一家 ACTIVE 门店）");
+  }
+
+  const mergeIds = Array.from(new Set(opts.mergeStoreIds)).filter((id) => id !== main.id);
+  if (!mergeIds.length) throw new Error("请至少选择一家要合并进来的门店");
+
+  const srcStores = await prisma.store.findMany({
+    where: { id: { in: mergeIds } },
+    select: { id: true, name: true, status: true },
+  });
+  if (srcStores.length !== mergeIds.length) {
+    const missing = mergeIds.filter((id) => !srcStores.some((s) => s.id === id));
+    throw new Error("部分被合并门店不存在：" + missing.join("、"));
+  }
+  for (const s of srcStores) {
+    if (s.status !== "ACTIVE") {
+      throw new Error("「" + s.name + "」已停用，无法再作为被合并门店参与新合并（它可能已是某次合并的产物）");
+    }
+  }
+  // 主门店名不能同时出现在被合并名单里（名称相同但记录不同属罕见脏数据，直接拒绝人工处理）
+  if (srcStores.some((s) => s.name === main.name)) {
+    throw new Error("存在与主门店同名的被合并门店记录，请先在门店管理中人工处理，不自动合并");
+  }
+
+  // 逐店人数（含离职；与员工迁移口径一致：storeId 精确匹配）
+  const perStoreCount: Record<number, number> = {};
+  const perStoreActive: Record<number, number> = {};
+  let moveCount = 0;
+  for (const id of mergeIds) {
+    perStoreCount[id] = await prisma.employee.count({ where: { deletedAt: null, storeId: id } });
+    perStoreActive[id] = await prisma.employee.count({
+      where: { deletedAt: null, storeId: id, status: EMPLOYEE_STATUS.ACTIVE },
+    });
+    moveCount += perStoreCount[id];
+  }
+  const mainTotalBefore = await prisma.employee.count({ where: { deletedAt: null, storeId: main.id } });
+
+  // 将建立的别名（已存在的别名跳过）
+  const existingAliases = await prisma.storeAlias.findMany({
+    where: { alias: { in: srcStores.map((s) => s.name) } },
+    select: { alias: true },
+  });
+  const existingSet = new Set(existingAliases.map((a) => a.alias));
+  const aliasesToCreate = srcStores.filter((s) => !existingSet.has(s.name)).map((s) => s.name);
+
+  const dbVersion = await computeDbVersion();
+  const snapshot: MergePreviewSnapshot = {
+    dbVersion,
+    mainStoreId: main.id,
+    mergeStoreIds: mergeIds,
+    perStoreCount,
+    moveCount,
+    mainTotalBefore,
+  };
+
+  return {
+    snapshot,
+    preview: {
+      mainStore: { id: main.id, name: main.name, total: mainTotalBefore },
+      mergedStores: srcStores.map((s) => ({
+        id: s.id,
+        name: s.name,
+        status: s.status,
+        total: perStoreCount[s.id] ?? 0,
+        active: perStoreActive[s.id] ?? 0,
+      })),
+      aliasesToCreate,
+      moveCount,
+      mainTotalAfter: mainTotalBefore + moveCount,
+    },
+  };
+}
+
+/**
+ * 快照复核（执行前调用）：版本指纹 + 逐店人数任一变化即拒绝（STALE_MERGE_PREVIEW → 409）。
+ * 防止「页面预览是 10 点的数据，10:30 点了执行却按旧数字合并」。
+ */
+export async function assertMergeSnapshotFresh(
+  snapshot: MergePreviewSnapshot
+): Promise<void> {
+  const dbVersion = await computeDbVersion();
+  const nowCounts: Record<number, number> = {};
+  let nowMove = 0;
+  for (const id of snapshot.mergeStoreIds) {
+    nowCounts[id] = await prisma.employee.count({ where: { deletedAt: null, storeId: id } });
+    nowMove += nowCounts[id];
+  }
+  const nowMain = await prisma.employee.count({ where: { deletedAt: null, storeId: snapshot.mainStoreId } });
+
+  const drift =
+    dbVersion !== snapshot.dbVersion ||
+    nowMove !== snapshot.moveCount ||
+    nowMain !== snapshot.mainTotalBefore ||
+    snapshot.mergeStoreIds.some((id) => nowCounts[id] !== (snapshot.perStoreCount[id] ?? 0));
+
+  if (drift) {
+    throw new StaleMergePreviewError(
+      `预览时 迁移=${snapshot.moveCount} 主店=${snapshot.mainTotalBefore}；` +
+        `现在 迁移=${nowMove} 主店=${nowMain}`
+    );
+  }
 }
 
 /**
@@ -151,8 +317,27 @@ export async function mergeStores(opts: {
   const mergeIds = Array.from(new Set(opts.mergeStoreIds)).filter((id) => id !== mainStoreId);
   if (!mergeIds.length) throw new Error("请至少选择一家要合并进来的门店");
 
+  // ---- 执行前服务端业务校验（不信任客户端，全部重查数据库）----
   const main = await prisma.store.findUnique({ where: { id: mainStoreId } });
   if (!main) throw new Error("主门店不存在");
+  if (main.status !== "ACTIVE") {
+    throw new Error("主门店已停用，不能选作主门店");
+  }
+  const srcStores = await prisma.store.findMany({
+    where: { id: { in: mergeIds } },
+    select: { id: true, name: true, status: true },
+  });
+  if (srcStores.length !== mergeIds.length) {
+    throw new Error("部分被合并门店不存在");
+  }
+  for (const s of srcStores) {
+    if (s.status !== "ACTIVE") {
+      throw new Error("「" + s.name + "」已停用，无法再参与合并");
+    }
+  }
+  if (srcStores.some((s) => s.name === main.name)) {
+    throw new Error("存在与主门店同名的被合并门店记录，请先人工处理");
+  }
 
   const batchKey = newBatchKey("merge");
 
@@ -199,28 +384,6 @@ export async function mergeStores(opts: {
             },
           });
           aliasesCreated++;
-        }
-        // 顺带把原文列仍写着旧名、且尚未归属主门店的员工也统一过来（同样只改外键）
-        const stragglers = await tx.employee.findMany({
-          where: {
-            deletedAt: null,
-            storeNameRaw: src.name,
-            OR: [{ storeId: null }, { storeId: { not: mainStoreId } }],
-          },
-          select: { id: true, employeeId: true, storeId: true },
-        });
-        for (const t of stragglers) {
-          await tx.employee.update({ where: { id: t.id }, data: { storeId: mainStoreId } });
-          await recordEmployeeHistory({
-            employeeId: t.id,
-            employeeCode: t.employeeId,
-            source: "BATCH_UPDATE",
-            batchKey,
-            operator,
-            changes: [{ field: "storeId", oldValue: t.storeId, newValue: mainStoreId }],
-            tx,
-          });
-          employeesMoved++;
         }
       }
 

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { batchUpdateEmployees } from "@/lib/employee-service";
+import { BatchUpdateAbortedError, batchUpdateEmployees } from "@/lib/employee-service";
 import { requireApiUser } from "@/lib/auth";
 import { operatorFromRequest } from "@/lib/operator";
 
@@ -45,14 +45,25 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = await batchUpdateEmployees({
-      ids: body.ids,
-      filter: body.filter as never,
-      patch: patch as never,
-      operator: await operatorFromRequest(req),
-    });
-    return NextResponse.json({ ok: true, data: result });
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
+    try {
+      const result = await batchUpdateEmployees({
+        ids: body.ids,
+        filter: body.filter as never,
+        patch: patch as never,
+        operator: await operatorFromRequest(req),
+      });
+      return NextResponse.json({ ok: true, data: result });
+    } catch (e) {
+      if (e instanceof BatchUpdateAbortedError) {
+        // 全批原子事务：整批已回滚（员工档案 / 变更历史 / 审计均未保留改动）
+        return NextResponse.json(
+          { ok: false, code: "BATCH_ABORTED", error: e.message },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
+    }
+  } catch {
+    return NextResponse.json({ ok: false, error: "请求体解析失败" }, { status: 400 });
   }
 }
