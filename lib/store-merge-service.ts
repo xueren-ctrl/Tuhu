@@ -171,6 +171,27 @@ export class StaleMergePreviewError extends Error {
 }
 
 /**
+ * Stage 7.1.2：执行门店合并必须携带预览快照（预览→确认→执行）。
+ * 缺失 snapshot 时抛出 → 400 MERGE_PREVIEW_REQUIRED。
+ */
+export class MergePreviewRequiredError extends Error {
+  constructor() {
+    super("门店合并必须先预览并携带 snapshot（预览→确认→执行），缺少 snapshot 拒绝执行。");
+    this.name = "MergePreviewRequiredError";
+  }
+}
+
+/**
+ * Stage 7.1.2：所选门店不属于同一个当前候选合并簇时抛出 → 409 INVALID_MERGE_CLUSTER。
+ */
+export class InvalidMergeClusterError extends Error {
+  constructor() {
+    super("所选门店不属于同一个当前候选合并簇，请重新预览。");
+    this.name = "InvalidMergeClusterError";
+  }
+}
+
+/**
  * 门店合并预览（**只读，不写库**）。
  * 生成快照供执行时复核；同时做服务端的业务前置校验，
  * 把「该拒绝的请求」挡在执行之前。
@@ -293,6 +314,109 @@ export async function assertMergeSnapshotFresh(
         `现在 迁移=${nowMove} 主店=${nowMain}`
     );
   }
+}
+
+/**
+ * Stage 7.1.2：执行前**总前置校验**（snapshot 与本次请求强绑定 + 服务端候选簇验证）。
+ *
+ * 把预览快照从「客户端可任意塞」收口为「必须与本次请求参数一一对应」，
+ * 并要求所选门店属于同一个当前 ACTIVE 候选簇（允许簇内部分合并）。
+ *
+ * 依次验证（任一失败即抛错，**不执行任何写入**）：
+ *   ① snapshot 存在（缺失 → MergePreviewRequiredError → 400 MERGE_PREVIEW_REQUIRED）
+ *   ② snapshot.mainStoreId === 请求 mainStoreId
+ *   ③ snapshot.mergeStoreIds 与请求 mergeStoreIds 集合一致（排序比较，容忍顺序）
+ *   ④ snapshot.dbVersion === 当前 dbVersion
+ *   ⑤ 主店当前人数 === snapshot.mainTotalBefore
+ *   ⑥ 每个 sourceStore 当前人数 === snapshot.perStoreCount
+ *   ⑦ 主店 / 每个 sourceStore 仍 ACTIVE（停用/不存在 → MERGE_STATE_CHANGED）
+ *   ⑧ mainStoreId + mergeStoreIds 全部属于同一个当前候选簇（允许部分；→ INVALID_MERGE_CLUSTER）
+ *
+ * ②③④⑤⑥ 失败 → StaleMergePreviewError → 409 STALE_MERGE_PREVIEW
+ * ⑦ 失败 → 普通 Error（路由层映射 409 MERGE_STATE_CHANGED）
+ * ⑧ 失败 → InvalidMergeClusterError → 409 INVALID_MERGE_CLUSTER
+ */
+export async function assertMergeRequestFresh(opts: {
+  mainStoreId: number;
+  mergeStoreIds: number[];
+  snapshot?: MergePreviewSnapshot;
+}): Promise<void> {
+  const mainStoreId = opts.mainStoreId;
+  const mergeIds = Array.from(new Set(opts.mergeStoreIds)).filter((id) => id !== mainStoreId);
+  const snapshot = opts.snapshot;
+
+  // ① snapshot 必须存在 —— 缺失即拒绝，绝不「为兼容旧调用」放行
+  if (!snapshot) throw new MergePreviewRequiredError();
+
+  // ② mainStoreId 必须与本次请求一致（防止「A 的预览拿去合并 B」）
+  if (snapshot.mainStoreId !== mainStoreId) {
+    throw new StaleMergePreviewError(
+      `请求主门店 ${mainStoreId} 与预览主门店 ${snapshot.mainStoreId} 不一致`
+    );
+  }
+
+  // ③ mergeStoreIds 集合一致（数组顺序可不同，但集合必须相同）
+  const snapMergeIds = Array.from(new Set(snapshot.mergeStoreIds)).filter(
+    (id) => id !== mainStoreId
+  );
+  const reqKey = [...mergeIds].sort((a, b) => a - b).join(",");
+  const snapKey = [...snapMergeIds].sort((a, b) => a - b).join(",");
+  if (reqKey !== snapKey) {
+    throw new StaleMergePreviewError(
+      `请求被合并门店 [${mergeIds.join(",")}] 与预览 [${snapMergeIds.join(",")}] 不一致`
+    );
+  }
+
+  // ④ dbVersion 一致
+  const dbVersion = await computeDbVersion();
+  if (dbVersion !== snapshot.dbVersion) {
+    throw new StaleMergePreviewError(
+      `dbVersion 变化（预览 ${snapshot.dbVersion} → 现在 ${dbVersion}）`
+    );
+  }
+
+  // ⑤ 主店当前人数一致
+  const nowMain = await prisma.employee.count({
+    where: { deletedAt: null, storeId: mainStoreId },
+  });
+  if (nowMain !== snapshot.mainTotalBefore) {
+    throw new StaleMergePreviewError(
+      `主店人数变化（预览 ${snapshot.mainTotalBefore} → 现在 ${nowMain}）`
+    );
+  }
+
+  // ⑥ 每个 sourceStore 当前人数一致
+  for (const id of mergeIds) {
+    const now = await prisma.employee.count({ where: { deletedAt: null, storeId: id } });
+    if (now !== (snapshot.perStoreCount[id] ?? 0)) {
+      throw new StaleMergePreviewError(
+        `门店 ${id} 人数变化（预览 ${snapshot.perStoreCount[id] ?? 0} → 现在 ${now}）`
+      );
+    }
+  }
+
+  // ⑦ 主店 / sourceStore 仍 ACTIVE（服务端不信任客户端）
+  const main = await prisma.store.findUnique({ where: { id: mainStoreId } });
+  if (!main) throw new Error("主门店不存在");
+  if (main.status !== "ACTIVE") throw new Error("主门店已停用，不能选作主门店");
+  const srcStores = await prisma.store.findMany({
+    where: { id: { in: mergeIds } },
+    select: { id: true, name: true, status: true },
+  });
+  if (srcStores.length !== mergeIds.length) throw new Error("部分被合并门店不存在");
+  for (const s of srcStores) {
+    if (s.status !== "ACTIVE") {
+      throw new Error("「" + s.name + "」已停用，无法再参与合并");
+    }
+  }
+
+  // ⑧ 所选门店必须全部属于同一个当前 ACTIVE 候选簇（允许簇内部分合并，不必整簇）
+  const clusters = await findMergeClusters();
+  const allIds = [mainStoreId, ...mergeIds];
+  const inOneCluster = clusters.some((c) =>
+    allIds.every((id) => c.stores.some((s) => s.id === id))
+  );
+  if (!inOneCluster) throw new InvalidMergeClusterError();
 }
 
 /**

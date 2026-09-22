@@ -1,6 +1,6 @@
 # Stage 7.1 数据治理安全底座 —— 当前数据库真实基线报告
 
-> 生成时间：2026-09-22（Stage 7.1）· 追加：2026-09-22（Stage 7.1.1 收口）
+> 生成时间：2026-09-22（Stage 7.1）· 追加：2026-09-22（Stage 7.1.1 收口）· 追加：2026-09-22（Stage 7.1.2 闭环）
 > 数据来源：直接查询当前 `data/hr.db`（实时统计，非旧文档数字）
 > 本阶段**不执行**任何生产批量治理，只建安全底座 + 出预览 + 全量测试。
 > 本报告**不含**任何真实身份证号 / 手机号 / 银行卡号 / 详细个人信息。
@@ -287,3 +287,70 @@ Stage 7.1 停止于此。以下属于后续阶段，**本阶段一概不执行**
 
 下一阶段若要做生产治理，须走「配置规则 → 预览（全量统计 + 快照）→ 人工确认 →
 执行（带快照版本保护 + 事务）」，且逐簇/逐部门确认，绝不一键全量。
+
+---
+
+## 十、Stage 7.1.2 门店合并服务端候选约束 + Snapshot 请求绑定最终收口（追加）
+
+> 发现门店合并 POST 存在「snapshot 与本次请求参数可错配」的闭环漏洞：
+> `previewStoreMerge(request)` 返回的 snapshot 被丢弃，`assertMergeSnapshotFresh()`
+> 只校验客户端 `body.snapshot`，导致请求的 mainStoreId/mergeStoreIds 可与
+> snapshot 不一致仍被执行。本阶段彻底收口，仍**不执行**任何生产合并。
+
+### 1. 发现的 snapshot 错配问题 ✅ 已修复
+- **旧问题**：POST 先调 `previewStoreMerge(request)`（snapshot 被丢弃），
+  再调 `assertMergeSnapshotFresh(body.snapshot)` 校验的是**客户端快照**，
+  请求参数与快照可错配（A 的预览拿去合并 B）。
+- **修复**：新增 `assertMergeRequestFresh({mainStoreId, mergeStoreIds, snapshot})`，
+  依次验证 8 步（任一失败**绝不写入**）：
+  ① snapshot 存在 ② snapshot.mainStoreId===请求 ③ mergeStoreIds 集合一致（排序比较，容忍顺序）
+  ④ dbVersion 一致 ⑤ 主店人数一致 ⑥ 逐店人数一致 ⑦ 主店/源店仍 ACTIVE ⑧ 属于同一当前候选簇。
+- **错误码**：缺 snapshot→400 `MERGE_PREVIEW_REQUIRED`；参数错配/版本人数漂移→409 `STALE_MERGE_PREVIEW`；
+  非同一候选簇→409 `INVALID_MERGE_CLUSTER`；停用/同名/不存在→409 `MERGE_STATE_CHANGED`。
+
+### 2. snapshot 成为强制执行前置条件 ✅
+- `body.snapshot` 缺失 → **400 MERGE_PREVIEW_REQUIRED**，绝不执行 `mergeStores()`，
+  不为兼容旧调用放行。门店合并正式走「预览→确认→执行」闭环。
+
+### 3. 服务端候选簇验证 ✅
+- 执行前调 `findMergeClusters()`，要求 `mainStoreId + mergeStoreIds` **全部属于
+  同一个当前 ACTIVE 候选簇**（`allIds.every(id => cluster.storeIds.includes(id))`），
+  否则 409 `INVALID_MERGE_CLUSTER`。不信任前端 clusters 数据。
+
+### 4. 允许候选簇部分合并 ✅
+- 簇 A/B/C 中只合并 A+B（C 暂不合并）是允许的 —— 校验用 `every`（所选门店都在簇内），
+  而非 `===`（必须整簇）。C 保持 ACTIVE、员工不迁、不建别名、不被修改。
+
+### 5. snapshot 参数排序容忍 ✅
+- mergeStoreIds 是集合：请求 `[2,3]` 与 snapshot `[3,2]` 视为相同（排序后 join 比较）；
+  但 `[2,3]` 与 `[2,4]` 必须判为不同 → 409。
+
+### 6. 避免重复查询与竞态 ✅
+- POST 保留 `assertMergeRequestFresh → mergeStores` 两段；`mergeStores` 内部仍重查
+  ACTIVE/同名/存在性/实时员工（最终执行前重读），事务原子。不删既有内部校验。
+
+### 7. 全项目入口收口 ✅
+- 搜索 `mergeStores` / `previewStoreMerge` / `assertMergeSnapshotFresh` / `assertMergeRequestFresh`
+  / `/api/stores/merge`：唯一业务入口是 `POST /api/stores/merge`；前端 `StoreMergePanel`
+  走「GET 预览取 snapshot → POST 携带 snapshot → 409/400 提示重新预览」。
+  无其他入口可绕过 ACTIVE/候选簇/snapshot/operator 校验。
+
+### 8. 原始数据保护（继续遵守）✅
+- 合并只改 `Employee.storeId`；不改 `storeNameRaw/departmentNameRaw/jobGradeRaw`；
+  不删 Employee；继续写 EmployeeHistory / AuditLog / 保留 StoreAlias。
+
+### 9. 新增 4 项测试 G7-19 ~ G7-22（见第六节表）
+- G7-19 snapshot 错配（A+C 预览拿去 B+C）→ 409 STALE_MERGE_PREVIEW，五表零变化。
+- G7-20 缺 snapshot → 400 MERGE_PREVIEW_REQUIRED，五表零变化。
+- G7-21 非同一候选簇 → 409 INVALID_MERGE_CLUSTER，五表零变化。
+- G7-22 合法簇部分合并 A+B（C 保留 ACTIVE/员工不动/不建 C 别名）+ snapshot 顺序容忍。
+
+### 10. 全量回归与生产验证
+- typecheck 0 错 · build 成功 · check:auth 41/41 (100%) · stage5 18/18 ·
+  stage6 25/25 · stage6:security 14/14 · tenure 22/22 · **stage7.1 24/24**（G7-01~22）。
+- 生产 `data/hr.db` 实测：员工 1920 · ACTIVE 门店 66 · 门店 66 · 别名 0 ·
+  历史 0 · 审计 121，全部与基线一致；**Excel SHA256 = `aac5f0ca...e19129` 不变**。
+
+### 11. 边界（本阶段**不做**，等下一步指令）
+16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
+Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。

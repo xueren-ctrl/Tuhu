@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import {
   mergeStores,
   previewStoreMerge,
-  assertMergeSnapshotFresh,
+  assertMergeRequestFresh,
   StaleMergePreviewError,
+  MergePreviewRequiredError,
+  InvalidMergeClusterError,
   type MergePreviewSnapshot,
 } from "@/lib/store-merge-service";
 import { operatorFromRequest } from "@/lib/operator";
@@ -11,22 +13,6 @@ import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-/**
- * POST /api/stores/merge —— 合并门店（仅 ADMIN，第六阶段）
- * body: { mainStoreId: number, mergeStoreIds: number[], snapshot?: MergePreviewSnapshot }
- *
- * 行为（需求书四条硬要求 + Stage 7.1.1 收口）：
- *   1. 只修改 Employee.storeId（storeId 精确匹配，不做 raw 原文兜底迁移）
- *   2. 禁止删除员工数据（只改外键；被合并的门店记录也不删，只停用）
- *   3. 被合并的门店名登记为 StoreAlias 保留
- *   4. 每次归属变更都写 EmployeeHistory（整簇一个事务，失败整体回滚）
- *
- * Stage 7.1.1 服务端校验（不信任客户端）：
- *   - 主门店 / 被合并门店必须都存在且 ACTIVE（INACTIVE 旧门店拒绝参与新合并）
- *   - 同名门店记录拒绝自动合并（人工处理）
- *   - 携带 snapshot 时先复核版本指纹与逐店人数 → 任一变化 409 STALE_MERGE_PREVIEW
- *   - 执行前实时重算人数，写库数量以实时值为准（预览数量 = 执行数量）
- */
 /**
  * GET /api/stores/merge?mainStoreId=&mergeStoreIds=a,b —— 合并预览（只读，不写库）
  * 返回快照 + 逐店人数/别名/预期结果；执行 POST 时携带 snapshot 做一致性复核。
@@ -47,10 +33,34 @@ export async function GET(req: Request) {
     const data = await previewStoreMerge({ mainStoreId, mergeStoreIds });
     return NextResponse.json({ ok: true, data });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
+    const msg = (e as Error).message ?? String(e);
+    const stateErrors = ["已停用", "不存在", "同名"];
+    const isState = stateErrors.some((k) => msg.includes(k));
+    return NextResponse.json(
+      { ok: false, code: isState ? "MERGE_STATE_CHANGED" : undefined, error: msg },
+      { status: isState ? 409 : 400 }
+    );
   }
 }
 
+/**
+ * POST /api/stores/merge —— 合并门店（仅 ADMIN）
+ * body: { mainStoreId: number, mergeStoreIds: number[], snapshot: MergePreviewSnapshot }
+ *
+ * Stage 7.1.2 收口（预览→确认→执行 闭环）：
+ *   - snapshot 是**强制前置条件**：缺失 → 400 MERGE_PREVIEW_REQUIRED，绝不执行
+ *   - snapshot 必须与本次请求绑定：mainStoreId 一致 + mergeStoreIds 集合一致（排序比较）
+ *   - 服务端候选簇校验：所选门店必须全部属于同一个当前 ACTIVE 候选簇（允许簇内部分合并）
+ *   - 版本/逐店人数复核：任一漂移 → 409 STALE_MERGE_PREVIEW
+ *   - 状态校验：主店/sourceStore 必须存在且 ACTIVE → 否则 409 MERGE_STATE_CHANGED
+ *   - mergeStores 内部仍重查 ACTIVE/同名/存在性/实时员工（最终执行前重读，事务原子）
+ *
+ * 四类错误码：
+ *   400 MERGE_PREVIEW_REQUIRED   —— 缺 snapshot
+ *   409 STALE_MERGE_PREVIEW      —— 参数错配 / 版本人数漂移
+ *   409 INVALID_MERGE_CLUSTER    —— 不属于同一当前候选簇
+ *   409 MERGE_STATE_CHANGED      —— 门店停用/不存在/同名
+ */
 export async function POST(req: Request) {
   const auth = await requireApiUser(req, { roles: ["ADMIN"] });
   if (auth instanceof Response) return auth;
@@ -71,22 +81,39 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "请至少选择一家要合并进来的门店" }, { status: 400 });
     }
 
-    // ① 服务端前置校验（存在性 / ACTIVE / 同名 / 逐店人数实时统计）
-    await previewStoreMerge({ mainStoreId, mergeStoreIds });
-
-    // ② 快照复核：库在预览后变化 → 409（页面应重新预览）
-    if (body.snapshot) {
-      try {
-        await assertMergeSnapshotFresh(body.snapshot);
-      } catch (e) {
-        if (e instanceof StaleMergePreviewError) {
-          return NextResponse.json({ ok: false, code: "STALE_MERGE_PREVIEW", error: e.message }, { status: 409 });
-        }
-        throw e;
+    // ① 总前置校验：snapshot 强制 + 请求绑定 + 版本人数 + ACTIVE + 候选簇（任一失败绝不写入）
+    try {
+      await assertMergeRequestFresh({ mainStoreId, mergeStoreIds, snapshot: body.snapshot });
+    } catch (e) {
+      if (e instanceof MergePreviewRequiredError) {
+        return NextResponse.json(
+          { ok: false, code: "MERGE_PREVIEW_REQUIRED", error: e.message },
+          { status: 400 }
+        );
       }
+      if (e instanceof StaleMergePreviewError) {
+        return NextResponse.json(
+          { ok: false, code: "STALE_MERGE_PREVIEW", error: e.message },
+          { status: 409 }
+        );
+      }
+      if (e instanceof InvalidMergeClusterError) {
+        return NextResponse.json(
+          { ok: false, code: "INVALID_MERGE_CLUSTER", error: e.message },
+          { status: 409 }
+        );
+      }
+      // ACTIVE / 不存在 / 同名类业务校验错误
+      const msg = (e as Error).message ?? String(e);
+      const stateErrors = ["已停用", "不存在", "同名"];
+      const isState = stateErrors.some((k) => msg.includes(k));
+      return NextResponse.json(
+        { ok: false, code: isState ? "MERGE_STATE_CHANGED" : undefined, error: msg },
+        { status: isState ? 409 : 400 }
+      );
     }
 
-    // ③ 执行（内部再做一次业务校验 + 逐店实时人数，整簇事务）
+    // ② 执行（mergeStores 内部仍重查 ACTIVE/同名/存在性/实时员工；整簇事务原子）
     const result = await mergeStores({
       mainStoreId,
       mergeStoreIds,
@@ -95,7 +122,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, data: result });
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
-    // 状态已变化类错误（停用/同名/不存在）返回 409，参数类错误 400
     const stateErrors = ["已停用", "不存在", "同名"];
     const isState = stateErrors.some((k) => msg.includes(k));
     return NextResponse.json(

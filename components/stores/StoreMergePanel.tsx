@@ -125,15 +125,27 @@ export default function StoreMergePanel({ clusters }: Props) {
         body: JSON.stringify({ mainStoreId: main, mergeStoreIds: ids, snapshot }),
       });
       const j = await r.json();
+      if (r.status === 400 && j.code === "MERGE_PREVIEW_REQUIRED") {
+        // 缺 snapshot（预览→确认→执行 强制）：提示重新预览
+        setBusyIdx(null);
+        setMsg({
+          tone: "stale",
+          text: "缺少预览快照，本次未执行。请刷新本页面重新预览后再合并。",
+        });
+        router.refresh();
+        return;
+      }
       if (r.status === 409) {
-        // 预览后数据库已变化 / 门店状态已变 → 提示重新预览，绝不静默执行
+        // 预览后数据库已变化 / 门店状态已变 / 不属于同一候选簇 → 提示重新预览，绝不静默执行
         setBusyIdx(null);
         setMsg({
           tone: "stale",
           text:
             j.code === "STALE_MERGE_PREVIEW"
               ? "预览已过期：数据库在预览后发生了变化，本次未执行。请刷新本页面重新预览后再合并。"
-              : "门店状态已变化（已有门店被停用或不存在），本次未执行。请刷新本页面重新预览。",
+              : j.code === "INVALID_MERGE_CLUSTER"
+                ? "所选门店不属于同一个当前候选合并簇，本次未执行。请刷新本页面重新预览。"
+                : "门店状态已变化（已有门店被停用或不存在），本次未执行。请刷新本页面重新预览。",
         });
         router.refresh();
         return;

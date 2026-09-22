@@ -32,6 +32,10 @@
  *   [G7-16] INACTIVE 门店不参与候选 / 不可作为主店或来源
  *   [G7-17] 无启用规则时 unmatched = baseCount（口径）
  *   [G7-18] 清理后零残留
+ *   [G7-19] snapshot 与请求错配 → 409 STALE_MERGE_PREVIEW（五表零变化）
+ *   [G7-20] 缺 snapshot → 400 MERGE_PREVIEW_REQUIRED（五表零变化）
+ *   [G7-21] 非同一候选簇 → 409 INVALID_MERGE_CLUSTER（五表零变化）
+ *   [G7-22] 合法簇部分合并 A+B（C 保留）+ snapshot 顺序容忍（反转集合不变仍通过）
  * ============================================================
  */
 import { copyFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
@@ -58,6 +62,16 @@ const SYN_STORE_B = "7治理乙店";
 const SYN_MIG_EMP = "7治理迁移员工";
 const SYN_STRAG = "阶段7治理员工straggler"; // storeNameRaw=甲店名 但 storeId=null：绝不自动迁移
 const SYN_INACT = "7治理停店"; // INACTIVE 门店：不得再进入候选/不得作为主店或来源
+// Stage 7.1.2 新增：合法候选簇（丙/丙店/丙店分 互相成候选对 → 同一簇）
+const SYN_CLUSTER_A = "7治理丙";
+const SYN_CLUSTER_B = "7治理丙店"; // A 去掉末尾「店」≠A；B 去掉「店」=A → A↔B 候选对
+const SYN_CLUSTER_C = "7治理丙店分"; // A 是 C 前缀、长度差1 → A↔C 候选对；B 是 C 前缀长度差1 → B↔C
+// 非法簇：丁/戊 名称不相似、互不成候选对
+const SYN_BAD_X = "7治理丁店";
+const SYN_BAD_Y = "7治理戊店";
+// G7-15 专用合法簇（己/己店 去掉店后相同 → 候选对），与 G7-22 簇互不干扰
+const SYN_G15_MAIN = "7治理己";
+const SYN_G15_SRC = "7治理己店";
 
 let pass = 0;
 let fail = 0;
@@ -193,6 +207,39 @@ async function main() {
     },
   });
 
+  // Stage 7.1.2 新增：合法候选簇 A/B/C（互相成候选对，同一簇）+ 非法簇 X/Y（互不成对）
+  const stCA = await prisma.store.create({ data: { name: SYN_CLUSTER_A } });
+  const stCB = await prisma.store.create({ data: { name: SYN_CLUSTER_B } });
+  const stCC = await prisma.store.create({ data: { name: SYN_CLUSTER_C } });
+  const stBX = await prisma.store.create({ data: { name: SYN_BAD_X } });
+  const stBY = await prisma.store.create({ data: { name: SYN_BAD_Y } });
+  const clusterPrefix = "stage71-cluster-";
+  for (const s of [stCA, stCB, stCC, stBX, stBY]) {
+    await prisma.employee.create({
+      data: {
+        employeeId: clusterPrefix + s.name,
+        name: "7治理簇员工",
+        status: "ACTIVE",
+        sourceSheet: "数据库",
+        importBatch: "stage7-1-test",
+        storeId: s.id,
+      },
+    });
+  }
+  // G7-15 专用合法簇（己/己店）+ 1 员工挂「己店」
+  const stG15Main = await prisma.store.create({ data: { name: SYN_G15_MAIN } });
+  const stG15Src = await prisma.store.create({ data: { name: SYN_G15_SRC } });
+  await prisma.employee.create({
+    data: {
+      employeeId: clusterPrefix + SYN_G15_SRC,
+      name: "7治理簇员工",
+      status: "ACTIVE",
+      sourceSheet: "数据库",
+      importBatch: "stage7-1-test",
+      storeId: stG15Src.id,
+    },
+  });
+
   // ============ 启动服务器（副本数据库） ============
   const server = spawn(
     NODE,
@@ -204,12 +251,17 @@ async function main() {
   server.stderr.on("data", (d) => (serverLog += d));
 
   // 分两段：removeSynthetic() 供 G7-18 复用；finalize() 真正收尾删库
+  const SYN_CLUSTER_NAMES = [SYN_CLUSTER_A, SYN_CLUSTER_B, SYN_CLUSTER_C, SYN_BAD_X, SYN_BAD_Y, SYN_G15_MAIN, SYN_G15_SRC];
   const removeSynthetic = async () => {
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg71_merge_fail`);
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg71_batch_fail`);
-    // 先解绑 FK（员工 → 合成门店 / 合成部门 / 合成岗位）
+    // 先解绑 FK（员工 → 全部合成门店 / 合成部门）
     await prisma.employee.updateMany({
-      where: { storeId: { in: [stMain.id, stA.id, stB.id, stInact.id] } },
+      where: {
+        storeId: {
+          in: [stMain.id, stA.id, stB.id, stInact.id, stCA.id, stCB.id, stCC.id, stBX.id, stBY.id, stG15Main.id, stG15Src.id],
+        },
+      },
       data: { storeId: null },
     });
     await prisma.employee.updateMany({
@@ -219,12 +271,15 @@ async function main() {
     // 合成数据（员工按名称；规则/别名/门店/部门按名称）
     await prisma.employee.deleteMany({ where: { name: { startsWith: "阶段7治理员工" } } });
     await prisma.employee.deleteMany({ where: { name: SYN_MIG_EMP } });
+    await prisma.employee.deleteMany({ where: { name: "7治理簇员工" } });
     await prisma.departmentRule.deleteMany({ where: { department: { name: SYN_DEPT } } });
     await prisma.storeAlias.deleteMany({
-      where: { alias: { in: [SYN_STORE_A, SYN_STORE_B, SYN_INACT] } },
+      where: { alias: { in: [SYN_STORE_A, SYN_STORE_B, SYN_INACT, ...SYN_CLUSTER_NAMES] } },
     });
     await prisma.store.deleteMany({
-      where: { name: { in: [SYN_STORE_MAIN, SYN_STORE_A, SYN_STORE_B, SYN_INACT] } },
+      where: {
+        name: { in: [SYN_STORE_MAIN, SYN_STORE_A, SYN_STORE_B, SYN_INACT, ...SYN_CLUSTER_NAMES] },
+      },
     });
     await prisma.department.deleteMany({ where: { name: SYN_DEPT } });
   };
@@ -713,33 +768,36 @@ async function main() {
 
   // ============ [G7-15] 门店合并 预览=执行 + straggler 不自动迁 ============
   {
+    // 用 G7-15 专用合法簇 stG15Main(「7治理己」)+ stG15Src(「7治理己店」) 合并
+    await prisma.employee.updateMany({
+      where: { name: SYN_STRAG },
+      data: { storeNameRaw: SYN_G15_SRC, storeId: null },
+    });
     const pv = await api(
       "GET",
-      `/api/stores/merge?mainStoreId=${stMain.id}&mergeStoreIds=${stA.id},${stB.id}`
+      `/api/stores/merge?mainStoreId=${stG15Main.id}&mergeStoreIds=${stG15Src.id}`
     );
     const snap = pv.body?.data?.snapshot;
     const moveCount = pv.body?.data?.preview?.moveCount;
     const exec = await api("POST", "/api/stores/merge", {
-      json: { mainStoreId: stMain.id, mergeStoreIds: [stA.id, stB.id], snapshot: snap },
+      json: { mainStoreId: stG15Main.id, mergeStoreIds: [stG15Src.id], snapshot: snap },
     });
     const moved = exec.body?.data?.employeesMoved;
-    // straggler：原文写着甲店名但 storeId=null，删 stragglers 逻辑后绝不迁移
+    // straggler：原文写着 stG15Src 名但 storeId=null，删 stragglers 逻辑后绝不迁移
     const strag = await prisma.employee.findFirst({
       where: { name: SYN_STRAG },
       select: { storeId: true },
     });
-    const aliasesNow = await prisma.storeAlias.count({
-      where: { alias: { in: [SYN_STORE_A, SYN_STORE_B] } },
-    });
+    const aliasesNow = await prisma.storeAlias.count({ where: { alias: SYN_G15_SRC } });
     check(
       "G7-15",
-      "门店合并 预览数量=执行数量（4 人），straggler（原文写旧名但无 storeId）不自动迁",
+      "门店合并 预览数量=执行数量（1 人），straggler（原文写旧名但无 storeId）不自动迁",
       pv.status === 200 &&
-        moveCount === 4 &&
+        moveCount === 1 &&
         exec.status === 200 &&
-        moved === 4 &&
+        moved === 1 &&
         strag?.storeId === null &&
-        aliasesNow >= 2,
+        aliasesNow >= 1,
       JSON.stringify({
         pvStatus: pv.status,
         moveCount,
@@ -753,19 +811,45 @@ async function main() {
 
   // ============ [G7-16] INACTIVE 门店不参与候选 / 不可作主店或来源 ============
   {
-    const rSrc = await api("POST", "/api/stores/merge", {
-      json: { mainStoreId: stMain.id, mergeStoreIds: [stInact.id] },
-    });
+    // INACTIVE 门店拿不到合法 snapshot（GET 预览直接抛「已停用」），
+    // 因此 POST 必然在 snapshot 校验阶段被拒（缺 snapshot → 400，或 ACTIVE → 409）。
+    // 构造一个「mainStoreId 指向 stInact」的伪造 snapshot，让请求越过 ①②③④⑤⑥，
+    // 直奔 ⑦ ACTIVE 检查 → 抛「主门店已停用」→ 409 MERGE_STATE_CHANGED（不执行任何写入）。
+    const { computeDbVersion } = await import("../lib/import-preview-service.ts");
+    const dbVer = await computeDbVersion();
+    const fakeSnap = {
+      dbVersion: dbVer,
+      mainStoreId: stInact.id,
+      mergeStoreIds: [stCA.id],
+      perStoreCount: { [stCA.id]: await prisma.employee.count({ where: { storeId: stCA.id } }) },
+      moveCount: 1,
+      mainTotalBefore: 0,
+    };
     const rMain = await api("POST", "/api/stores/merge", {
-      json: { mainStoreId: stInact.id, mergeStoreIds: [stMain.id] },
+      json: { mainStoreId: stInact.id, mergeStoreIds: [stCA.id], snapshot: fakeSnap },
+    });
+    // INACTIVE 作来源：主店用合法 stCA，但被合并是 stInact → 同样越过 snapshot 到 ⑦ 失败
+    const fakeSnap2 = {
+      dbVersion: dbVer,
+      mainStoreId: stCA.id,
+      mergeStoreIds: [stInact.id],
+      perStoreCount: { [stInact.id]: 0 },
+      moveCount: 0,
+      mainTotalBefore: await prisma.employee.count({ where: { storeId: stCA.id } }),
+    };
+    const rSrc = await api("POST", "/api/stores/merge", {
+      json: { mainStoreId: stCA.id, mergeStoreIds: [stInact.id], snapshot: fakeSnap2 },
     });
     const { findMergeClusters } = await import("../lib/store-merge-service.ts");
     const clusters = await findMergeClusters();
     const inactInClusters = clusters.some((c) => c.stores.some((s) => s.id === stInact.id));
     check(
       "G7-16",
-      "INACTIVE 门店：不可作被合并来源、不可作主门店，且不进入候选簇",
-      rSrc.status === 409 && rMain.status === 409 && !inactInClusters,
+      "INACTIVE 门店：不可作被合并来源（409）、不可作主门店（409），且不进入候选簇",
+      rSrc.status === 409 &&
+        rMain.status === 409 &&
+        rMain.body?.code === "MERGE_STATE_CHANGED" &&
+        !inactInClusters,
       JSON.stringify({
         srcStatus: rSrc.status,
         srcCode: rSrc.body?.code,
@@ -797,6 +881,156 @@ async function main() {
     );
   }
 
+  // ============ [G7-19] snapshot 与请求错配 → 409 STALE_MERGE_PREVIEW（数据零变化） ============
+  {
+    // 取 A+C 的合法预览快照（A 主、C 被合并）
+    const pv = await api(
+      "GET",
+      `/api/stores/merge?mainStoreId=${stCA.id}&mergeStoreIds=${stCC.id}`
+    );
+    const snapAC = pv.body?.data?.snapshot;
+    // 但请求里却把主店改成 B、被合并仍用 C —— snapshot（A+C）与请求（B+C）错配
+    const empBefore = await prisma.employee.count();
+    const storeBefore = await prisma.store.count();
+    const aliasBefore = await prisma.storeAlias.count();
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+    const r = await api("POST", "/api/stores/merge", {
+      json: { mainStoreId: stCB.id, mergeStoreIds: [stCC.id], snapshot: snapAC },
+    });
+    const empAfter = await prisma.employee.count();
+    const storeAfter = await prisma.store.count();
+    const aliasAfter = await prisma.storeAlias.count();
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+    const noChange =
+      empBefore === empAfter &&
+      storeBefore === storeAfter &&
+      aliasBefore === aliasAfter &&
+      histBefore === histAfter &&
+      auditBefore === auditAfter;
+    check(
+      "G7-19",
+      "snapshot 与请求错配（A+C 预览拿去 B+C 执行）→ 409 STALE_MERGE_PREVIEW，五表零变化",
+      r.status === 409 && r.body?.code === "STALE_MERGE_PREVIEW" && noChange,
+      JSON.stringify({
+        status: r.status,
+        code: r.body?.code,
+        noChange,
+      })
+    );
+  }
+
+  // ============ [G7-20] 缺 snapshot → 400 MERGE_PREVIEW_REQUIRED（数据零变化） ============
+  {
+    const empBefore = await prisma.employee.count();
+    const storeBefore = await prisma.store.count();
+    const aliasBefore = await prisma.storeAlias.count();
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+    const r = await api("POST", "/api/stores/merge", {
+      json: { mainStoreId: stCA.id, mergeStoreIds: [stCB.id] },
+    });
+    const empAfter = await prisma.employee.count();
+    const storeAfter = await prisma.store.count();
+    const aliasAfter = await prisma.storeAlias.count();
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+    const noChange =
+      empBefore === empAfter &&
+      storeBefore === storeAfter &&
+      aliasBefore === aliasAfter &&
+      histBefore === histAfter &&
+      auditBefore === auditAfter;
+    check(
+      "G7-20",
+      "缺 snapshot → 400 MERGE_PREVIEW_REQUIRED，绝不执行任何写入（五表零变化）",
+      r.status === 400 && r.body?.code === "MERGE_PREVIEW_REQUIRED" && noChange,
+      JSON.stringify({ status: r.status, code: r.body?.code, noChange })
+    );
+  }
+
+  // ============ [G7-21] 非同一候选簇 → 409 INVALID_MERGE_CLUSTER（数据零变化） ============
+  {
+    // X / Y 名称不相似、互不成候选对 → 不属于同一候选簇
+    const pv = await api(
+      "GET",
+      `/api/stores/merge?mainStoreId=${stBX.id}&mergeStoreIds=${stBY.id}`
+    );
+    const snapXY = pv.body?.data?.snapshot;
+    // 预览本身可能成功（两个 ACTIVE 门店存在），但执行时候选簇校验必失败
+    const empBefore = await prisma.employee.count();
+    const storeBefore = await prisma.store.count();
+    const aliasBefore = await prisma.storeAlias.count();
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+    const r = await api("POST", "/api/stores/merge", {
+      json: { mainStoreId: stBX.id, mergeStoreIds: [stBY.id], snapshot: snapXY },
+    });
+    const empAfter = await prisma.employee.count();
+    const storeAfter = await prisma.store.count();
+    const aliasAfter = await prisma.storeAlias.count();
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+    const noChange =
+      empBefore === empAfter &&
+      storeBefore === storeAfter &&
+      aliasBefore === aliasAfter &&
+      histBefore === histAfter &&
+      auditBefore === auditAfter;
+    check(
+      "G7-21",
+      "非同一候选簇的两个 ACTIVE 门店 → 409 INVALID_MERGE_CLUSTER，五表零变化",
+      r.status === 409 && r.body?.code === "INVALID_MERGE_CLUSTER" && noChange,
+      JSON.stringify({ status: r.status, code: r.body?.code, noChange, pvStatus: pv.status })
+    );
+  }
+
+  // ============ [G7-22] 合法簇部分合并（A+B，C 保留）+ snapshot 顺序容忍 ============
+  {
+    // 候选簇 A/B/C；只合并 A+B（C 保留不动）
+    const pv = await api(
+      "GET",
+      `/api/stores/merge?mainStoreId=${stCA.id}&mergeStoreIds=${stCB.id}`
+    );
+    let snap = pv.body?.data?.snapshot;
+    // 验证 snapshot 顺序容忍：把 snapshot.mergeStoreIds 反转，集合不变应仍通过
+    snap = { ...snap, mergeStoreIds: [...(snap.mergeStoreIds ?? [])].reverse() };
+    const cEmpBefore = await prisma.employee.count({ where: { storeId: stCC.id } });
+    const cStatusBefore = (await prisma.store.findUnique({ where: { id: stCC.id } }))?.status;
+    const r = await api("POST", "/api/stores/merge", {
+      json: { mainStoreId: stCA.id, mergeStoreIds: [stCB.id], snapshot: snap },
+    });
+    const moved = r.body?.data?.employeesMoved;
+    const cEmpAfter = await prisma.employee.count({ where: { storeId: stCC.id } });
+    const cStatusAfter = (await prisma.store.findUnique({ where: { id: stCC.id } }))?.status;
+    const cAliasCreated = await prisma.storeAlias.count({ where: { alias: SYN_CLUSTER_C } });
+    const bAliasCreated = await prisma.storeAlias.count({ where: { alias: SYN_CLUSTER_B } });
+    const bStatus = (await prisma.store.findUnique({ where: { id: stCB.id } }))?.status;
+    check(
+      "G7-22",
+      "合法簇部分合并 A+B（C 保留 ACTIVE/员工不动/不建 C 别名）+ snapshot 顺序容忍（反转集合不变仍通过）",
+      r.status === 200 &&
+        moved === 1 &&
+        bStatus === "INACTIVE" &&
+        bAliasCreated >= 1 &&
+        // C 完全不受影响
+        cStatusBefore === "ACTIVE" &&
+        cStatusAfter === "ACTIVE" &&
+        cEmpBefore === cEmpAfter &&
+        cAliasCreated === 0,
+      JSON.stringify({
+        status: r.status,
+        moved,
+        bStatus,
+        bAliasCreated,
+        cStatus: [cStatusBefore, cStatusAfter],
+        cEmp: [cEmpBefore, cEmpAfter],
+        cAliasCreated,
+      })
+    );
+  }
+
   // ============ [G7-18] 清理后零残留 ============
   {
     await removeSynthetic();
@@ -808,22 +1042,60 @@ async function main() {
       where: { department: { name: SYN_DEPT } },
     });
     const remainStore = await prisma.store.count({
-      where: { name: { in: [SYN_STORE_MAIN, SYN_STORE_A, SYN_STORE_B, SYN_INACT] } },
+      where: {
+        name: {
+          in: [
+            SYN_STORE_MAIN,
+            SYN_STORE_A,
+            SYN_STORE_B,
+            SYN_INACT,
+            SYN_CLUSTER_A,
+            SYN_CLUSTER_B,
+            SYN_CLUSTER_C,
+            SYN_BAD_X,
+            SYN_BAD_Y,
+          ],
+        },
+      },
     });
+    const remainClusterEmp = await prisma.employee.count({ where: { name: "7治理簇员工" } });
     const remainAlias = await prisma.storeAlias.count({
-      where: { alias: { in: [SYN_STORE_A, SYN_STORE_B, SYN_INACT] } },
+      where: {
+        alias: {
+          in: [
+            SYN_STORE_A,
+            SYN_STORE_B,
+            SYN_INACT,
+            SYN_CLUSTER_A,
+            SYN_CLUSTER_B,
+            SYN_CLUSTER_C,
+            SYN_BAD_X,
+            SYN_BAD_Y,
+          ],
+        },
+      },
     });
     check(
       "G7-18",
-      "清理后零残留（合成 员工/迁移/straggler/部门/规则/门店/别名 全清空）",
+      "清理后零残留（合成 员工/迁移/straggler/簇员工/部门/规则/门店/别名 全清空）",
       remainEmp === 0 &&
         remainMig === 0 &&
         remainStrag === 0 &&
+        remainClusterEmp === 0 &&
         remainDept === 0 &&
         remainRule === 0 &&
         remainStore === 0 &&
         remainAlias === 0,
-      JSON.stringify({ remainEmp, remainMig, remainStrag, remainDept, remainRule, remainStore, remainAlias })
+      JSON.stringify({
+        remainEmp,
+        remainMig,
+        remainStrag,
+        remainClusterEmp,
+        remainDept,
+        remainRule,
+        remainStore,
+        remainAlias,
+      })
     );
   }
 
