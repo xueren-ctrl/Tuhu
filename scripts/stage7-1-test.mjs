@@ -36,6 +36,10 @@
  *   [G7-20] 缺 snapshot → 400 MERGE_PREVIEW_REQUIRED（五表零变化）
  *   [G7-21] 非同一候选簇 → 409 INVALID_MERGE_CLUSTER（五表零变化）
  *   [G7-22] 合法簇部分合并 A+B（C 保留）+ snapshot 顺序容忍（反转集合不变仍通过）
+ *   [G7-23] 部门规则条件改（数量不变、命中集合变化）→ 旧快照 409 STALE_PREVIEW（三表零变化）
+ *   [G7-24] 部门 apply 缺 snapshot → 400 DEPARTMENT_PREVIEW_REQUIRED（三表零变化）
+ *   [G7-25] 门店别名统一归属确定性失败 → 全批回滚（四表零残留，409）
+ *   [G7-26] 门店合并竞态保护（写库前 source 被停用 → 409 MERGE_STATE_CHANGED，五表零变化）
  * ============================================================
  */
 import { copyFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
@@ -72,6 +76,18 @@ const SYN_BAD_Y = "7治理戊店";
 // G7-15 专用合法簇（己/己店 去掉店后相同 → 候选对），与 G7-22 簇互不干扰
 const SYN_G15_MAIN = "7治理己";
 const SYN_G15_SRC = "7治理己店";
+// Stage 7.1.3 G7-23 专用：各 3 名员工的候选门店对（改规则指向门店 A→B：数量不变、命中集合变）
+const SYN_G23_A = "7治理庚";
+const SYN_G23_B = "7治理庚店";
+const SYN_G23_EMP = "阶段7庚员工";
+// Stage 7.1.3 G7-25 专用：别名统一归属（独立门店 + 2 名原文写旧名的员工）
+const SYN_ALIAS_STORE = "7别名主店";
+const SYN_ALIAS_NAME = "阶段7别名乙"; // 员工 storeNameRaw 写此名；测试中注册为 SYN_ALIAS_STORE 的别名
+const SYN_ALIAS_EMP = "阶段7别名员工";
+// Stage 7.1.3 G7-26 专用：竞态保护（各 1 名员工的候选门店对，raw UPDATE 只改 status 不碰 updatedAt）
+const SYN_G26_A = "7治理癸";
+const SYN_G26_B = "7治理癸店";
+const SYN_G26_EMP = "阶段7癸员工";
 
 let pass = 0;
 let fail = 0;
@@ -240,6 +256,58 @@ async function main() {
     },
   });
 
+  // Stage 7.1.3 G7-23 专用：候选门店对（庚/庚店，候选对：庚店去掉末尾「店」= 庚），各挂 3 名员工
+  //   后续：创建门店维度规则指向庚店 → 命中 3 名；改规则指向庚 → 庚无员工命中 0 名？
+  //   不行——要保证「数量不变、集合变」：两店各 3 人互调。规则指向庚店(3人)→指向庚(3人)：数量=3 不变、命中集合 3→3 全变。
+  const stG23A = await prisma.store.create({ data: { name: SYN_G23_A } });
+  const stG23B = await prisma.store.create({ data: { name: SYN_G23_B } });
+  for (const s of [stG23A, stG23B]) {
+    for (let k = 1; k <= 3; k++) {
+      await prisma.employee.create({
+        data: {
+          employeeId: `stage713-${s.name}-${k}`,
+          name: SYN_G23_EMP + k,
+          status: "ACTIVE",
+          sourceSheet: "数据库",
+          importBatch: "stage7-1-test",
+          storeId: s.id,
+          departmentId: null,
+        },
+      });
+    }
+  }
+
+  // Stage 7.1.3 G7-25 专用：别名统一归属 —— 独立主店 + 2 名员工 storeNameRaw 写旧名、storeId 未挂
+  const stAliasStore = await prisma.store.create({ data: { name: SYN_ALIAS_STORE } });
+  for (let k = 1; k <= 2; k++) {
+    await prisma.employee.create({
+      data: {
+        employeeId: `stage713-alias-${k}`,
+        name: SYN_ALIAS_EMP + k,
+        status: "ACTIVE",
+        sourceSheet: "数据库",
+        importBatch: "stage7-1-test",
+        storeNameRaw: SYN_ALIAS_NAME,
+        storeId: null,
+      },
+    });
+  }
+
+  // Stage 7.1.3 G7-26 专用：竞态保护 —— 候选门店对（癸/癸店，候选对：癸店去掉末尾「店」= 癸），各挂 1 名员工
+  const stG26A = await prisma.store.create({ data: { name: SYN_G26_A } });
+  const stG26B = await prisma.store.create({ data: { name: SYN_G26_B } });
+  await prisma.employee.create({
+    data: {
+      employeeId: "stage713-g26-b-1",
+      name: SYN_G26_EMP + 1,
+      status: "ACTIVE",
+      sourceSheet: "数据库",
+      importBatch: "stage7-1-test",
+      storeId: stG26B.id,
+    },
+  });
+
+
   // ============ 启动服务器（副本数据库） ============
   const server = spawn(
     NODE,
@@ -252,14 +320,20 @@ async function main() {
 
   // 分两段：removeSynthetic() 供 G7-18 复用；finalize() 真正收尾删库
   const SYN_CLUSTER_NAMES = [SYN_CLUSTER_A, SYN_CLUSTER_B, SYN_CLUSTER_C, SYN_BAD_X, SYN_BAD_Y, SYN_G15_MAIN, SYN_G15_SRC];
+  const SYN_G23_NAMES = [SYN_G23_A, SYN_G23_B];
+  const SYN_G26_NAMES = [SYN_G26_A, SYN_G26_B];
   const removeSynthetic = async () => {
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg71_merge_fail`);
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg71_batch_fail`);
+    await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg713_alias_fail`);
     // 先解绑 FK（员工 → 全部合成门店 / 合成部门）
     await prisma.employee.updateMany({
       where: {
         storeId: {
-          in: [stMain.id, stA.id, stB.id, stInact.id, stCA.id, stCB.id, stCC.id, stBX.id, stBY.id, stG15Main.id, stG15Src.id],
+          in: [
+            stMain.id, stA.id, stB.id, stInact.id, stCA.id, stCB.id, stCC.id, stBX.id, stBY.id,
+            stG15Main.id, stG15Src.id, stG23A.id, stG23B.id, stAliasStore.id, stG26A.id, stG26B.id,
+          ],
         },
       },
       data: { storeId: null },
@@ -272,13 +346,27 @@ async function main() {
     await prisma.employee.deleteMany({ where: { name: { startsWith: "阶段7治理员工" } } });
     await prisma.employee.deleteMany({ where: { name: SYN_MIG_EMP } });
     await prisma.employee.deleteMany({ where: { name: "7治理簇员工" } });
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G23_EMP } } });
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_ALIAS_EMP } } });
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G26_EMP } } });
+    // G7-23/26 专用规则（指向 G23/G26 门店）
+    await prisma.departmentRule.deleteMany({
+      where: { storeId: { in: [stG23A.id, stG23B.id, stG26A.id, stG26B.id] } },
+    });
     await prisma.departmentRule.deleteMany({ where: { department: { name: SYN_DEPT } } });
     await prisma.storeAlias.deleteMany({
-      where: { alias: { in: [SYN_STORE_A, SYN_STORE_B, SYN_INACT, ...SYN_CLUSTER_NAMES] } },
+      where: {
+        alias: { in: [SYN_STORE_A, SYN_STORE_B, SYN_INACT, SYN_ALIAS_NAME, ...SYN_CLUSTER_NAMES] },
+      },
     });
     await prisma.store.deleteMany({
       where: {
-        name: { in: [SYN_STORE_MAIN, SYN_STORE_A, SYN_STORE_B, SYN_INACT, ...SYN_CLUSTER_NAMES] },
+        name: {
+          in: [
+            SYN_STORE_MAIN, SYN_STORE_A, SYN_STORE_B, SYN_INACT,
+            ...SYN_CLUSTER_NAMES, ...SYN_G23_NAMES, SYN_ALIAS_STORE, ...SYN_G26_NAMES,
+          ],
+        },
       },
     });
     await prisma.department.deleteMany({ where: { name: SYN_DEPT } });
@@ -1029,6 +1117,176 @@ async function main() {
         cAliasCreated,
       })
     );
+  }
+
+  // ============ [G7-23] 部门规则条件变化（数量不变、命中集合变化）→ 409 STALE_PREVIEW ============
+  {
+    // G23 候选对：庚/庚店 各挂 3 名无部门员工。
+    // 规则先指向庚店（命中 3 人）→ 预览 → 改规则指向庚（仍命中 3 人，但命中集合全换）→ 重新 apply 旧快照。
+    // 关键：规则数量不变、匹配总人数不变（3=3），但命中员工集合变化 → 必须 409（不靠 matchedCount 防陈旧）。
+    const rule23 = await prisma.departmentRule.create({
+      data: { departmentId: dept.id, storeId: stG23B.id, priority: 50, enabled: true },
+    });
+    // ① 规则指向庚店，预览（命中庚店 3 人）
+    const pvBefore = await api("POST", "/api/departments/auto", { json: { action: "preview" } });
+    const snap23 = pvBefore.body?.data?.snapshot;
+    const affectedBefore = pvBefore.body?.data?.affected;
+    // ② 改规则匹配条件（庚店 → 庚）：规则数量不变、匹配总数不变、命中员工集合全换
+    await prisma.departmentRule.update({ where: { id: rule23.id }, data: { storeId: stG23A.id } });
+    const pvAfter = await api("POST", "/api/departments/auto", { json: { action: "preview" } });
+    const affectedAfter = pvAfter.body?.data?.affected;
+    // ③ 用「旧快照」执行 → 必须 409 STALE_PREVIEW
+    const empBefore = await prisma.employee.count();
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+    const r23 = await api("POST", "/api/departments/auto", {
+      json: { action: "apply", snapshot: snap23 },
+    });
+    const empAfter = await prisma.employee.count();
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+    const noChange = empBefore === empAfter && histBefore === histAfter && auditBefore === auditAfter;
+    // 数量不变（3=3）仍然拒绝 —— 证明防陈旧不靠 matchedCount
+    check(
+      "G7-23",
+      "规则条件改（数量不变、命中集合变化）→ 旧快照 apply 409 STALE_PREVIEW，Employee/History/Audit 零变化",
+      r23.status === 409 &&
+        r23.body?.code === "STALE_PREVIEW" &&
+        noChange &&
+        affectedBefore === affectedAfter,
+      JSON.stringify({
+        status: r23.status,
+        code: r23.body?.code,
+        noChange,
+        affected: [affectedBefore, affectedAfter],
+      })
+    );
+    await prisma.departmentRule.delete({ where: { id: rule23.id } });
+  }
+
+  // ============ [G7-24] apply 缺 snapshot → 400 DEPARTMENT_PREVIEW_REQUIRED ============
+  {
+    const empBefore = await prisma.employee.count();
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+    const r24 = await api("POST", "/api/departments/auto", { json: { action: "apply" } });
+    const empAfter = await prisma.employee.count();
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+    const noChange = empBefore === empAfter && histBefore === histAfter && auditBefore === auditAfter;
+    check(
+      "G7-24",
+      "apply 缺 snapshot → 400 DEPARTMENT_PREVIEW_REQUIRED，Employee/History/Audit 零变化",
+      r24.status === 400 && r24.body?.code === "DEPARTMENT_PREVIEW_REQUIRED" && noChange,
+      JSON.stringify({ status: r24.status, code: r24.body?.code, noChange })
+    );
+  }
+
+  // ============ [G7-25] 门店别名统一归属全批事务（触发器强制失败 → 409 四表零残留） ============
+  {
+    // 2 名员工：storeNameRaw=别名原文、storeId=null。注册别名 → 全批重挂。
+    // 触发器：任何把员工 storeId 改挂到主店即中止 → 整笔回滚（别名/员工/历史/审计 全部不保留）。
+    await prisma.$executeRawUnsafe(
+      `CREATE TRIGGER IF NOT EXISTS trg713_alias_fail
+       BEFORE UPDATE OF storeId ON employee
+       WHEN new.storeId = ${stAliasStore.id}
+       BEGIN
+         SELECT RAISE(ABORT, 'stage7.1.3-test: 强制别名统一归属回滚');
+       END`
+    );
+    const aliasBefore = await prisma.storeAlias.count();
+    const empStoreBefore = await prisma.employee.findMany({
+      where: { name: { startsWith: SYN_ALIAS_EMP } },
+      select: { id: true, storeId: true },
+    });
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+    const r25 = await api("POST", `/api/stores/${stAliasStore.id}/aliases`, {
+      json: { alias: SYN_ALIAS_NAME },
+    });
+    const aliasAfter = await prisma.storeAlias.count();
+    const empStoreAfter = await prisma.employee.findMany({
+      where: { name: { startsWith: SYN_ALIAS_EMP } },
+      select: { id: true, storeId: true },
+    });
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+    await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg713_alias_fail`);
+
+    // 整笔回滚后：别名没建、员工没改挂、历史/审计没写（四表前后一致）
+    const aliasUnchanged = aliasBefore === aliasAfter;
+    const empUnchanged =
+      empStoreBefore.length === empStoreAfter.length &&
+      empStoreBefore.every((e, i) => e.storeId === empStoreAfter[i]?.storeId);
+    const histUnchanged = histBefore === histAfter;
+    const auditUnchanged = auditBefore === auditAfter;
+    check(
+      "G7-25",
+      "门店别名统一归属确定性失败 → 全批回滚（StoreAlias/员工/历史/审计 四表零残留，409）",
+      r25.status === 409 &&
+        aliasUnchanged &&
+        empUnchanged &&
+        histUnchanged &&
+        auditUnchanged,
+      JSON.stringify({
+        status: r25.status,
+        code: r25.body?.code,
+        aliasUnchanged,
+        empUnchanged,
+        histUnchanged,
+        auditUnchanged,
+      })
+    );
+  }
+
+  // ============ [G7-26] 门店合并竞态保护（写库前 source 被停用 → 409，五表零变化） ============
+  {
+    // 癸/癸店 候选对，癸店挂 1 名员工。先预览取快照，再用 raw UPDATE 把 source(癸店)
+    // 直接置 INACTIVE（不走 Prisma，不碰 updatedAt → dbVersion 不变），最后执行 merge。
+    // 期望：事务外 ACTIVE 预检/事务内二次校验拦住 → 409 MERGE_STATE_CHANGED，五表零变化。
+    const pv26 = await api(
+      "GET",
+      `/api/stores/merge?mainStoreId=${stG26A.id}&mergeStoreIds=${stG26B.id}`
+    );
+    const snap26 = pv26.body?.data?.snapshot;
+    // raw UPDATE：只改 status，不碰 updatedAt（保持 dbVersion 不变，精准命中 ACTIVE 校验而非版本校验）
+    await prisma.$executeRawUnsafe(`UPDATE store SET status = 'INACTIVE' WHERE id = ${stG26B.id}`);
+
+    const empBefore = await prisma.employee.count();
+    const storeCountBefore = await prisma.store.count();
+    const aliasBefore = await prisma.storeAlias.count();
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+
+    const r26 = await api("POST", "/api/stores/merge", {
+      json: { mainStoreId: stG26A.id, mergeStoreIds: [stG26B.id], snapshot: snap26 },
+    });
+
+    const empAfter = await prisma.employee.count();
+    const storeCountAfter = await prisma.store.count();
+    const aliasAfter = await prisma.storeAlias.count();
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+
+    // 五表零变化：员工/别名/历史/审计 数量不变；门店总数不变（status 是测试预置，非 merge 所为）
+    const noChange =
+      empBefore === empAfter &&
+      storeCountBefore === storeCountAfter &&
+      aliasBefore === aliasAfter &&
+      histBefore === histAfter &&
+      auditBefore === auditAfter;
+    check(
+      "G7-26",
+      "写库前 source 被停用（竞态）→ merge 不执行（409 MERGE_STATE_CHANGED），五表零变化",
+      r26.status === 409 && r26.body?.code === "MERGE_STATE_CHANGED" && noChange,
+      JSON.stringify({
+        status: r26.status,
+        code: r26.body?.code,
+        noChange,
+      })
+    );
+    // 恢复 source 为 ACTIVE，供 cleanup 正常删店（FK 解绑不受 status 影响）
+    await prisma.$executeRawUnsafe(`UPDATE store SET status = 'ACTIVE' WHERE id = ${stG26B.id}`);
   }
 
   // ============ [G7-18] 清理后零残留 ============

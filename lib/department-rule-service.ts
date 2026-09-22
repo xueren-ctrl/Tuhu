@@ -17,6 +17,7 @@
  * 重要：本模块**只生成推荐**，不自动写入。写入走标准的批量更新流程
  *      （自带 EmployeeHistory 变更记录），执行前必须先预览。
  */
+import { createHash } from "node:crypto";
 import { prisma } from "./prisma";
 import { DEFAULT_OPERATOR } from "./history-service";
 import { computeDbVersion } from "./import-preview-service";
@@ -200,12 +201,31 @@ export interface AutoPreviewSnapshot {
   ruleCount: number;
   matchedCount: number;
   noDeptCount: number;
+  /**
+   * Stage 7.1.3：命中员工集合指纹（SHA-256，对「规则id→部门id:员工id…」排序串哈希）。
+   * 防止「规则数量不变 + 匹配总人数不变，但实际命中员工集合已变化」的陈旧执行。
+   */
+  matchedFingerprint: string;
 }
 
 export class StalePreviewError extends Error {
   constructor(detail: string) {
     super("预览已过期（数据库在预览后发生变化），请重新预览后再执行。" + detail);
     this.name = "StalePreviewError";
+  }
+}
+
+/**
+ * Stage 7.1.3：部门自动归属 apply 必须携带预览快照（预览→确认→执行 闭环）。
+ * 缺失 snapshot 时 service 层直接拒绝（route 映射 400 DEPARTMENT_PREVIEW_REQUIRED），
+ * 不保留「无 snapshot 兼容直接执行」的分支。
+ */
+export class DepartmentPreviewRequiredError extends Error {
+  constructor() {
+    super(
+      "部门自动归属执行必须先预览并携带 snapshot（预览→确认→执行），缺少 snapshot 拒绝执行。"
+    );
+    this.name = "DepartmentPreviewRequiredError";
   }
 }
 
@@ -355,11 +375,34 @@ export async function previewDepartmentAuto(opts: {
       ruleCount: rules.length,
       matchedCount: matched.length,
       noDeptCount,
+      matchedFingerprint: computeMatchedFingerprint(matched),
     },
   };
 }
 
-/** 快照复核：库版本 / 规则数 / 匹配数任一变化即拒绝（防「早上的预览下午执行」） */
+/**
+ * Stage 7.1.3：命中员工集合指纹。
+ * 对「ruleId→deptId:empId」排序串做 SHA-256。
+ * 规则数量不变、匹配总人数不变、但命中员工集合（谁被哪条规则匹配到哪个部门）
+ * 发生变化时，指纹必变 —— 这是防「陈旧预览执行到已变化的规则」的关键，
+ * 不能只靠 matchedCount 兜底。
+ */
+/**
+ * Stage 7.1.3：命中员工集合指纹。
+ * 对「ruleId→deptId:empId」排序串做 SHA-256。
+ * 规则数量不变、匹配总人数不变、但命中员工集合（谁被哪条规则匹配到哪个部门）
+ * 发生变化时，指纹必变 —— 这是防「陈旧预览执行到已变化的规则」的关键，
+ * 不能只靠 matchedCount 兜底。
+ */
+function computeMatchedFingerprint(matched: AutoPreviewItem[]): string {
+  const sorted = matched
+    .map((m) => `${m.ruleId}->${m.departmentId}:${m.employeeId}`)
+    .sort()
+    .join("|");
+  return createHash("sha256").update(sorted).digest("hex");
+}
+
+/** 快照复核：库版本 / 规则数 / 匹配数 / 命中集合指纹任一变化即拒绝（防「早上的预览下午执行」） */
 export async function assertSnapshotFresh(
   snapshot: AutoPreviewSnapshot,
   overrideExisting: boolean
@@ -376,7 +419,9 @@ export async function assertSnapshotFresh(
     rules.length !== snapshot.ruleCount ||
     matched.length !== snapshot.matchedCount ||
     baseCount !== snapshot.baseEmployeeCount ||
-    noDeptCount !== snapshot.noDeptCount
+    noDeptCount !== snapshot.noDeptCount ||
+    // Stage 7.1.3：命中集合指纹（规则数量不变但命中员工集合变化 → 也拒绝）
+    computeMatchedFingerprint(matched) !== snapshot.matchedFingerprint
   ) {
     throw new StalePreviewError(
       `预览时 员工=${snapshot.baseEmployeeCount} 无部门=${snapshot.noDeptCount} ` +
@@ -387,11 +432,13 @@ export async function assertSnapshotFresh(
 }
 
 /**
- * 执行自动归属（Stage 7.1.1 整批原子事务）
+ * 执行自动归属（Stage 7.1.1 整批原子事务；Stage 7.1.3 snapshot 强制）
  *
- * 两种入口：
- *  1. 携带 snapshot（推荐）：先复核版本，库有变化直接拒绝（StalePreviewError → 409）；
- *  2. 不带 snapshot：重新计算完整匹配集合并直接执行（数量恒等于全量匹配数）。
+ * 入口（Stage 7.1.3 起唯一路径）：
+ *  - **必须**携带 snapshot：先复核版本（库有变化 → StalePreviewError → 409），
+ *    再按**全量匹配**写入。
+ *  - **缺少 snapshot → 抛 DepartmentPreviewRequiredError → 400 DEPARTMENT_PREVIEW_REQUIRED**，
+ *    绝不执行任何数据库写入。不再保留「无 snapshot 直接执行」的兼容分支。
  * 执行**绝不消费预览的 items**，而是重新跑 matchAllEmployees 的完整结果，
  * 因此即使展示明细被截断，实际写入数量也等于全量 affected。
  *
@@ -405,12 +452,12 @@ export async function assertSnapshotFresh(
 export async function applyDepartmentAuto(opts: {
   overrideExisting?: boolean;
   operator?: string;
-  snapshot?: AutoPreviewSnapshot;
+  snapshot: AutoPreviewSnapshot;
 }) {
   const { snapshot } = opts;
-  if (snapshot) {
-    await assertSnapshotFresh(snapshot, opts.overrideExisting ?? false);
-  }
+  // Stage 7.1.3：snapshot 是强制前置条件（service 层兜底，route 层提前返回 400）
+  if (!snapshot) throw new DepartmentPreviewRequiredError();
+  await assertSnapshotFresh(snapshot, opts.overrideExisting ?? false);
 
   const { matched } = await matchAllEmployees({ overrideExisting: opts.overrideExisting });
   if (!matched.length) {

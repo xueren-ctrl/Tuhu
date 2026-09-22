@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { addStoreAlias, listStoreAllNames } from "@/lib/store-service";
+import { addStoreAlias, listStoreAllNames, StoreAliasAbortedError } from "@/lib/store-service";
 import { requireApiUser } from "@/lib/auth";
 import { operatorFromRequest } from "@/lib/operator";
 
@@ -53,6 +53,13 @@ export async function POST(req: Request, ctx: Ctx) {
     });
     return NextResponse.json({ ok: true, data: result }, { status: 201 });
   } catch (e) {
+    if (e instanceof StoreAliasAbortedError) {
+      // Stage 7.1.3 全批事务：整笔已回滚（别名 / 员工 / 历史 / 审计 零残留）
+      return NextResponse.json(
+        { ok: false, code: "ALIAS_BATCH_ABORTED", error: e.message },
+        { status: 409 }
+      );
+    }
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
   }
 }

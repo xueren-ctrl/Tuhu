@@ -6,6 +6,7 @@ import {
   StaleMergePreviewError,
   MergePreviewRequiredError,
   InvalidMergeClusterError,
+  MergeStoreStateChangedError,
   type MergePreviewSnapshot,
 } from "@/lib/store-merge-service";
 import { operatorFromRequest } from "@/lib/operator";
@@ -121,6 +122,13 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ ok: true, data: result });
   } catch (e) {
+    // Stage 7.1.3：事务内（写入前一刻）状态二次校验失败 —— 门店被并发停用/删除
+    if (e instanceof MergeStoreStateChangedError) {
+      return NextResponse.json(
+        { ok: false, code: "MERGE_STATE_CHANGED", error: e.message },
+        { status: 409 }
+      );
+    }
     const msg = (e as Error).message ?? String(e);
     const stateErrors = ["已停用", "不存在", "同名"];
     const isState = stateErrors.some((k) => msg.includes(k));

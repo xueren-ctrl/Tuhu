@@ -10,9 +10,21 @@
  * 新增别名时，把「门店原文列 storeNameRaw 等于该别名」的员工重新挂到标准门店，
  * **只改 storeId 这一个外键**，storeNameRaw 原文一律保留，随时可追溯。
  */
+import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { DEFAULT_OPERATOR, recordEmployeeHistory } from "./history-service";
 import { EMPLOYEE_STATUS } from "./constants";
+
+/**
+ * Stage 7.1.3：门店别名统一归属的事务被整体回滚时抛出（API 层映射 409 ALIAS_BATCH_ABORTED）。
+ * 语义：别名创建 / 员工重挂 / 变更历史 / 批次审计 全部未保留任何改动（0 残留、0 半成功）。
+ */
+export class StoreAliasAbortedError extends Error {
+  constructor(detail: string) {
+    super("门店别名统一归属已整体回滚（别名 / 员工 / 历史 / 审计均未保留任何改动）：" + detail);
+    this.name = "StoreAliasAbortedError";
+  }
+}
 
 export interface StoreAliasRow {
   id: number;
@@ -127,12 +139,23 @@ export async function listStoreAllNames(storeId: number): Promise<string[]> {
  * 把「门店原文列等于这些名称」的员工统一挂到标准门店。
  * 只更新 storeId 外键；storeNameRaw 保留原文（可追溯）。
  * 每条变更都写 EmployeeHistory，来源标记为 BATCH_UPDATE。
+ *
+ * Stage 7.1.3：支持外部事务（opts.tx）—— 门店别名统一归属（addStoreAlias）把
+ * 「创建别名 + 员工重挂 + 变更历史 + 批次审计」全部包进一个 prisma.$transaction，
+ * 任一步失败整体回滚，绝不留下：
+ *   - 孤儿 StoreAlias（别名建了但员工没迁完）
+ *   - 部分员工被改挂、部分没改（半套 storeId）
+ *   - 半套 EmployeeHistory
+ *   - 记了「成功」的批次 AuditLog
+ * @param tx 可选：外部事务客户端（addStoreAlias 传入）。不传则本函数自开事务。
  */
 export async function repointEmployeesByName(
   storeId: number,
   names: string[],
-  operator = DEFAULT_OPERATOR
+  operator = DEFAULT_OPERATOR,
+  tx?: Prisma.TransactionClient
 ): Promise<{ scanned: number; repointed: number; batchKey: string | null }> {
+  const db = tx ?? prisma;
   const candidates = names.map((n) => n.trim()).filter(Boolean);
   if (!candidates.length) return { scanned: 0, repointed: 0, batchKey: null };
 
@@ -143,7 +166,7 @@ export async function repointEmployeesByName(
   // 而 SQL 里 `NULL = x` 结果是 NULL、`NOT NULL` 仍是 NULL → 整行被排除。
   // 也就是说：门店为空（尚未归属）的员工会被静默漏掉 —— 而这恰恰是别名
   // 功能最需要处理的那批人。因此用 OR 显式覆盖 null。
-  const targets = await prisma.employee.findMany({
+  const targets = await db.employee.findMany({
     where: {
       deletedAt: null,
       storeNameRaw: { in: candidates },
@@ -156,22 +179,58 @@ export async function repointEmployeesByName(
   const batchKey = `alias-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   let repointed = 0;
 
-  for (const t of targets) {
-    await prisma.employee.update({ where: { id: t.id }, data: { storeId } });
-    await recordEmployeeHistory({
-      employeeId: t.id,
-      employeeCode: t.employeeId,
-      source: "BATCH_UPDATE",
-      batchKey,
-      operator,
-      changes: [{ field: "storeId", oldValue: t.storeId, newValue: storeId }],
+  const runInTx = async (t: Prisma.TransactionClient) => {
+    for (const tg of targets) {
+      await t.employee.update({ where: { id: tg.id }, data: { storeId } });
+      await recordEmployeeHistory({
+        employeeId: tg.id,
+        employeeCode: tg.employeeId,
+        source: "BATCH_UPDATE",
+        batchKey,
+        operator,
+        changes: [{ field: "storeId", oldValue: tg.storeId, newValue: storeId }],
+        tx: t,
+      });
+      repointed++;
+    }
+    // 批次审计（Stage 7.1.3：与业务修改同事务，失败整体回滚，不留「改了没审计」）
+    await t.auditLog.create({
+      data: {
+        actor: operator,
+        action: "BATCH_UPDATE",
+        entity: "Store",
+        entityId: String(storeId),
+        summary: `门店别名统一归属：${candidates.join("、")} → 重挂 ${repointed} 人`,
+        detail: JSON.stringify({
+          batchKey,
+          type: "store-alias",
+          storeId,
+          names: candidates,
+          repointed,
+          at: new Date().toISOString(),
+        }),
+      },
     });
-    repointed++;
+  };
+
+  if (tx) {
+    await runInTx(tx);
+  } else {
+    await prisma.$transaction(async (t) => {
+      await runInTx(t);
+    });
   }
   return { scanned: targets.length, repointed, batchKey };
 }
 
-/** 新增别名并立即统一归属 */
+/**
+ * 新增别名并立即统一归属
+ *
+ * Stage 7.1.3 全批事务：「创建别名 + 员工重挂 + 变更历史 + 批次审计」
+ * 全部包进同一个 prisma.$transaction。任一步失败 → 整体回滚。
+ * 预检（门店存在 / 别名重名 / 与标准名相同）仍在事务外做（只读、快速失败），
+ * 但事务内会对别名唯一性再查一次（防 TOCTOU：预检与写入之间他人建了同别名）。
+ */
 export async function addStoreAlias(opts: {
   storeId: number;
   alias: string;
@@ -181,6 +240,7 @@ export async function addStoreAlias(opts: {
   const alias = opts.alias?.trim();
   if (!alias) throw new Error("别名不能为空");
 
+  // ---- 事务外快速预检（只读，失败立即抛出，不进事务）----
   const store = await prisma.store.findUnique({ where: { id: opts.storeId } });
   if (!store) throw new Error("门店不存在");
   if (alias === store.name) throw new Error("别名不能与门店标准名称相同");
@@ -197,14 +257,34 @@ export async function addStoreAlias(opts: {
     );
   }
 
-  const created = await prisma.storeAlias.create({
-    data: { storeId: opts.storeId, alias, note: opts.note?.trim() || null },
-  });
+  const operator = opts.operator ?? DEFAULT_OPERATOR;
+  const note = opts.note?.trim() || null;
 
-  // 立即统一归属：把原文列写着这个别名的员工挂到标准门店
-  const applied = await repointEmployeesByName(opts.storeId, [alias], opts.operator);
+  // ---- 全批事务：别名创建 + 员工重挂 + 历史 + 审计 原子（Stage 7.1.3）----
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // 事务内再查一次别名唯一（防预检与写入之间被他人抢先创建）
+      const dupInTx = await tx.storeAlias.findUnique({ where: { alias } });
+      if (dupInTx) {
+        throw new Error("该别名已存在（创建前一刻被占用），请更换别名");
+      }
+      const created = await tx.storeAlias.create({
+        data: { storeId: opts.storeId, alias, note },
+      });
 
-  return { alias: created, applied };
+      // 立即统一归属（与别名创建同事务；员工重挂 + 历史 + 批次审计）
+      const applied = await repointEmployeesByName(opts.storeId, [alias], operator, tx);
+
+      return { alias: created, applied };
+    });
+    return result;
+  } catch (err) {
+    // 事务已整体回滚（别名 / 员工 / 历史 / 审计 全部未保留任何改动，0 残留）
+    if (err instanceof Error && !(err instanceof StoreAliasAbortedError)) {
+      throw new StoreAliasAbortedError(err.message);
+    }
+    throw err;
+  }
 }
 
 /** 删除别名（已挂到标准门店的员工不动，保持现状） */

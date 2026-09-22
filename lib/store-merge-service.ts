@@ -420,7 +420,20 @@ export async function assertMergeRequestFresh(opts: {
 }
 
 /**
- * 执行合并（Stage 7.1 事务安全整改）
+ * Stage 7.1.3：真正写入事务**内部**再次校验门店状态时抛出。
+ * 事务外的 ACTIVE/存在性检查与真正写入之间可能已被并发修改（竞态窗口），
+ * 此错误表示「写库那一刻状态已变化」，路由映射 409 MERGE_STATE_CHANGED，
+ * 整笔 merge 回滚（此时尚未发生任何写入，天然无残留）。
+ */
+export class MergeStoreStateChangedError extends Error {
+  constructor(detail: string) {
+    super("门店状态在执行前已变化（并发修改），本次未执行任何写入：" + detail);
+    this.name = "MergeStoreStateChangedError";
+  }
+}
+
+/**
+ * 执行合并（Stage 7.1 事务安全整改；Stage 7.1.3 事务内状态二次校验）
  *
  * 整个「合并簇」是一个**原子操作**：员工归属修改、EmployeeHistory、StoreAlias、
  * 门店停用、AuditLog 全部在同一个 prisma.$transaction 内完成。
@@ -430,6 +443,11 @@ export async function assertMergeRequestFresh(opts: {
  *   - 门店提前 INACTIVE 但迁移未发生
  *   - 半套 EmployeeHistory
  *   - 记了「成功合并」的 AuditLog
+ *
+ * Stage 7.1.3：事务**内部**（写入前第一行）对主店 / 各被合并店再查一次
+ * 存在性 / ACTIVE / 主店不在来源 / 名称与主店不同 —— 堵住「事务外检查通过、
+ * 写库前一刻门店被停用」的竞态。任何失败抛 MergeStoreStateChangedError，
+ * 整笔回滚。
  */
 export async function mergeStores(opts: {
   mainStoreId: number;
@@ -467,6 +485,27 @@ export async function mergeStores(opts: {
 
   // 整个合并簇包进一个事务；tx 内任何一步抛错 → 全部回滚
   const stats = await prisma.$transaction(async (tx) => {
+    // Stage 7.1.3：事务内（写入前一刻）再查一次主店 / 各被合并店的
+    // 存在性 / ACTIVE / 主店不在来源 / 名称与主店不同 —— 堵住「事务外检查通过、
+    // 写库前已被并发停用」的竞态窗口。任一不满足 → 抛错，整笔回滚（此时零写入，无残留）
+    const mainInTx = await tx.store.findUnique({ where: { id: mainStoreId } });
+    if (!mainInTx) throw new MergeStoreStateChangedError("主门店在执行前已被删除");
+    if (mainInTx.status !== "ACTIVE") {
+      throw new MergeStoreStateChangedError("主门店在执行前已被停用");
+    }
+    const srcInTx = await tx.store.findMany({ where: { id: { in: mergeIds } } });
+    if (srcInTx.length !== mergeIds.length) {
+      throw new MergeStoreStateChangedError("部分被合并门店在执行前已被删除");
+    }
+    for (const s of srcInTx) {
+      if (s.status !== "ACTIVE") {
+        throw new MergeStoreStateChangedError("门店「" + s.name + "」在执行前已被停用");
+      }
+    }
+    if (srcInTx.some((s) => s.name === mainInTx.name)) {
+      throw new MergeStoreStateChangedError("被合并门店与主门店同名，需人工处理");
+    }
+
     let employeesMoved = 0;
     let aliasesCreated = 0;
     let storesDeactivated = 0;

@@ -1,6 +1,6 @@
 # Stage 7.1 数据治理安全底座 —— 当前数据库真实基线报告
 
-> 生成时间：2026-09-22（Stage 7.1）· 追加：2026-09-22（Stage 7.1.1 收口）· 追加：2026-09-22（Stage 7.1.2 闭环）
+> 生成时间：2026-09-22（Stage 7.1）· 追加：2026-09-22（Stage 7.1.1 收口）· 追加：2026-09-22（Stage 7.1.2 闭环）· 追加：2026-09-23（Stage 7.1.3 最终收口）· 追加：2026-09-23（Stage 7.1.3 最终收口）
 > 数据来源：直接查询当前 `data/hr.db`（实时统计，非旧文档数字）
 > 本阶段**不执行**任何生产批量治理，只建安全底座 + 出预览 + 全量测试。
 > 本报告**不含**任何真实身份证号 / 手机号 / 银行卡号 / 详细个人信息。
@@ -153,7 +153,7 @@
 
 ## 六、新增测试（`scripts/stage7-1-test.mjs`，副本库 + 真实 HTTP）
 
-`npm run test:stage7.1` —— 20 项全过（13 项规格要求 + 5 项 7.1.1 收口 + 2 项门禁/补充）：
+`npm run test:stage7.1` —— 28 项全过（13 项规格要求 + 7.1.1 收口 5 项 + 门禁/补充 + 7.1.2/7.1.3 新增 8 项）：
 
 | 编号 | 断言 |
 |---|---|
@@ -172,10 +172,18 @@
 | G7-13 | 无测试残留（合成数据可被 cleanup 识别） |
 | G7-ADMIN | HR 访问 ADMIN-only 治理接口 → 403 |
 | **G7-14** | 批量原子回滚（触发器确定性失败：员工/历史/审计三表零残留，409 BATCH_ABORTED） |
-| **G7-15** | 门店合并 预览数量=执行数量（4 人），straggler（原文写旧名但无 storeId）不自动迁 |
-| **G7-16** | INACTIVE 门店不可作被合并来源/不可作主门店，且不进入候选簇 |
+| **G7-15** | 门店合并 预览数量=执行数量（合法簇 1 人），straggler（原文写旧名但无 storeId）不自动迁 |
+| **G7-16** | INACTIVE 门店不可作被合并来源（409）/不可作主门店（409），且不进入候选簇 |
 | **G7-17** | 无启用规则时：affected=0，unmatched=baseCount=实时无部门人数（口径一致） |
 | **G7-18** | 清理后零残留（员工/迁移/straggler/部门/规则/门店/别名 全清空） |
+| **G7-19** | 门店 snapshot 与请求错配 → 409 STALE_MERGE_PREVIEW（五表零变化） |
+| **G7-20** | 门店合并缺 snapshot → 400 MERGE_PREVIEW_REQUIRED（五表零变化） |
+| **G7-21** | 非同一候选簇两个 ACTIVE 门店 → 409 INVALID_MERGE_CLUSTER（五表零变化） |
+| **G7-22** | 合法簇部分合并 A+B（C 保留）+ snapshot 顺序容忍（反转集合不变仍通过） |
+| **G7-23** | 部门规则条件改（数量不变、命中集合变化）→ 旧快照 409 STALE_PREVIEW（三表零变化） |
+| **G7-24** | 部门 apply 缺 snapshot → 400 DEPARTMENT_PREVIEW_REQUIRED（三表零变化） |
+| **G7-25** | 门店别名统一归属确定性失败 → 全批回滚（四表零残留，409 ALIAS_BATCH_ABORTED） |
+| **G7-26** | 门店合并竞态保护（写库前 source 被停用）→ 409 MERGE_STATE_CHANGED（五表零变化） |
 
 ---
 
@@ -190,7 +198,7 @@
 | `npm run test:stage6` | ✅ 25 / 25 |
 | `npm run test:stage6:security` | ✅ 14 / 14 |
 | `npm run test:tenure` | ✅ 22 / 22 |
-| `npm run test:stage7.1`（含 7.1.1） | ✅ 20 / 20 |
+| `npm run test:stage7.1`（含 7.1.1/7.1.2/7.1.3） | ✅ 28 / 28（G7-01~26） |
 
 ---
 
@@ -352,5 +360,77 @@ Stage 7.1 停止于此。以下属于后续阶段，**本阶段一概不执行**
   历史 0 · 审计 121，全部与基线一致；**Excel SHA256 = `aac5f0ca...e19129` 不变**。
 
 ### 11. 边界（本阶段**不做**，等下一步指令）
+16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
+Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。
+
+---
+
+## 十一、Stage 7.1.3 治理预览/执行一致性最终收口（追加）
+
+> 在 7.1.2 的「门店合并 snapshot 绑定 + 候选簇校验」之上，把**部门自动归属**
+> 与**门店别名统一归属**也收成「预览→确认→执行」闭环，堵住预览/执行一致性
+> 的最后几处漏洞。仍**不执行**任何生产治理；生产 `data/hr.db` 零污染。
+
+### 1. P0：部门自动归属 apply 强制 snapshot ✅
+- **旧问题**：`POST /api/departments/auto {action:apply}` 允许**不带 snapshot** 直接执行
+  （`if (snapshot) assertSnapshotFresh(...)` 分支），「预览→确认→执行」闭环对部门侧不成立。
+- **修复**：`applyDepartmentAuto` 的 `snapshot` 参数改为**必填**（`snapshot: AutoPreviewSnapshot`），
+  service 层缺 snapshot → 抛 `DepartmentPreviewRequiredError`；route 层在调 service 前
+  直接返回 **400 `DEPARTMENT_PREVIEW_REQUIRED`**。删除「无 snapshot 兼容直接执行」分支。
+- **验证**：G7-24（apply 缺 snapshot → 400，Employee/History/Audit 三表零变化）。
+
+### 2. P0：DepartmentRule 纳入版本指纹 ✅
+- **旧问题**：`computeDbVersion()` 未覆盖 `DepartmentRule` —— 预览后增删/编辑规则
+  （enabled/storeId/positionId/employeeType/priority/departmentId）不改变 dbVersion，
+  部门预览的快照保护对「规则变化」失效。
+- **修复**：`computeDbVersion()` 加入 `departmentRule.aggregate({ _count, _max: updatedAt })`，
+  指纹现覆盖 Employee / Store / Position / Department / **DepartmentRule** / StoreAlias /
+  EmployeeHistory 七类。新增/删除/编辑任一规则（写库刷新 updatedAt）都会改变 dbVersion。
+- **补充：命中员工集合指纹**（防「规则数量不变、匹配总数不变、但命中集合已换」的
+  陈旧执行）：`AutoPreviewSnapshot` 新增 `matchedFingerprint`（对「ruleId→deptId:empId」
+  排序串 SHA-256），`assertSnapshotFresh` 一并比对。
+
+### 3. P1：门店别名统一归属全批事务 ✅
+- **旧问题**：`addStoreAlias()` = `StoreAlias.create()` → `repointEmployeesByName()`
+  （逐个 `Employee.update` + `EmployeeHistory.create`）**不是事务**——中途失败会留下
+  孤儿 StoreAlias / 半套员工改挂 / 半套历史。
+- **修复**：`repointEmployeesByName` 支持外部 `tx`；`addStoreAlias` 把「别名创建（事务内
+  再查唯一防 TOCTOU）+ 员工重挂 + 逐条历史 + 批次审计（type=store-alias）」全部包进
+  同一个 `prisma.$transaction`，任一步失败**整体回滚**，抛 `StoreAliasAbortedError`
+  → `/api/stores/[id]/aliases` 返回 **409 `ALIAS_BATCH_ABORTED`**。
+  批次审计与业务同事务（detail 含 batchKey/type=store-alias/storeId/names/repointed/时间）。
+
+### 4. P2：merge 事务内 ACTIVE 二次校验（竞态保护）✅
+- **旧问题**：`mergeStores` 的 ACTIVE/存在性/同名检查全在事务**外**，「事务外检查通过、
+  写库前一刻门店被并发停用」仍有窗口。
+- **修复**：在 `prisma.$transaction` 内、写入前第一行，对主店/各被合并店**再查一次**
+  存在性 / ACTIVE / 主店不在来源 / 名称与主店不同；任一失败抛
+  `MergeStoreStateChangedError` → **409 `MERGE_STATE_CHANGED`**，整笔 merge 回滚
+  （此时零写入，无残留）。
+
+### 5. operator 规则复核 ✅
+- 全项目扫描 `app/api/**`：所有写操作 API 的 `AuditLog.actor` / `EmployeeHistory.operator`
+  均来自 `operatorFromRequest(req)`（Session 真实用户）；**无** `body.operator` /
+  `x-operator` / query operator 信任点（grep 零命中）。`DEFAULT_OPERATOR` 仅作离线脚本
+  兜底，受保护 HTTP API 一律 Session。
+
+### 6. 新增 4 项测试 G7-23 ~ G7-26
+- **G7-23**：部门规则指向「庚店(3人)」预览后，改规则指向「庚(3人)」——规则数量不变、
+  匹配总数不变（3=3）、命中员工集合全换 → 旧快照 apply 必 **409 STALE_PREVIEW**
+  （靠 dbVersion/命中集合指纹，不靠 matchedCount）。
+- **G7-24**：`POST /api/departments/auto {action:apply}` 不带 snapshot → **400
+  DEPARTMENT_PREVIEW_REQUIRED**，三表零变化。
+- **G7-25**：SQLite 触发器 `trg713_alias_fail`（重挂到主店即中止）制造别名统一归属
+  确定性失败 → **409 ALIAS_BATCH_ABORTED**，StoreAlias/员工/历史/审计 四表前后一致。
+- **G7-26**：预览门店合并后，用 raw UPDATE（只改 status、不碰 updatedAt → dbVersion 不变）
+  把 source 店置 INACTIVE → merge 必 **409 MERGE_STATE_CHANGED**，五表零变化。
+
+### 7. 全量回归与生产验证
+- typecheck 0 错 · build 成功 · check:auth 41/41 (100%) · stage5 18/18 ·
+  stage6 25/25 · stage6:security 14/14 · tenure 22/22 · **stage7.1 28/28**（G7-01~26）。
+- 生产 `data/hr.db` 实测：员工 1920 · ACTIVE 门店 66 · 门店 66 · 别名 0 ·
+  历史 0 · 审计 121，全部与基线一致；**Excel SHA256 = `aac5f0ca...e19129` 不变**。
+
+### 8. 边界（本阶段**不做**，等下一步指令）
 16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
 Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。

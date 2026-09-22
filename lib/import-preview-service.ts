@@ -70,11 +70,16 @@ function newPreviewId(): string {
 
 /**
  * 冻结当前数据库状态。
- * 只要「员工档案 / 门店 / 职位 / 部门 / 别名」任一被改动，指纹就会变。
+ * 只要「员工档案 / 门店 / 职位 / 部门 / 部门规则 / 别名 / 变更历史」任一被改动，指纹就会变。
  * 用于阻止「预览之后有人改了数据，却仍按旧预览写入」。
+ *
+ * Stage 7.1.3：DepartmentRule 纳入版本指纹（count + max(updatedAt)）——
+ * 新增/删除规则、或编辑任一规则字段（enabled/storeId/positionId/employeeType/
+ * priority/departmentId 等，写库即刷新 updatedAt），都会改变 dbVersion，
+ * 部门自动归属的旧预览随即失效（409 STALE_PREVIEW）。
  */
 export async function computeDbVersion(): Promise<string> {
-  const [emp, store, pos, dept, alias, hist] = await Promise.all([
+  const [emp, store, pos, dept, rule, alias, hist] = await Promise.all([
     prisma.employee.aggregate({
       _count: { _all: true },
       _max: { updatedAt: true },
@@ -82,6 +87,7 @@ export async function computeDbVersion(): Promise<string> {
     prisma.store.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
     prisma.position.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
     prisma.department.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
+    prisma.departmentRule.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
     prisma.storeAlias.aggregate({ _count: { _all: true } }),
     prisma.employeeHistory.aggregate({ _count: { _all: true } }),
   ]);
@@ -90,6 +96,7 @@ export async function computeDbVersion(): Promise<string> {
     s: [store._count._all, store._max.updatedAt?.toISOString() ?? ""],
     p: [pos._count._all, pos._max.updatedAt?.toISOString() ?? ""],
     d: [dept._count._all, dept._max.updatedAt?.toISOString() ?? ""],
+    r: [rule._count._all, rule._max.updatedAt?.toISOString() ?? ""],
     a: alias._count._all,
     h: hist._count._all,
   });
