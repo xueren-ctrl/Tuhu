@@ -5,7 +5,9 @@ import { requireApiUser } from "@/lib/auth";
 export const dynamic = "force-dynamic";
 
 /** GET /api/stats —— 首页统计，全部实时从数据库计算 */
-export async function GET() {
+export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const stats = await getDashboardStats();
     return NextResponse.json({ ok: true, data: stats });

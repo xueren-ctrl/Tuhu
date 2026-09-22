@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { addStoreAlias, listStoreAllNames } from "@/lib/store-service";
-import { DEFAULT_OPERATOR } from "@/lib/history-service";
 import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
@@ -26,19 +26,22 @@ export async function GET(_req: Request, ctx: Ctx) {
 
 /**
  * POST /api/stores/:id/aliases —— 新增别名
- * body: { alias: string, note?: string, operator?: string }
+ * body: { alias: string, note?: string }
+ * 操作人只来自当前 Session（operatorFromRequest），客户端 operator 字段一律忽略。
  *
  * 副作用（按需求「查询时统一归属」）：把门店原文列写着该别名的员工
  * 重新挂到标准门店（只改 storeId 外键，原文列保留），并逐条写变更记录。
  */
 export async function POST(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);
     if (!Number.isFinite(numId) || numId <= 0) {
       return NextResponse.json({ ok: false, error: "无效的门店 ID" }, { status: 400 });
     }
-    const body = (await req.json()) as { alias?: string; note?: string; operator?: string };
+    const body = (await req.json()) as { alias?: string; note?: string };
     if (!body.alias || !body.alias.trim()) {
       return NextResponse.json({ ok: false, error: "别名不能为空" }, { status: 400 });
     }
@@ -46,7 +49,7 @@ export async function POST(req: Request, ctx: Ctx) {
       storeId: numId,
       alias: body.alias,
       note: body.note ?? null,
-      operator: body.operator ?? DEFAULT_OPERATOR,
+      operator: await operatorFromRequest(req),
     });
     return NextResponse.json({ ok: true, data: result }, { status: 201 });
   } catch (e) {

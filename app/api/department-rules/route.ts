@@ -18,6 +18,8 @@ export async function GET(req: Request) {
 
 /** POST /api/department-rules —— 新增规则 */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req, { roles: ["ADMIN"] });
+  if (auth instanceof Response) return auth;
   try {
     const body = (await req.json()) as Record<string, unknown>;
     const data = await createRule({

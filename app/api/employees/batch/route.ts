@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { batchUpdateEmployees } from "@/lib/employee-service";
-import { DEFAULT_OPERATOR } from "@/lib/history-service";
 import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,6 @@ interface BatchBody {
   storeId?: number | null;
   departmentId?: number | null;
   positionId?: number | null;
-  operator?: string;
 }
 
 /**
@@ -19,6 +18,9 @@ interface BatchBody {
  *
  * 只接受 storeId / departmentId / positionId 三个字段（服务层还有白名单兜底）。
  * 每次修改都逐条写 EmployeeHistory，来源 BATCH_UPDATE，同一次共享 batchKey。
+ *
+ * Stage 6.1：操作人一律取自当前 Session（operatorFromRequest），
+ * 客户端 body 里即使带 operator 字段也会被完全忽略。
  */
 export async function POST(req: Request) {
   const auth = await requireApiUser(req);
@@ -47,7 +49,7 @@ export async function POST(req: Request) {
       ids: body.ids,
       filter: body.filter as never,
       patch: patch as never,
-      operator: body.operator ?? DEFAULT_OPERATOR,
+      operator: await operatorFromRequest(req),
     });
     return NextResponse.json({ ok: true, data: result });
   } catch (e) {

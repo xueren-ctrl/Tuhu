@@ -8,6 +8,8 @@ type Ctx = { params: Promise<{ id: string }> };
 
 /** PUT /api/department-rules/:id —— 编辑规则 */
 export async function PUT(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req, { roles: ["ADMIN"] });
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);

@@ -8,6 +8,8 @@ export const dynamic = "force-dynamic";
 
 /** GET /api/stores —— 门店列表（支持搜索与停用筛选） */
 export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const url = new URL(req.url);
     const rows = await listStores({
@@ -29,6 +31,8 @@ export async function GET(req: Request) {
 
 /** POST /api/stores —— 新增门店 */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const body = await req.json();
     const parsed = storeSchema.safeParse(body);

@@ -41,6 +41,8 @@ export async function GET(req: Request, ctx: Ctx) {
 
 /** PUT /api/employees/:id —— 编辑（employee_id / 创建时间不可改） */
 export async function PUT(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);

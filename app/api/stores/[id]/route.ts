@@ -10,6 +10,8 @@ type Ctx = { params: Promise<{ id: string }> };
 
 /** PUT /api/stores/:id —— 编辑门店 */
 export async function PUT(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
     const numId = Number(id);

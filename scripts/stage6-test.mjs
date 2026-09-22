@@ -55,6 +55,11 @@ const ROOT = process.cwd();
 const TEST_DB = path.resolve(ROOT, "data", "stage6-test.db");
 const NODE = process.execPath;
 
+// 测试专用密码（Stage 6.1 起 seed-users 不再有固定生产默认密码；
+// 测试环境在此显式提供测试密码，仅作用于副本库，不影响正式生产）
+const TEST_ADMIN_PWD = "Stage6#Admin@Test2026";
+const TEST_HR_PWD = "Stage6#Hr@Test2026";
+
 let pass = 0;
 let fail = 0;
 const failures = [];
@@ -114,15 +119,19 @@ async function main() {
     ...process.env,
     NODE_OPTIONS: "",
     DATABASE_URL: process.env.DATABASE_URL,
+    SEED_ADMIN_PASSWORD: TEST_ADMIN_PWD,
+    SEED_HR_PASSWORD: TEST_HR_PWD,
   });
 
-  // 副本上保证 Session/AppUser 表结构与账号（幂等）
+  // 副本上保证 Session/AppUser 表结构与账号（幂等）。
+  // Stage 6.1：seed-users 已无固定默认密码，测试显式注入测试密码并传 --reset-password
+  // （测试账号在副本里可能已存在，需重置密码才能登录）。
   execSync(`"${NODE}" node_modules/prisma/build/index.js db push --skip-generate`, {
     cwd: ROOT,
     env: env(),
     stdio: "inherit",
   });
-  execSync(`"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts`, {
+  execSync(`"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts -- --reset-password`, {
     cwd: ROOT,
     env: env(),
     stdio: "inherit",
@@ -310,7 +319,7 @@ async function main() {
 
   // ============ [S6-01] 登录成功（HR） ============
   {
-    const r = await login("hr", "Tuhu@Hr2026");
+    const r = await login("hr", TEST_HR_PWD);
     const scHeader = r.res.headers.get("set-cookie") ?? "";
     const sid = jar.cookie.split("=")[1];
     const sessionRow = sid ? await prisma.session.findUnique({ where: { id: sid } }) : null;
@@ -343,7 +352,7 @@ async function main() {
 
   // ============ [S6-05] HR 角色可做 ============
   {
-    await login("hr", "Tuhu@Hr2026");
+    await login("hr", TEST_HR_PWD);
     const getEmployees = await api("GET", "/api/employees?pageSize=5");
     const putEmp = await api("PUT", `/api/employees/${empA.id}`, { json: { remark: "阶段六编辑" } });
     const createStore = await api("POST", "/api/stores", { json: { name: "阶段六测试门店" } });
@@ -396,7 +405,7 @@ async function main() {
 
   // ============ [S6-07] ADMIN 角色可做 ============
   {
-    await login("admin", "Tuhu@Admin2026");
+    await login("admin", TEST_ADMIN_PWD);
     const me = await api("GET", "/api/auth/me");
     const s1 = await prisma.store.findFirst({ orderBy: { id: "asc" } });
     const s2 = await prisma.store.findFirst({ where: { id: { not: s1.id } }, orderBy: { id: "asc" } });
@@ -410,7 +419,7 @@ async function main() {
         [merge.status, autoDept.status, rules.status].every((s) => s === 200 || s === 400),
       JSON.stringify({ role: me.body?.user?.role, merge: merge.status, autoDept: autoDept.status, rules: rules.status, mergeMsg: merge.body?.error ?? merge.body?.ok })
     );
-    await login("hr", "Tuhu@Hr2026"); // 切回 HR（后续用例用 HR 会话）
+    await login("hr", TEST_HR_PWD); // 切回 HR（后续用例用 HR 会话）
   }
 
   // ============ [S6-08] 伪造 x-operator 无效 ============

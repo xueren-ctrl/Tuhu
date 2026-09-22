@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { closeMany, listIssues, setIssueStatus } from "@/lib/quality-issue-service";
 import { operatorFromRequest } from "@/lib/operator";
+import { requireApiUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +9,8 @@ export const dynamic = "force-dynamic";
  * GET /api/quality-issues —— 工单列表（可按类别 / 状态过滤）
  */
 export async function GET(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const url = new URL(req.url);
     const data = await listIssues({
@@ -28,6 +31,8 @@ export async function GET(req: Request) {
  * 批量：{ issueType, employeeIds: number[], status, result? }
  */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const body = (await req.json()) as {
       issueType?: string;

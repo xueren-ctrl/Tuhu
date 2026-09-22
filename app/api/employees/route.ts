@@ -43,6 +43,8 @@ export async function GET(req: Request) {
 
 /** POST /api/employees —— 新增员工，自动生成 employee_id */
 export async function POST(req: Request) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
   try {
     const body = await req.json();
     const parsed = employeeCreateSchema.safeParse(body);

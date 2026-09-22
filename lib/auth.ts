@@ -89,7 +89,13 @@ export async function createSession(opts: {
   return id;
 }
 
-/** 读会话；过期或不存在返回 null（顺便清理过期会话） */
+/** 读会话；过期或不存在返回 null（顺便清理过期会话）。
+ *
+ * Stage 6.1 实时生效要求：Session 里缓存的 role/status 不可信，
+ * 每次验证都重新读取 AppUser：
+ *   - AppUser.status !== "ACTIVE"（停用）→ 会话立即失效（null）；
+ *   - 角色 / 显示名变更 → 直接采用数据库最新值（旧 Session 下次请求即生效）。
+ */
 export async function getSession(sessionId: string | undefined | null): Promise<SessionUser | null> {
   if (!sessionId) return null;
   let s;
@@ -103,11 +109,18 @@ export async function getSession(sessionId: string | undefined | null): Promise<
     await prisma.session.delete({ where: { id: s.id } }).catch(() => {});
     return null;
   }
+  // 关键：以 AppUser 当前状态为准，而不是 Session 缓存的快照
+  const user = await prisma.appUser.findUnique({ where: { id: s.userId } }).catch(() => null);
+  if (!user || user.status !== "ACTIVE") {
+    // 用户被删除或停用：立即销毁该会话
+    await prisma.session.delete({ where: { id: s.id } }).catch(() => {});
+    return null;
+  }
   return {
-    userId: s.userId,
-    username: s.username,
-    displayName: s.displayName,
-    role: s.role,
+    userId: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    role: user.role,
   };
 }
 

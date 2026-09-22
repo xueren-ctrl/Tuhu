@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { Alert, Badge, Button, Card, DescGrid, Modal, StatusBadge } from "@/components/ui";
 import { EMPLOYEE_FIELDS, EMPLOYEE_GROUPS } from "@/lib/constants";
 import { formatDate, formatDateTime } from "@/lib/format";
-import { computeTenure, renderBool } from "@/lib/tenure";
+import { computeTenure, renderBool, renderDate } from "@/lib/tenure";
 
 /** 员工详情：字段按分组 / Tab 展示，避免 40+ 字段堆在一页 */
 
@@ -263,6 +263,9 @@ export default function EmployeeDetail({
           <DetailItem label="是否入职满 2 个月">
             {renderBool(tenure.past2Months)}
           </DetailItem>
+          <DetailItem label="满 2 个月日期（自然月口径）">
+            {renderDate(tenure.twoMonthDate)}
+          </DetailItem>
           <DetailItem label="计算基准">
             {tenure.active ? "在职（截至今天）" : "已离职（截至离职日）"}
           </DetailItem>
@@ -270,7 +273,9 @@ export default function EmployeeDetail({
         <p className="mt-3 border-t border-[var(--hr-border)] pt-2 text-[11.5px] text-slate-400">
           以上数值由系统根据<strong>入职日期</strong>
           {!tenure.active ? "与<strong>离职日期</strong>" : ""}
-          实时推算，与 Excel「导入快照」字段独立、互不依赖。下方「其他字段与导入快照」分组中的
+          实时推算，与 Excel「导入快照」字段独立、互不依赖。
+          「是否入职满 2 个月」按<strong>自然月口径</strong>判定（参考日 ≥ 入职日 + 2 个自然月，
+          月末日期落到目标月最后一天，不用 60 天近似）。下方「其他字段与导入快照」分组中的
           「在职年限（导入快照）/ 是否满 7 天（快照）」等仅作历史留档，**不参与任何判定**。
         </p>
       </Card>
