@@ -1,8 +1,9 @@
 /**
  * 部门自动归属服务（第四阶段）
  *
- * 目的：解决 1902 名员工「无部门归属」的问题 —— Excel 源数据里根本没这个信息，
+ * 目的：解决大量员工「无部门归属」的问题 —— Excel 源数据里根本没这个信息，
  * 靠人一条条点不现实，所以按规则**生成推荐**，人确认后再批量写入。
+ * （具体人数是实时统计，本模块注释与 UI 均不写死任何历史数字。）
  *
  * 规则三维度（都是可选的，已填的维度之间是 AND）：
  *   - storeId      按门店匹配
@@ -18,6 +19,7 @@
  */
 import { prisma } from "./prisma";
 import { DEFAULT_OPERATOR } from "./history-service";
+import { computeDbVersion } from "./import-preview-service";
 
 export interface RuleRow {
   id: number;
@@ -147,7 +149,14 @@ export async function deleteRule(id: number) {
 }
 
 // ------------------------------------------------------------
-// 推荐预览与执行
+// 推荐预览与执行（Stage 7.1 整改）
+//
+// 核心原则：**预览与执行分离，数量以全量计算为准，绝不按展示用 items 截断**。
+//   preview：全量统计 affected / unmatched / byDepartment / byRule；
+//             items 只作为页面展示（itemLimit 截断），并携带数据版本快照 snapshot。
+//   apply：重新计算完整匹配集合（内部调 matchAllEmployees，不受 limit 影响），
+//           且先复核 snapshot（库版本 / 员工数 / 规则数 / 匹配数任一变化 → 拒绝，要求重新预览）。
+// 旧实现 apply 直接消费 preview.items（slice 500），>500 人时会漏改 —— 已废弃。
 // ------------------------------------------------------------
 
 export interface AutoPreviewItem {
@@ -164,18 +173,39 @@ export interface AutoPreviewItem {
 }
 
 export interface AutoPreview {
-  /** 会受影响的员工数 */
+  /** 全部实际匹配的员工数（全量口径，**不受 items 截断影响**） */
   affected: number;
-  /** 按部门汇总 */
+  /** 按部门汇总（全量） */
   byDepartment: { departmentId: number; departmentName: string; count: number }[];
-  /** 命中的规则 */
+  /** 命中的规则（全量） */
   byRule: { ruleId: number; departmentName: string; count: number; matchedBy: string }[];
-  /** 未命中任何规则的员工数（仍需人工处理） */
+  /** 未命中任何规则的员工数（全量，仍需人工处理） */
   unmatched: number;
-  /** 明细（预览页展示前 N 条） */
+  /** 明细：仅供页面展示用，按 itemLimit 截断；**执行数量以 affected 为准，绝不用 items 长度** */
   items: AutoPreviewItem[];
+  /** items 是否被截断（展示口径提示） */
+  itemsTruncated: boolean;
   /** 是否覆盖已有部门的员工 */
   overrideExisting: boolean;
+  /** 数据版本快照（预览时冻结），apply 必须携带它做一致性校验，防止「旧预览执行到已变化的库」 */
+  snapshot: AutoPreviewSnapshot;
+}
+
+/** 预览时的数据版本指纹，apply 前复核，库有变化则拒绝执行 */
+export interface AutoPreviewSnapshot {
+  dbVersion: string;
+  /** 预览时的「无部门（或未覆盖时全量）」员工总数 */
+  baseEmployeeCount: number;
+  ruleCount: number;
+  matchedCount: number;
+  noDeptCount: number;
+}
+
+export class StalePreviewError extends Error {
+  constructor(detail: string) {
+    super("预览已过期（数据库在预览后发生变化），请重新预览后再执行。" + detail);
+    this.name = "StalePreviewError";
+  }
 }
 
 interface EmpLite {
@@ -205,26 +235,14 @@ function matchRule(emp: EmpLite, rule: RuleRow): string | null {
 }
 
 /**
- * 生成部门归属推荐（**只读，不写库**）
+ * 全量匹配（预览与执行共用同一套逻辑 —— 保证「预览数量 = 执行数量」）
+ * @returns 每个待修改员工的完整明细（不截断）
  */
-export async function previewDepartmentAuto(opts: {
+async function matchAllEmployees(opts: {
   overrideExisting?: boolean;
-  limit?: number;
-} = {}): Promise<AutoPreview> {
+}): Promise<{ matched: AutoPreviewItem[]; unmatched: number; baseCount: number }> {
   const overrideExisting = opts.overrideExisting ?? false;
-  const limit = opts.limit ?? 500;
-
   const rules = await listRules(true);
-  if (!rules.length) {
-    return {
-      affected: 0,
-      byDepartment: [],
-      byRule: [],
-      unmatched: 0,
-      items: [],
-      overrideExisting,
-    };
-  }
 
   const emps = await prisma.employee.findMany({
     where: {
@@ -245,7 +263,9 @@ export async function previewDepartmentAuto(opts: {
     orderBy: { id: "asc" },
   });
 
-  const items: AutoPreviewItem[] = [];
+  if (!rules.length) return { matched: [], unmatched: emps.length, baseCount: emps.length };
+
+  const matched: AutoPreviewItem[] = [];
   let unmatched = 0;
   for (const e of emps as unknown as EmpLite[]) {
     let hit: { rule: RuleRow; why: string } | null = null;
@@ -261,7 +281,7 @@ export async function previewDepartmentAuto(opts: {
       continue;
     }
     if (!overrideExisting && e.departmentId === hit.rule.departmentId) continue;
-    items.push({
+    matched.push({
       employeeId: e.id,
       employeeCode: e.employeeId,
       name: e.name,
@@ -274,13 +294,34 @@ export async function previewDepartmentAuto(opts: {
       matchedBy: hit.why,
     });
   }
+  return { matched, unmatched, baseCount: emps.length };
+}
+
+/**
+ * 生成部门归属推荐（**只读，不写库**）
+ * @param itemLimit 展示明细上限（默认 500）——只影响 items，不影响 affected / 执行数量
+ */
+export async function previewDepartmentAuto(opts: {
+  overrideExisting?: boolean;
+  itemLimit?: number;
+} = {}): Promise<AutoPreview> {
+  const overrideExisting = opts.overrideExisting ?? false;
+  const itemLimit = Math.max(1, opts.itemLimit ?? 500);
+
+  const { matched, unmatched, baseCount } = await matchAllEmployees({ overrideExisting });
+  const rules = await listRules(true);
+  const dbVersion = await computeDbVersion();
+
+  const noDeptCount = overrideExisting
+    ? baseCount
+    : await prisma.employee.count({ where: { deletedAt: null, departmentId: null } });
 
   const deptMap = new Map<number, { departmentId: number; departmentName: string; count: number }>();
   const ruleMap = new Map<
     number,
     { ruleId: number; departmentName: string; count: number; matchedBy: string }
   >();
-  for (const it of items) {
+  for (const it of matched) {
     const d = deptMap.get(it.departmentId) ?? {
       departmentId: it.departmentId,
       departmentName: it.departmentName,
@@ -300,31 +341,78 @@ export async function previewDepartmentAuto(opts: {
   }
 
   return {
-    affected: items.length,
+    affected: matched.length,
     byDepartment: [...deptMap.values()].sort((a, b) => b.count - a.count),
     byRule: [...ruleMap.values()].sort((a, b) => b.count - a.count),
     unmatched,
-    items: items.slice(0, limit),
+    items: matched.slice(0, itemLimit),
+    itemsTruncated: matched.length > itemLimit,
     overrideExisting,
+    snapshot: {
+      dbVersion,
+      baseEmployeeCount: baseCount,
+      ruleCount: rules.length,
+      matchedCount: matched.length,
+      noDeptCount,
+    },
   };
 }
 
+/** 快照复核：库版本 / 规则数 / 匹配数任一变化即拒绝（防「早上的预览下午执行」） */
+export async function assertSnapshotFresh(
+  snapshot: AutoPreviewSnapshot,
+  overrideExisting: boolean
+): Promise<void> {
+  const dbVersion = await computeDbVersion();
+  const rules = await listRules(true);
+  const { matched, baseCount } = await matchAllEmployees({ overrideExisting });
+  const noDeptCount = overrideExisting
+    ? baseCount
+    : await prisma.employee.count({ where: { deletedAt: null, departmentId: null } });
+
+  if (
+    dbVersion !== snapshot.dbVersion ||
+    rules.length !== snapshot.ruleCount ||
+    matched.length !== snapshot.matchedCount ||
+    baseCount !== snapshot.baseEmployeeCount ||
+    noDeptCount !== snapshot.noDeptCount
+  ) {
+    throw new StalePreviewError(
+      `预览时 员工=${snapshot.baseEmployeeCount} 无部门=${snapshot.noDeptCount} ` +
+        `规则=${snapshot.ruleCount} 匹配=${snapshot.matchedCount}；` +
+        `现在 员工=${baseCount} 无部门=${noDeptCount} 规则=${rules.length} 匹配=${matched.length}`
+    );
+  }
+}
+
 /**
- * 执行自动归属（复用批量更新的同一条路径，因此自带变更记录）
+ * 执行自动归属（Stage 7.1 整改）
+ *
+ * 两种入口：
+ *  1. 携带 snapshot（推荐）：先复核版本，库有变化直接拒绝（StalePreviewError → 409）；
+ *  2. 不带 snapshot：重新计算完整匹配集合并直接执行（数量恒等于全量匹配数）。
+ * 执行**绝不消费预览的 items**，而是重新跑 matchAllEmployees 的完整结果，
+ * 因此即使展示明细被截断，实际写入数量也等于全量 affected。
  */
 export async function applyDepartmentAuto(opts: {
   overrideExisting?: boolean;
   operator?: string;
+  snapshot?: AutoPreviewSnapshot;
 }) {
-  const preview = await previewDepartmentAuto({ overrideExisting: opts.overrideExisting });
-  if (!preview.affected) {
+  const { snapshot } = opts;
+  if (snapshot) {
+    await assertSnapshotFresh(snapshot, opts.overrideExisting ?? false);
+  }
+
+  const { matched } = await matchAllEmployees({ overrideExisting: opts.overrideExisting });
+  if (!matched.length) {
     return {
       matched: 0,
       updated: 0,
       unchanged: 0,
       failed: 0,
       batchKey: null,
-      byDepartment: [],
+      byDepartment: [] as { departmentId: number; departmentName: string; updated: number }[],
     };
   }
 
@@ -339,15 +427,17 @@ export async function applyDepartmentAuto(opts: {
     byDepartment: [] as { departmentId: number; departmentName: string; updated: number }[],
   };
 
-  const byDept = new Map<number, number[]>();
-  for (const it of preview.items) {
-    if (!byDept.has(it.departmentId)) byDept.set(it.departmentId, []);
-    byDept.get(it.departmentId)!.push(it.employeeId);
+  const byDept = new Map<number, { ids: number[]; name: string; ruleIds: number[] }>();
+  for (const it of matched) {
+    const g = byDept.get(it.departmentId) ?? { ids: [], name: it.departmentName, ruleIds: [] };
+    g.ids.push(it.employeeId);
+    if (!g.ruleIds.includes(it.ruleId)) g.ruleIds.push(it.ruleId);
+    byDept.set(it.departmentId, g);
   }
 
-  for (const [departmentId, ids] of byDept) {
+  for (const [departmentId, g] of byDept) {
     const r = await batchUpdateEmployees({
-      ids,
+      ids: g.ids,
       patch: { departmentId },
       operator: opts.operator ?? DEFAULT_OPERATOR,
     });
@@ -356,8 +446,31 @@ export async function applyDepartmentAuto(opts: {
     result.unchanged += r.unchanged;
     result.failed += r.failed;
     result.batchKey = r.batchKey;
-    const name = preview.byDepartment.find((d) => d.departmentId === departmentId)?.departmentName ?? "—";
-    result.byDepartment.push({ departmentId, departmentName: name, updated: r.updated });
+    result.byDepartment.push({ departmentId, departmentName: g.name, updated: r.updated });
+
+    // 批次审计：记录「改了哪几个部门 / 各多少人 / 命中了哪些规则」
+    await prisma.auditLog.create({
+      data: {
+        actor: opts.operator ?? DEFAULT_OPERATOR,
+        action: "BATCH_UPDATE",
+        entity: "Department",
+        entityId: String(departmentId),
+        summary: `部门自动归属：${g.name} 批量写入 ${g.ids.length} 人`,
+        detail: JSON.stringify({
+          batchKey: r.batchKey,
+          type: "department-auto",
+          departmentId,
+          departmentName: g.name,
+          employeeCount: g.ids.length,
+          updated: r.updated,
+          unchanged: r.unchanged,
+          failed: r.failed,
+          ruleIds: g.ruleIds,
+          overrideExisting: opts.overrideExisting ?? false,
+          at: new Date().toISOString(),
+        }),
+      },
+    });
   }
 
   return result;

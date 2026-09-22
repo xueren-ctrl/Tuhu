@@ -21,6 +21,7 @@ const SEVERITY_LABEL: Record<string, { text: string; cls: string }> = {
 export default async function DataQualityPage() {
   const s = await getDataQualitySummary();
   const meta = new Map(DQ_CATEGORIES.map((c) => [c.key, c]));
+  const noDeptRow = s.rows.find((r) => r.key === "no-department");
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
@@ -129,7 +130,7 @@ export default async function DataQualityPage() {
             <Link href="/employees/batch" className="mx-1 underline">
               批量编辑
             </Link>
-            ；量大（1902 人无部门）用
+            ；量大（当前 {noDeptRow?.count ?? 0} 人无部门）用
             <Link href="/employees/department-auto" className="mx-1 underline">
               部门自动归属
             </Link>

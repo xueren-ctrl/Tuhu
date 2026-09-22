@@ -129,7 +129,18 @@ export interface MergeResult {
   mainTotalAfter: number;
 }
 
-/** 执行合并 */
+/**
+ * 执行合并（Stage 7.1 事务安全整改）
+ *
+ * 整个「合并簇」是一个**原子操作**：员工归属修改、EmployeeHistory、StoreAlias、
+ * 门店停用、AuditLog 全部在同一个 prisma.$transaction 内完成。
+ * 任何一步失败 → 整体回滚，绝不留下：
+ *   - 部分员工被改挂、部分没改（半套 storeId）
+ *   - 孤儿 StoreAlias（别名建了但员工没迁完）
+ *   - 门店提前 INACTIVE 但迁移未发生
+ *   - 半套 EmployeeHistory
+ *   - 记了「成功合并」的 AuditLog
+ */
 export async function mergeStores(opts: {
   mainStoreId: number;
   mergeStoreIds: number[];
@@ -144,40 +155,43 @@ export async function mergeStores(opts: {
   if (!main) throw new Error("主门店不存在");
 
   const batchKey = newBatchKey("merge");
-  let employeesMoved = 0;
-  let aliasesCreated = 0;
-  let storesDeactivated = 0;
-  const mergedStoreNames: string[] = [];
 
-  for (const srcId of mergeIds) {
-    const src = await prisma.store.findUnique({ where: { id: srcId } });
-    if (!src) continue;
-    mergedStoreNames.push(src.name);
+  // 整个合并簇包进一个事务；tx 内任何一步抛错 → 全部回滚
+  const stats = await prisma.$transaction(async (tx) => {
+    let employeesMoved = 0;
+    let aliasesCreated = 0;
+    let storesDeactivated = 0;
+    const mergedStoreNames: string[] = [];
 
-    // ① 只改 storeId：把挂在这家店的员工迁到主门店（不删除、不改其它字段）
-    const targets = await prisma.employee.findMany({
-      where: { deletedAt: null, storeId: srcId },
-      select: { id: true, employeeId: true, storeId: true },
-    });
-    for (const t of targets) {
-      await prisma.employee.update({ where: { id: t.id }, data: { storeId: mainStoreId } });
-      await recordEmployeeHistory({
-        employeeId: t.id,
-        employeeCode: t.employeeId,
-        source: "BATCH_UPDATE",
-        batchKey,
-        operator,
-        changes: [{ field: "storeId", oldValue: srcId, newValue: mainStoreId }],
+    for (const srcId of mergeIds) {
+      const src = await tx.store.findUnique({ where: { id: srcId } });
+      if (!src) continue;
+      mergedStoreNames.push(src.name);
+
+      // ① 只改 storeId：把挂在这家店的员工迁到主门店（不删除、不改其它字段，raw 原文保留）
+      const targets = await tx.employee.findMany({
+        where: { deletedAt: null, storeId: srcId },
+        select: { id: true, employeeId: true, storeId: true },
       });
-      employeesMoved++;
-    }
+      for (const t of targets) {
+        await tx.employee.update({ where: { id: t.id }, data: { storeId: mainStoreId } });
+        await recordEmployeeHistory({
+          employeeId: t.id,
+          employeeCode: t.employeeId,
+          source: "BATCH_UPDATE",
+          batchKey,
+          operator,
+          changes: [{ field: "storeId", oldValue: srcId, newValue: mainStoreId }],
+          tx,
+        });
+        employeesMoved++;
+      }
 
-    // ② 保留历史写法：把被合并的门店名登记为别名
-    if (src.name !== main.name) {
-      const exists = await prisma.storeAlias.findUnique({ where: { alias: src.name } });
-      if (!exists) {
-        try {
-          await prisma.storeAlias.create({
+      // ② 保留历史写法：把被合并的门店名登记为别名
+      if (src.name !== main.name) {
+        const exists = await tx.storeAlias.findUnique({ where: { alias: src.name } });
+        if (!exists) {
+          await tx.storeAlias.create({
             data: {
               storeId: mainStoreId,
               alias: src.name,
@@ -185,48 +199,60 @@ export async function mergeStores(opts: {
             },
           });
           aliasesCreated++;
-        } catch {
-          /* 别名冲突时不阻断合并 */
+        }
+        // 顺带把原文列仍写着旧名、且尚未归属主门店的员工也统一过来（同样只改外键）
+        const stragglers = await tx.employee.findMany({
+          where: {
+            deletedAt: null,
+            storeNameRaw: src.name,
+            OR: [{ storeId: null }, { storeId: { not: mainStoreId } }],
+          },
+          select: { id: true, employeeId: true, storeId: true },
+        });
+        for (const t of stragglers) {
+          await tx.employee.update({ where: { id: t.id }, data: { storeId: mainStoreId } });
+          await recordEmployeeHistory({
+            employeeId: t.id,
+            employeeCode: t.employeeId,
+            source: "BATCH_UPDATE",
+            batchKey,
+            operator,
+            changes: [{ field: "storeId", oldValue: t.storeId, newValue: mainStoreId }],
+            tx,
+          });
+          employeesMoved++;
         }
       }
-      // 顺带把原文列仍写着旧名、且尚未归属主门店的员工也统一过来（同样只改外键）
-      const stragglers = await prisma.employee.findMany({
-        where: {
-          deletedAt: null,
-          storeNameRaw: src.name,
-          OR: [{ storeId: null }, { storeId: { not: mainStoreId } }],
-        },
-        select: { id: true, employeeId: true, storeId: true },
-      });
-      for (const t of stragglers) {
-        await prisma.employee.update({ where: { id: t.id }, data: { storeId: mainStoreId } });
-        await recordEmployeeHistory({
-          employeeId: t.id,
-          employeeCode: t.employeeId,
-          source: "BATCH_UPDATE",
-          batchKey,
-          operator,
-          changes: [{ field: "storeId", oldValue: t.storeId, newValue: mainStoreId }],
-        });
-        employeesMoved++;
-      }
+
+      // ③ 停用被合并的门店记录（不删除）
+      await tx.store.update({ where: { id: srcId }, data: { status: "INACTIVE" } });
+      storesDeactivated++;
     }
 
-    // ③ 停用被合并的门店记录（不删除）
-    await prisma.store.update({ where: { id: srcId }, data: { status: "INACTIVE" } });
-    storesDeactivated++;
-  }
+    // ④ 审计：与业务修改同事务 —— 成功才记录，失败整体回滚（不留半套痕迹）
+    await tx.auditLog.create({
+      data: {
+        actor: operator,
+        action: "MERGE_STORE",
+        entity: "Store",
+        entityId: String(mainStoreId),
+        summary:
+          "合并门店：" + mergeIds.length + " 家并入「" + main.name + "」，迁移员工 " + employeesMoved + " 人",
+        detail: JSON.stringify({
+          batchKey,
+          type: "store-merge",
+          mainStore: { id: mainStoreId, name: main.name },
+          mergeStoreIds: mergeIds,
+          mergeStoreNames: mergedStoreNames,
+          employeesMoved,
+          aliasesCreated,
+          storesDeactivated,
+          at: new Date().toISOString(),
+        }),
+      },
+    });
 
-  await prisma.auditLog.create({
-    data: {
-      actor: operator,
-      action: "MERGE_STORE",
-      entity: "Store",
-      entityId: String(mainStoreId),
-      summary:
-        "合并门店：" + mergeIds.length + " 家并入「" + main.name + "」，迁移员工 " + employeesMoved + " 人",
-      detail: JSON.stringify({ mergeStoreIds: mergeIds, batchKey }),
-    },
+    return { employeesMoved, aliasesCreated, storesDeactivated, mergedStoreNames };
   });
 
   const mainTotalAfter = await prisma.employee.count({
@@ -237,10 +263,10 @@ export async function mergeStores(opts: {
     mainStoreId,
     mainStoreName: main.name,
     mergedStoreIds: mergeIds,
-    mergedStoreNames,
-    employeesMoved,
-    aliasesCreated,
-    storesDeactivated,
+    mergedStoreNames: stats.mergedStoreNames,
+    employeesMoved: stats.employeesMoved,
+    aliasesCreated: stats.aliasesCreated,
+    storesDeactivated: stats.storesDeactivated,
     batchKey,
     mainTotalAfter,
   };

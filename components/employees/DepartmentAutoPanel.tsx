@@ -159,10 +159,26 @@ export default function DepartmentAutoPanel({ stores, departments, positions }: 
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ action: "apply", overrideExisting }),
+        body: JSON.stringify({
+          action: "apply",
+          overrideExisting,
+          // 携带预览时冻结的版本快照 —— 服务端复核，库已变化则 409 要求重新预览
+          snapshot: preview.snapshot,
+        }),
       });
       const j = await r.json();
-      if (!j.ok) throw new Error(j.error ?? "执行失败");
+      if (!j.ok) {
+        if (r.status === 409) {
+          setMsg({
+            tone: "warn",
+            text: j.error + "已为你刷新最新预览，请确认后再次执行。",
+          });
+          await refreshPreview();
+        } else {
+          throw new Error(j.error ?? "执行失败");
+        }
+        return;
+      }
       const d = j.data;
       setMsg({
         tone: "ok",

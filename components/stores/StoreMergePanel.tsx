@@ -57,25 +57,42 @@ export default function StoreMergePanel({ clusters }: Props) {
     });
   }
 
+  /** 预览口径：合并后主门店人数 + 将建立的别名（只提示，不自动执行） */
+  function previewOf(clusterIdx: number) {
+    const c = clusters[clusterIdx];
+    const main = mainId[clusterIdx] ?? c.suggestedMainId;
+    const ids = (picked[clusterIdx] ?? []).filter((x) => x !== main);
+    const mainStore = c.stores.find((s) => s.id === main);
+    const selected = c.stores.filter((s) => ids.includes(s.id));
+    const afterTotal = (mainStore?.total ?? 0) + selected.reduce((n, s) => n + s.total, 0);
+    const aliasesToCreate = selected.filter((s) => s.name !== mainStore?.name).map((s) => s.name);
+    return {
+      mainName: mainStore?.name ?? "",
+      selected,
+      moveCount: selected.reduce((n, s) => n + s.total, 0),
+      afterTotal,
+      aliasesToCreate,
+    };
+  }
+
   async function merge(clusterIdx: number) {
     const c = clusters[clusterIdx];
-    const main = mainId[clusterIdx];
+    const main = mainId[clusterIdx] ?? c.suggestedMainId;
     const ids = (picked[clusterIdx] ?? []).filter((x) => x !== main);
     if (!ids.length) {
       setMsg({ tone: "err", text: "请至少勾选一家要合并进来的门店" });
       return;
     }
-    const mainName = c.stores.find((s) => s.id === main)?.name ?? "";
-    const mergeNames = c.stores.filter((s) => ids.includes(s.id)).map((s) => s.name);
-    const moveCount = c.stores
-      .filter((s) => ids.includes(s.id))
-      .reduce((n, s) => n + s.total, 0);
-
+    const pv = previewOf(clusterIdx);
     if (
       !confirm(
-        `确认合并？\n\n主门店：${mainName}\n合并进来：${mergeNames.join("、")}\n\n` +
-          `将把 ${moveCount} 名员工改挂到「${mainName}」（只改门店外键）。\n` +
-          `员工数据不会删除；被合并的门店名会保留为别名；门店记录本身停用不删除。`
+        `确认合并？\n\n主门店：${pv.mainName}\n合并进来：${pv.selected.map((s) => s.name).join("、")}\n\n` +
+          `将把 ${pv.moveCount} 名员工改挂到「${pv.mainName}」（只改门店外键），合并后主门店共 ${pv.afterTotal} 人。\n` +
+          (pv.aliasesToCreate.length
+            ? `将建立别名：${pv.aliasesToCreate.join("、")}\n`
+            : "") +
+          `员工数据不会删除；被合并的门店名会保留为别名；门店记录本身停用不删除。` +
+          `\n\n本组为一个事务：中途失败会整体回滚，不会留下改了一半的数据。`
       )
     )
       return;
@@ -89,12 +106,12 @@ export default function StoreMergePanel({ clusters }: Props) {
         body: JSON.stringify({ mainStoreId: main, mergeStoreIds: ids }),
       });
       const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error ?? "合并失败");
+      if (!r.ok || !j.ok) throw new Error(j.error ?? "合并失败（事务已整体回滚，可安全重试）");
       setResults((prev) => ({ ...prev, [clusterIdx]: j.data as MergeResult }));
       setMsg({
         tone: "ok",
         text:
-          `已合并：${mergeNames.length} 家并入「${j.data.mainStoreName}」，` +
+          `已合并：${j.data.mergedStoreNames.length} 家并入「${j.data.mainStoreName}」，` +
           `迁移员工 ${j.data.employeesMoved} 人，生成别名 ${j.data.aliasesCreated} 个，` +
           `停用门店记录 ${j.data.storesDeactivated} 条。所有变更已写入员工变更记录。`,
       });
@@ -113,9 +130,6 @@ export default function StoreMergePanel({ clusters }: Props) {
       {clusters.map((c, idx) => {
         const main = mainId[idx] ?? c.suggestedMainId;
         const ids = picked[idx] ?? [];
-        const willMove = c.stores
-          .filter((s) => ids.includes(s.id) && s.id !== main)
-          .reduce((n, s) => n + s.total, 0);
         const done = results[idx];
 
         return (
@@ -203,6 +217,38 @@ export default function StoreMergePanel({ clusters }: Props) {
               </table>
             </div>
 
+            {/* 预览汇总：合并后人数 / 将建立别名 / 迁移人数（只展示，不自动执行） */}
+            {(() => {
+              const pv = previewOf(idx);
+              return (
+                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-[12.5px] text-slate-600">
+                  <div className="font-medium text-slate-700">本组预览（勾选后实时计算）</div>
+                  <ul className="mt-1 space-y-1">
+                    <li>
+                      主门店：<strong className="text-slate-800">{pv.mainName}</strong>
+                      （当前 {c.stores.find((s) => s.id === (mainId[idx] ?? c.suggestedMainId))?.total ?? 0} 人）
+                    </li>
+                    <li>
+                      合并后主门店人数：<strong className="text-slate-800 tabular-nums">{pv.afterTotal}</strong>
+                      （迁移 {pv.moveCount} 人）
+                    </li>
+                    <li>
+                      将建立别名：
+                      {pv.aliasesToCreate.length ? (
+                        pv.aliasesToCreate.map((n) => (
+                          <span key={n} className="mx-1 rounded bg-brand-50 px-1.5 py-0.5 text-brand-800">
+                            {n}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-slate-400">无</span>
+                      )}
+                    </li>
+                  </ul>
+                </div>
+              );
+            })()}
+
             <div className="mt-3 flex items-center gap-3">
               <Button
                 variant="primary"
@@ -212,7 +258,7 @@ export default function StoreMergePanel({ clusters }: Props) {
                 {busyIdx === idx ? "合并中…" : "执行合并"}
               </Button>
               <span className="text-[12.5px] text-slate-500">
-                将把 <strong className="text-slate-700">{willMove}</strong> 名员工改挂到主门店。
+                将把 <strong className="text-slate-700">{previewOf(idx).moveCount}</strong> 名员工改挂到主门店。
                 只改门店外键，不删除员工；被合并的门店名保留为别名；门店记录停用不删除。
               </span>
             </div>

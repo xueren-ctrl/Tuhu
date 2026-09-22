@@ -464,8 +464,9 @@ export async function restoreEmployee(id: number, actor?: string) {
 // 1. 只允许改这三个归属字段 —— 状态、日期、身份信息一律不参与批量修改，
 //    避免一次误操作改坏大量档案。
 // 2. 逐条写 EmployeeHistory（来源 BATCH_UPDATE，同一次操作共享 batchKey）。
-// 3. 同步维护 *NameRaw 原文列，规则与单条编辑完全一致，
-//    因此修改后所有人员视图、分布统计立刻同步（它们都是实时查询）。
+// 3. 原始溯源列（storeNameRaw / departmentNameRaw / jobGradeRaw）**保留不动**：
+//    它们是 Excel 的历史证据（Stage 7.1 起），治理变更只动外键字段，
+//    原文列继续可追溯「Excel 里当时写的到底是什么」。
 // ------------------------------------------------------------
 
 /** 批量编辑允许修改的字段白名单 */
@@ -529,18 +530,9 @@ export async function batchUpdateEmployees(opts: {
   };
   if (!targetIds.length) return result;
 
-  // 关联对象名称（用于同步 *NameRaw）
-  const [store, dept, position] = await Promise.all([
-    "storeId" in cleanPatch && cleanPatch.storeId
-      ? prisma.store.findUnique({ where: { id: cleanPatch.storeId } })
-      : null,
-    "departmentId" in cleanPatch && cleanPatch.departmentId
-      ? prisma.department.findUnique({ where: { id: cleanPatch.departmentId } })
-      : null,
-    "positionId" in cleanPatch && cleanPatch.positionId
-      ? prisma.position.findUnique({ where: { id: cleanPatch.positionId } })
-      : null,
-  ]);
+  // Stage 7.1：只改治理字段（storeId / departmentId / positionId）。
+  // 原始溯源字段（storeNameRaw / departmentNameRaw / jobGradeRaw）**一律保留不动**，
+  // 避免「治理字段改了、原文也改了」造成溯源断裂 —— 原文是 Excel 的历史证据，必须原样保留。
 
   const employees = await prisma.employee.findMany({
     where: { id: { in: targetIds } },
@@ -549,19 +541,13 @@ export async function batchUpdateEmployees(opts: {
       employeeId: true,
       name: true,
       storeId: true,
-      storeNameRaw: true,
       departmentId: true,
-      departmentNameRaw: true,
       positionId: true,
-      jobGradeRaw: true,
     },
   });
 
   for (const e of employees) {
     const data: Record<string, unknown> = { ...cleanPatch };
-    if ("storeId" in cleanPatch) data.storeNameRaw = store?.name ?? null;
-    if ("departmentId" in cleanPatch) data.departmentNameRaw = dept?.name ?? null;
-    if ("positionId" in cleanPatch) data.jobGradeRaw = position?.name ?? null;
 
     const changed = changedFields.some((f) => e[f as BatchEditableField] !== cleanPatch[f]);
     if (!changed) {
@@ -570,7 +556,15 @@ export async function batchUpdateEmployees(opts: {
     }
 
     try {
-      const updated = await prisma.employee.update({ where: { id: e.id }, data });
+      const updated = await prisma.employee.update({
+        where: { id: e.id },
+        data,
+        select: {
+          storeId: true,
+          departmentId: true,
+          positionId: true,
+        },
+      });
       await recordEmployeeHistory({
         employeeId: e.id,
         employeeCode: e.employeeId,
@@ -580,7 +574,7 @@ export async function batchUpdateEmployees(opts: {
         changes: diffFields(
           e as unknown as Record<string, unknown>,
           updated as unknown as Record<string, unknown>,
-          ["storeId", "storeNameRaw", "departmentId", "departmentNameRaw", "positionId", "jobGradeRaw"]
+          ["storeId", "departmentId", "positionId"]
         ),
       });
       result.updated++;

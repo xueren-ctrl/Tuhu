@@ -25,6 +25,7 @@
     "test:stage5": "tsx scripts/stage5-test.mjs",
     "test:stage6": "tsx scripts/stage6-test.mjs",
     "test:stage6:security": "tsx scripts/stage6-security-test.mjs",
+    "test:stage7.1": "tsx scripts/stage7-1-test.mjs",
     "test:tenure": "tsx scripts/tenure-test.mjs",
     "check:auth": "node scripts/check-auth-coverage.mjs",
     "test:cleanup": "tsx scripts/cleanup-test-data.ts",

@@ -7,8 +7,9 @@ export const dynamic = "force-dynamic";
 /**
  * /employees/department-auto 部门自动归属（第四阶段）
  *
- * Excel 源数据里没有部门信息（1902 人空着），靠人一条条点不现实，
+ * Excel 源数据里大部分员工没有部门信息，靠人一条条点不现实，
  * 所以按规则生成推荐 → 预览影响人数 → 确认后批量更新。
+ * 无部门的具体人数是实时统计，不在页面上写死。
  */
 export default async function DepartmentAutoPage() {
   const options = await getSelectOptions();
