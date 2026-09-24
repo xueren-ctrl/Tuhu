@@ -45,10 +45,14 @@
 |---|---|---|
 | 启用中的归属规则 | **0** | 当前没有任何已启用规则 |
 | 可匹配员工（affected） | **0** | 无规则 → 无匹配 |
-| 未匹配员工（unmatched） | **0** | 无规则时不计 |
+| 未匹配员工（unmatched） | **1902** | = 当前可匹配基数（实时无部门人数） |
 
-> 部门自动归属的「可匹配 / 未匹配」只有在**配置了规则之后**才有意义。
-> 当前 0 规则意味着工具可用但尚未配置，预览返回全 0。
+> **unmatched 口径（修正）**：无启用规则时 `matchAllEmployees` 返回
+> `{ matched: [], unmatched: baseCount, baseCount: 实时无部门人数 }` ——
+> 即 **affected = 0，unmatched = 当前可匹配基数（当前生产 = 1902）**。
+> 早期版本误写成「无规则时 unmatched=0 / 不计」，那是错误口径，已按
+> Stage 7.1.1 G7-17 的实测统一修正。
+> 「配置了规则之后」才有非零的 affected；unmatched 则始终 = 可匹配基数 − 已匹配。
 
 ---
 
@@ -492,5 +496,84 @@ Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。
   历史 0 · 审计 121 · 规则 0，全部与基线一致；**Excel SHA256 = `aac5f0ca...e19129` 不变**。
 
 ### 8. 边界（本阶段**不做**，等下一步指令）
+16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
+Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。
+
+---
+
+## Stage 7.1.5 门店合并后导入兼容性收口（2026-09-24）
+
+> 提交基线：`2d38246`（Stage 7.1.4）。本阶段只修代码、补测试、做副本库验证，
+> **严禁修改生产 data/hr.db / 执行真实门店合并 / 执行部门自动归属 / 进入 Stage 7.2**。
+> 核心目标：门店合并把旧店置为 INACTIVE 后，下一次 Excel 导入绝不能把员工重新挂回
+> 已停用的旧店；预览与正式提交共用同一套门店解析；StoreAlias 创建始终有审计。
+
+### 1. INACTIVE Store 不再作为导入归属目标
+- 旧行为 `scripts/import-excel.ts` 用 `store.upsert({ where: { name: nm } })` 建立
+  `storeIdByName` —— 会让已合并停用的 INACTIVE 老门店被静默复活为导入目标。
+- 现已改为统一 resolver：INACTIVE 门店**绝不**被 `upsert` 复活、也**绝不**作为归属目标；
+  既无同名门店也无别名时才按既有规则新建 ACTIVE Store，否则 `storeId = null`。
+
+### 2. 统一门店解析规则（单一事实来源）
+新增 `lib/store-service.ts` 的 **`resolveStoreByName()` / `resolveStoreNamesBatch()`**
+（单值与批量共用同一实现，杜绝漂移）。对一个 Excel 原始门店名 `rawName`：
+
+| 优先级 | 条件 | 结果 |
+|---|---|---|
+| ① | 存在 **ACTIVE** `Store.name === rawName` | 用该 ACTIVE Store（`matchedBy:"name"`） |
+| ② | 无 ACTIVE 同名，但存在 `StoreAlias.alias === rawName` 且其目标 **ACTIVE** | 用 `alias.storeId`（`"alias"`） |
+| ③ | 存在 INACTIVE 同名门店 + 有效 ACTIVE Alias | **必须优先 Alias**（被②覆盖），绝不返回 INACTIVE 门店 |
+| ④ | 存在 INACTIVE 同名门店、**无**有效 Alias | `storeId = null`（`"inactive-no-alias"`），记 `STORE_UNRESOLVED` 异常交人工 |
+| ⑤ | 既无 Store 也无 Alias | 导入可新建 ACTIVE Store；预览/提交保持 `null`（`"not-found"`） |
+
+**严禁**：INACTIVE Store 被重新当作有效门店返回 / 被 `upsert` 静默复活 / 被自动重绑。
+
+### 3. 正式导入与预览共用同一解析逻辑
+- `lib/excel-import/diff.ts`（预览 `createPreview` 与提交 `commitPreview` 共用的底座）
+  的门店外键解析由自建 `storeNameToId`（含 INACTIVE、门店名优先）改为
+  **`resolveStoreNamesBatch`**；`created` 行新增 `storeResolution` 字段
+  （`name|alias|unresolved|absent`），`unresolved` 记 `STORE_UNRESOLVED` 问题。
+- `lib/import-preview-service.ts` 新增员工分支的门店解析（原 `findFirst` 无 ACTIVE
+  过滤、Alias 在前）也改为 `resolveStoreByName`。
+- `scripts/import-excel.ts` 的 `storeIdByName` 建立改为 `resolveStoreNamesBatch` +
+  无规则则新建 ACTIVE Store；`storeNameRaw` 原文始终保留。
+- 三处**全部走同一个 resolver**，「预览挂 A 店、提交却挂 INACTIVE A」从此不可能发生。
+
+### 4. StoreAlias CREATE 审计补齐（P1）
+- `addStoreAlias` 旧实现在 `repointed === 0`（无员工迁移）时 `repointEmployeesByName`
+  直接 `return`，导致「别名创建成功但 **0 条审计**」。
+- 现改为：创建别名后**立即**写 `AuditLog(CREATE/StoreAlias)`（actor = Session 操作人，
+  detail 含 aliasId/alias/storeId/note，无敏感字段）；有员工迁移时再写
+  `AuditLog(BATCH_UPDATE/Store)`。全部在**同一 `prisma.$transaction`** 内，任一失败整体回滚。
+  - 无迁移：至少 1 条 CREATE 审计；有迁移：CREATE + BATCH_UPDATE 两条。
+
+### 5. 新增 5 项测试 G7-31 ~ G7-35（副本库 `data/stage7-1-test.db`）
+- **G7-31**：INACTIVE 旧店名 + 有效 Alias → 返回 ACTIVE 主店 storeId（单值=批量，绝不返回 INACTIVE 旧店）。
+- **G7-32**：INACTIVE 同名门店且无 Alias → `storeId = null`（不重绑/不复活）。
+- **G7-33**：旧店名 Excel → 预览 `created.storeResolution = "alias"` 且 commit 后
+  `employee.storeId = ACTIVE 主店`、`storeNameRaw` 原文保留（预览/提交同源）。
+- **G7-34**：`addStoreAlias` 零迁移（repointed=0）也必写 1 条 CREATE 审计（actor=Session）。
+- **G7-35**：CREATE 审计触发器 `trg715_alias_create_fail` 强制失败 → 整笔回滚
+  （Alias 不存在 / 员工 / 历史 / 审计 四表零残留，409 ALIAS_BATCH_ABORTED）。
+
+### 6. merge → alias → import 真实回归（本阶段最重要，G7-36）
+真实 `mergeStores`（HTTP）把「子店」并入「子」主店后：主店 ACTIVE、源店 INACTIVE、
+StoreAlias 已建、2 名员工已迁；下一次 Excel 出现源店旧名时，**resolver / 预览 diff /
+正式 commit 三级一致**指向 ACTIVE 主店（`emp.storeId = 主店`、原文保留），绝不指向
+INACTIVE 源店。
+
+### 7. 全量回归与生产验证
+- typecheck 0 错 · build 成功 · check:auth 41/41 (100%) · stage5 18/18 ·
+  stage6 25/25 · stage6:security 14/14 · tenure 22/22 · **stage7.1 38/38**（G7-01~36）。
+- 生产 `data/hr.db` 实测：员工 1920 · 门店 66（全 ACTIVE）· 别名 0 · 历史 0 ·
+  审计 121 · 规则 0，全部与 7.1.4 基线一致；**Excel SHA256 = `aac5f0ca...e19129` 不变**。
+  所有写测试仅发生在副本 `data/stage7-1-test.db`，测试结束即删除。
+
+### 8. unmatched 口径修正
+- 「部门自动归属（当前）」表的 **unmatched = 1902**（= 当前可匹配基数，即实时无部门人数），
+  不再是旧版误写的「无规则时 unmatched=0 / 不计」。与 Stage 7.1.1 G7-17 口径统一：
+  无启用规则时 `affected = 0`、`unmatched = baseCount = 实时无部门人数`。
+
+### 9. 边界（本阶段**不做**，等下一步指令）
 16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
 Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。

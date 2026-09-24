@@ -29,6 +29,7 @@ import {
 import { recordEmployeeHistory } from "./history-service";
 import { DEFAULT_OPERATOR } from "./history-service";
 import { SPEC_BY_FIELD } from "./excel-import/field-mapping";
+import { resolveStoreByName, isStoreUsable } from "./store-service";
 
 const IMPORT_DIR = path.join(process.cwd(), "data", "import");
 const BATCH_KEY_PREFIX = "import-preview";
@@ -497,12 +498,12 @@ export async function commitPreview(opts: {
       data.dataFlags = rec.dataFlags.length ? JSON.stringify(rec.dataFlags) : null;
 
       // 门店 / 岗位按名称解析外键
+      // Stage 7.1.5（P0）：门店解析改走统一 resolver（与预览 diff.ts、import-excel.ts
+      // 完全同一套规则）：ACTIVE 同名门店 > 指向 ACTIVE 门店的别名 > null。
+      // 预览与提交绝不漂移：不会出现「预览挂 ACTIVE 主店、提交却挂 INACTIVE 旧店」。
       if (rec.storeNameRaw) {
-        const s = await prisma.store.findFirst({ where: { name: rec.storeNameRaw } });
-        if (!s) {
-          const a = await prisma.storeAlias.findUnique({ where: { alias: rec.storeNameRaw } });
-          data.storeId = a ? a.storeId : null;
-        } else data.storeId = s.id;
+        const res = await resolveStoreByName(rec.storeNameRaw);
+        data.storeId = isStoreUsable(res) ? res.storeId : null;
       }
       if (rec.jobGradeRaw) {
         const p = await prisma.position.findFirst({ where: { name: rec.jobGradeRaw } });

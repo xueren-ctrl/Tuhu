@@ -21,6 +21,8 @@ export const ISSUE_TYPE_LABEL: Record<IssueType, string> = {
   STATUS_CONFLICT: "状态冲突",
   RESIGN_DATE_MISSING: "离职日期缺失",
   SOURCE_MISSING: "源数据未提供",
+  /** Stage 7.1.5：门店原文名无法解析到可归属目标（INACTIVE 同名门店且无有效别名） */
+  STORE_UNRESOLVED: "门店无法解析",
   OTHER: "其他",
 };
 

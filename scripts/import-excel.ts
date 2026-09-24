@@ -28,6 +28,8 @@ import type { EmployeeRecord, EmployeeStatus, ParseIssue } from "../lib/excel-im
 import { parseWorkbook } from "../lib/excel-import/parser";
 import { dateFromIso } from "../lib/excel-import/normalization";
 import { SPEC_BY_FIELD, STORED_SPECS } from "../lib/excel-import/field-mapping";
+// Stage 7.1.5（P0）：门店解析统一入口（ACTIVE 门店 > 指向 ACTIVE 门店的别名 > null）
+import { resolveStoreNamesBatch } from "../lib/store-service";
 type Issue = ParseIssue;
 
 // ------------------------------------------------------------
@@ -322,15 +324,44 @@ async function main() {
     new Set(parsed.map((p) => p.jobGradeRaw).filter((v): v is string => !!v))
   ).sort();
 
-  const storeIdByName = new Map<string, number>();
+  // Stage 7.1.5（P0）：门店归属统一走 resolveStoreNamesBatch，**绝不 upsert 复活 INACTIVE 门店**。
+  //   优先级（与预览 / diff.ts 完全一致）：
+  //     ① ACTIVE 同名门店 → 用其 storeId
+  //     ② 指向 ACTIVE 门店的别名 → 用别名的 storeId
+  //   其余一律 storeId = null 并分流：
+  //     - not-found：库里既无同名门店也无别名 → 按既有导入规则新建 ACTIVE Store（保留 Excel 历史取值）
+  //     - inactive-no-alias：存在已停用同名门店但无有效别名 → 不重绑、不复活，记 STORE_UNRESOLVED 交人工
+  const storeResolutions = await resolveStoreNamesBatch(storeNames);
+  const storeIdByName = new Map<string, number | null>();
+  let createdStores = 0;
+  let unresolvedStores = 0;
   for (const nm of storeNames) {
-    const s = await prisma.store.upsert({
-      where: { name: nm },
-      create: { name: nm, status: "ACTIVE" },
-      update: {},
-      select: { id: true },
-    });
-    storeIdByName.set(nm, s.id);
+    const res = storeResolutions.get(nm) ?? { storeId: null, matchedBy: "not-found" as const };
+    if (res.matchedBy === "name" || res.matchedBy === "alias") {
+      // ①/② 有效归属目标（ACTIVE 门店 / 指向 ACTIVE 门店的别名）
+      storeIdByName.set(nm, res.storeId);
+    } else if (res.matchedBy === "not-found") {
+      // 库里既无同名门店也无别名 → 新建 ACTIVE Store（既有行为）
+      const s = await prisma.store.create({ data: { name: nm, status: "ACTIVE" } });
+      storeIdByName.set(nm, s.id);
+      createdStores++;
+    } else {
+      // inactive-no-alias：存在已停用同名门店、无有效别名。
+      // 严禁把已合并停用的旧门店重新当导入目标 / 重新激活：storeId 置空并记明确异常。
+      storeIdByName.set(nm, null);
+      unresolvedStores++;
+      addIssue({
+        row: null,
+        name: null,
+        field: "门店",
+        rawValue: nm,
+        type: "STORE_UNRESOLVED",
+        severity: "WARN",
+        message:
+          `门店原文「${nm}」对应一家已停用（INACTIVE）的门店，且没有指向有效门店的别名；` +
+          `为避免把员工错误挂回已停用门店，本次导入已将 storeId 置空，请在「门店管理」中处理后再重新导入`,
+      });
+    }
   }
   const positionIdByName = new Map<string, number>();
   for (const [i, nm] of jobGrades.entries()) {
@@ -343,8 +374,13 @@ async function main() {
     positionIdByName.set(nm, p.id);
   }
   console.log(
-    `✓ 基础数据：门店 ${storeNames.length} 个 · 职位/工种 ${jobGrades.length} 个（均取自 Excel 历史取值）`
+    `✓ 基础数据：门店 ${storeNames.length} 个（新建 ${createdStores} · 需人工处理 ${unresolvedStores}） · 职位/工种 ${jobGrades.length} 个`
   );
+  if (unresolvedStores > 0) {
+    console.log(
+      `  ⚠ ${unresolvedStores} 个门店原文对应已停用门店且无有效别名，已置空 storeId 并记 STORE_UNRESOLVED（不自动复活/重绑）`
+    );
+  }
   console.log("");
 
   // ---- 6. 幂等导入 ----

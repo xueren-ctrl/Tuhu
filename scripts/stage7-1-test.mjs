@@ -44,11 +44,18 @@
  *   [G7-28] DepartmentRule UPDATE（old/new 变化字段）+ DELETE（删除前内容）审计
  *   [G7-29] StoreAlias DELETE 审计 +1；触发器制造审计失败 → 别名删除整体回滚（零残留）
  *   [G7-30] 部门 apply 的 overrideExisting 与 snapshot 错配 → 409 STALE_PREVIEW（三表零变化）
+ *   [G7-31] resolver：INACTIVE 旧店 + Alias → 指向 ACTIVE 主店（绝不返回 INACTIVE 旧店）
+ *   [G7-32] resolver：INACTIVE 同名店且无有效 Alias → storeId=null（不重绑/不复活）
+ *   [G7-33] Excel 导入预览与正式 commit 共用同一门店解析（旧店名 → ACTIVE 主店，原文保留）
+ *   [G7-34] StoreAlias 创建零迁移也必写 CREATE 审计（actor=Session，绝不 0 审计）
+ *   [G7-35] Alias 创建 + CREATE 审计触发器强制失败 → 整笔回滚（四表零残留，409）
+ *   [G7-36] merge → alias → import：真实合并后旧店名 Excel 解析/预览/commit 三级一致指向主店
  * ============================================================
  */
 import { copyFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawn, execSync } from "node:child_process";
+import ExcelJS from "exceljs";
 
 const ROOT = process.cwd();
 const TEST_DB = path.resolve(ROOT, "data", "stage7-1-test.db");
@@ -92,6 +99,20 @@ const SYN_ALIAS_EMP = "阶段7别名员工";
 const SYN_G26_A = "7治理癸";
 const SYN_G26_B = "7治理癸店";
 const SYN_G26_EMP = "阶段7癸员工";
+// Stage 7.1.5 专用：统一门店解析 resolver 与「merge → alias → import」回归
+const SYN_G31_INACT = "7治理别名旧"; // INACTIVE 门店，且其名称注册为 G31 主店的别名 → resolver 必须给主店
+const SYN_G31_MAIN = "7治理别名主"; // ACTIVE 主店
+const SYN_G32_INACT = "7治理无别"; // INACTIVE 门店且无别名 → resolver 必须给 null
+// G7-34/35 专用：零迁移也必有 CREATE 审计（独立主店，无员工 storeNameRaw 指向别名）
+const SYN_G34_STORE = "7治理导入主";
+const SYN_G34_ALIAS = "7治理导入旧名"; // G7-34：别名成功创建（零迁移）+ CREATE 审计
+const SYN_G34_ALIAS_2 = "7治理导入零迁"; // G7-35：CREATE 审计触发器强制失败 → 整笔回滚
+// G7-36 专用：真实 merge → alias → import 回归（子/子店 去掉「店」= 子 → 合法候选簇）
+const SYN_G36_MAIN = "7治理子";
+const SYN_G36_SRC = "7治理子店";
+const SYN_G36_EMP = "阶段7合并迁移"; // 挂在 source（子店）的员工，merge 后迁到主店
+const SYN_G36_IMPORT = "阶段7合并导入"; // G7-36：合并后用旧店名导入的新员工 → 必落主店
+const SYN_G33_EMP = "阶段7导入测试"; // G7-33 commit 创建的新员工（库中不存在，必然新建）
 
 let pass = 0;
 let fail = 0;
@@ -311,6 +332,31 @@ async function main() {
     },
   });
 
+  // Stage 7.1.5 G7-31/32 专用：INACTIVE 门店的别名解析与「无别名」解析
+  // G31：旧店(INACTIVE)的名称注册为主店(ACTIVE)的别名 → resolver 必须给主店（绝不给 INACTIVE 旧店）
+  const stG31Main = await prisma.store.create({ data: { name: SYN_G31_MAIN } });
+  const stG31Inact = await prisma.store.create({ data: { name: SYN_G31_INACT, status: "INACTIVE" } });
+  await prisma.storeAlias.create({ data: { storeId: stG31Main.id, alias: SYN_G31_INACT } });
+  // G32：INACTIVE 门店且无任何别名 → resolver 必须给 null（不重绑/不复活）
+  const stG32Inact = await prisma.store.create({ data: { name: SYN_G32_INACT, status: "INACTIVE" } });
+  // G7-34/35 专用：零迁移别名 + CREATE 审计原子性（主店 ACTIVE，无员工 storeNameRaw 指向其别名）
+  const stG34 = await prisma.store.create({ data: { name: SYN_G34_STORE } });
+  // G7-36 专用：merge → alias → import 回归（子/子店 去掉「店」= 子 → 合法候选簇）
+  const stG36Main = await prisma.store.create({ data: { name: SYN_G36_MAIN } });
+  const stG36Src = await prisma.store.create({ data: { name: SYN_G36_SRC } });
+  for (let k = 1; k <= 2; k++) {
+    await prisma.employee.create({
+      data: {
+        employeeId: `stage715-g36-${k}`,
+        name: SYN_G36_EMP + k,
+        status: "ACTIVE",
+        sourceSheet: "数据库",
+        importBatch: "stage7-1-test",
+        storeId: stG36Src.id,
+      },
+    });
+  }
+
 
   // ============ 启动服务器（副本数据库） ============
   const server = spawn(
@@ -331,6 +377,7 @@ async function main() {
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg71_batch_fail`);
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg713_alias_fail`);
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg714_aliasdel_fail`);
+    await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg715_alias_create_fail`);
     // 先解绑 FK（员工 → 全部合成门店 / 合成部门）
     await prisma.employee.updateMany({
       where: {
@@ -338,6 +385,7 @@ async function main() {
           in: [
             stMain.id, stA.id, stB.id, stInact.id, stCA.id, stCB.id, stCC.id, stBX.id, stBY.id,
             stG15Main.id, stG15Src.id, stG23A.id, stG23B.id, stAliasStore.id, stG26A.id, stG26B.id,
+            stG31Main.id, stG31Inact.id, stG32Inact.id, stG34.id, stG36Main.id, stG36Src.id,
           ],
         },
       },
@@ -354,6 +402,10 @@ async function main() {
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G23_EMP } } });
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_ALIAS_EMP } } });
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G26_EMP } } });
+    // Stage 7.1.5：G7-36 merge 迁移员工 + G7-33/G7-36 导入创建的新员工
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G36_EMP } } });
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G33_EMP } } });
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G36_IMPORT } } });
     // G7-23/26 专用规则（指向 G23/G26 门店）
     await prisma.departmentRule.deleteMany({
       where: { storeId: { in: [stG23A.id, stG23B.id, stG26A.id, stG26B.id] } },
@@ -370,6 +422,10 @@ async function main() {
             "阶段7别名删除",
             "阶段7别名删除2",
             ...SYN_CLUSTER_NAMES,
+            // Stage 7.1.5：G31 别名（旧店名→主店）/ G34 导入别名 / G36 合并别名
+            SYN_G31_INACT,
+            SYN_G34_ALIAS,
+            SYN_G36_SRC,
           ],
         },
       },
@@ -380,11 +436,16 @@ async function main() {
           in: [
             SYN_STORE_MAIN, SYN_STORE_A, SYN_STORE_B, SYN_INACT,
             ...SYN_CLUSTER_NAMES, ...SYN_G23_NAMES, SYN_ALIAS_STORE, ...SYN_G26_NAMES,
+            SYN_G31_MAIN, SYN_G31_INACT, SYN_G32_INACT, SYN_G34_STORE, SYN_G36_MAIN, SYN_G36_SRC,
           ],
         },
       },
     });
     await prisma.department.deleteMany({ where: { name: SYN_DEPT } });
+    // Stage 7.1.5：G7-33/G7-36 创建的导入预览批次一并清掉（不留测试预览）
+    await prisma.importPreview.deleteMany({
+      where: { fileName: { in: ["stage715-g33.xlsx", "stage715-g36.xlsx"] } },
+    });
   };
   const cleanup = async () => {
     try {
@@ -437,6 +498,41 @@ async function main() {
   };
   const login = async (username, password) =>
     api("POST", "/api/auth/login", { json: { username, password }, noAuth: true });
+
+  // ---- Stage 7.1.5：构造「数据库」Sheet 的 xlsx 并上传预览（复用 stage6 表头映射）----
+  const DB_HEADERS = {
+    1: "序号", 2: "门店名称", 3: "入职时间", 4: "在职年限", 5: "姓名",
+    6: "身份证号", 7: "联系电话", 8: "工种级别", 9: "职位备注", 10: "是否住宿舍",
+  };
+  function buildWorkbook(rows) {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("数据库");
+    ws.getCell(1, 1).value = "（旧版残留占位）";
+    for (const [c, t] of Object.entries(DB_HEADERS)) ws.getCell(2, Number(c)).value = t;
+    for (const [rowNo, cols] of Object.entries(rows)) {
+      for (const [col, val] of Object.entries(cols)) {
+        if (val === undefined || val === null) continue;
+        ws.getCell(Number(rowNo), Number(col)).value = val;
+      }
+    }
+    return wb;
+  }
+  const uploadPreview = async (rows, name) => {
+    const buffer = Buffer.from(await buildWorkbook(rows).xlsx.writeBuffer());
+    const fd = new FormData();
+    fd.append("file", new Blob([new Uint8Array(buffer)]), name);
+    const res = await fetch(BASE + "/api/import/preview", {
+      method: "POST",
+      headers: { Cookie: jar.cookie },
+      body: fd,
+      redirect: "manual",
+    });
+    const sc = res.headers.get("set-cookie");
+    if (sc && sc.split(";")[0].startsWith("hr_session=")) jar.cookie = sc.split(";")[0];
+    let body = null;
+    try { body = await res.json(); } catch {}
+    return { status: res.status, body };
+  };
 
   // 登录 admin（部门自动归属 / 门店合并均 ADMIN only）
   const lg = await login("admin", TEST_ADMIN_PWD);
@@ -1519,6 +1615,246 @@ async function main() {
     );
   }
 
+  // ============ Stage 7.1.5 专用：统一门店解析 resolver（副本库直调 lib） ============
+  const storeService = await import("../lib/store-service.ts");
+
+  // ============ [G7-31] INACTIVE 旧店 + Alias 指向 ACTIVE 主店 → resolver 返回主店 ============
+  {
+    // 场景（setup 已构造）：
+    //   stG31Inact「7治理别名旧」= INACTIVE 门店
+    //   storeAlias.alias = 「7治理别名旧」→ stG31Main「7治理别名主」(ACTIVE)
+    // resolver(rawName = 旧店名) 必须返回 ACTIVE 主店 storeId，绝不能返回 INACTIVE 旧店。
+    const rName = await storeService.resolveStoreByName(SYN_G31_INACT);
+    const rBatch = await storeService.resolveStoreNamesBatch([SYN_G31_INACT, SYN_G31_MAIN]);
+    const ok =
+      rName?.storeId === stG31Main.id &&
+      rName?.matchedBy === "alias" &&
+      rName?.storeId !== stG31Inact.id &&
+      // 批量与单值同一规则
+      rBatch.get(SYN_G31_INACT)?.storeId === stG31Main.id &&
+      rBatch.get(SYN_G31_MAIN)?.storeId === stG31Main.id &&
+      rBatch.get(SYN_G31_MAIN)?.matchedBy === "name";
+    check(
+      "G7-31",
+      "resolver：INACTIVE 旧店名 + 有效 Alias → 返回 ACTIVE 主店 storeId（绝不返回 INACTIVE 旧店，批量=单值）",
+      !!ok,
+      JSON.stringify({
+        rName,
+        batch: Object.fromEntries(rBatch),
+        expectMain: stG31Main.id,
+        inact: stG31Inact.id,
+      })
+    );
+  }
+
+  // ============ [G7-32] INACTIVE 同名店且无 Alias → resolver 返回 null ============
+  {
+    // stG32Inact「7治理无别」= INACTIVE 门店，且没有任何别名指向它或它自身。
+    const r = await storeService.resolveStoreByName(SYN_G32_INACT);
+    const ok = r?.storeId === null && r?.matchedBy === "inactive-no-alias" && r?.storeId !== stG32Inact.id;
+    check(
+      "G7-32",
+      "resolver：INACTIVE 同名门店且无有效 Alias → storeId=null（不重绑/不复活 INACTIVE 门店）",
+      ok,
+      JSON.stringify({ r, inact: stG32Inact.id })
+    );
+  }
+
+  // ============ [G7-33] Excel 导入预览与正式 commit 门店解析一致（旧店名 → ACTIVE 主店） ============
+  {
+    // 场景：ACTIVE 主店 stG31Main + INACTIVE 旧店 stG31Inact + Alias「7治理别名旧」→ 主店
+    // （setup 已构造）。Excel 新员工的门店原文列写「旧店名」，预期：
+    //   预览 diff created 行 storeResolution = "alias"（解析规则唯一来源）
+    //   正式 commit 后库中员工 storeId = 主店、storeNameRaw 原文保留
+    // 两者由同一 resolver 驱动，绝不出现「预览挂 A 店、提交却挂 INACTIVE A」。
+    const g33IdCard = "999001199001010001";
+    const g33Phone = "13900000001";
+    const pv = await uploadPreview(
+      { 5001: { 2: SYN_G31_INACT, 5: SYN_G33_EMP + "1", 6: g33IdCard, 7: g33Phone, 3: "2026-07-01" } },
+      "stage715-g33.xlsx"
+    );
+    const created = pv.body?.data?.diff?.created?.find((c) => c.rowNo === 5001);
+    const pvResolutionOk =
+      pv.status === 201 &&
+      created?.storeResolution === "alias" &&
+      created?.storeName === SYN_G31_INACT;
+    // 预览阶段的 resolver 结果（同一规则的服务端直调）
+    const resolver = await storeService.resolveStoreByName(SYN_G31_INACT);
+
+    const commit = await api("POST", `/api/import/preview/${pv.body?.data?.id}`, {});
+    const emp = await prisma.employee.findFirst({ where: { name: SYN_G33_EMP + "1" } });
+    const commitOk =
+      commit.status === 200 &&
+      commit.body?.data?.created === 1 &&
+      emp?.storeId === stG31Main.id &&
+      emp?.storeNameRaw === SYN_G31_INACT &&
+      emp?.storeId !== stG31Inact.id;
+    check(
+      "G7-33",
+      "预览与正式 commit 共用同一门店解析：旧店名 → 预览 storeResolution=alias 且 commit storeId=ACTIVE 主店（原文保留、不挂 INACTIVE 旧店）",
+      pvResolutionOk && commitOk && resolver?.storeId === stG31Main.id,
+      JSON.stringify({
+        pvStatus: pv.status,
+        createdResolution: created?.storeResolution,
+        commitStatus: commit.status,
+        empStoreId: emp?.storeId,
+        empStoreNameRaw: emp?.storeNameRaw,
+        expectMain: stG31Main.id,
+      })
+    );
+  }
+
+  // ============ [G7-34] StoreAlias 创建零迁移也必写 CREATE 审计（actor=Session） ============
+  {
+    const admin = await prisma.appUser.findFirst({ where: { username: "admin" } });
+    const expectActor = (admin?.displayName?.trim() || admin?.username?.trim() || "").slice(0, 64);
+    // stG34「7治理导入主」ACTIVE；没有任何员工 storeNameRaw 写「7治理导入旧名」→ 零迁移
+    const g34ZeroMig =
+      (await prisma.employee.count({ where: { storeNameRaw: SYN_G34_ALIAS } })) === 0;
+    const aliasBefore = await prisma.storeAlias.count();
+    const auditBefore = await prisma.auditLog.count();
+    const r34 = await api("POST", `/api/stores/${stG34.id}/aliases`, {
+      json: { alias: SYN_G34_ALIAS },
+    });
+    const alias = await prisma.storeAlias.findFirst({ where: { alias: SYN_G34_ALIAS } });
+    const createLog = await prisma.auditLog.findFirst({
+      where: { entity: "StoreAlias", action: "CREATE", entityId: String(alias?.id ?? -1) },
+      orderBy: { id: "desc" },
+    });
+    const cDetail = createLog?.detail ? JSON.parse(createLog.detail) : null;
+    const ok =
+      g34ZeroMig &&
+      r34.status === 201 &&
+      r34.body?.data?.applied?.repointed === 0 &&
+      alias !== null &&
+      (await prisma.storeAlias.count()) === aliasBefore + 1 &&
+      (await prisma.auditLog.count()) === auditBefore + 1 &&
+      createLog?.actor === expectActor &&
+      cDetail?.alias === SYN_G34_ALIAS &&
+      cDetail?.storeId === stG34.id;
+    check(
+      "G7-34",
+      "Alias 创建零迁移（repointed=0）也必写 CREATE 审计 +1（actor=Session，entity=StoreAlias）",
+      ok,
+      JSON.stringify({
+        zeroMig: g34ZeroMig,
+        status: r34.status,
+        repointed: r34.body?.data?.applied?.repointed,
+        aliasDelta: (await prisma.storeAlias.count()) - aliasBefore,
+        auditDelta: (await prisma.auditLog.count()) - auditBefore,
+        actor: createLog?.actor,
+      })
+    );
+  }
+
+  // ============ [G7-35] Alias 创建 + CREATE 审计触发器强制失败 → 整笔回滚（409 四表零残留） ============
+  {
+    const auditBefore = await prisma.auditLog.count();
+    const aliasBefore = await prisma.storeAlias.count();
+    const empBefore = await prisma.employee.count();
+    const histBefore = await prisma.employeeHistory.count();
+    // 触发器：StoreAlias 的 CREATE 审计写入必失败（确定性失败）
+    await prisma.$executeRawUnsafe(
+      `CREATE TRIGGER IF NOT EXISTS trg715_alias_create_fail
+       BEFORE INSERT ON "AuditLog"
+       WHEN "AuditLog".entity = 'StoreAlias' AND "AuditLog".action = 'CREATE'
+       BEGIN
+         SELECT RAISE(ABORT, 'stage7.1.5-test: 强制别名 CREATE 审计写入失败');
+       END`
+    );
+    const r35 = await api("POST", `/api/stores/${stG34.id}/aliases`, {
+      json: { alias: SYN_G34_ALIAS_2 },
+    });
+    await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg715_alias_create_fail`);
+    const aliasExists = (await prisma.storeAlias.count({ where: { alias: SYN_G34_ALIAS_2 } })) === 1;
+    const ok =
+      r35.status === 409 &&
+      r35.body?.code === "ALIAS_BATCH_ABORTED" &&
+      aliasExists === false &&
+      (await prisma.storeAlias.count()) === aliasBefore &&
+      (await prisma.employee.count()) === empBefore &&
+      (await prisma.employeeHistory.count()) === histBefore &&
+      (await prisma.auditLog.count()) === auditBefore;
+    check(
+      "G7-35",
+      "Alias CREATE 审计写入失败 → 整笔回滚（Alias/员工/历史/审计 四表零残留，409 ALIAS_BATCH_ABORTED）",
+      ok,
+      JSON.stringify({
+        status: r35.status,
+        code: r35.body?.code,
+        aliasExists,
+        aliasUnchanged: (await prisma.storeAlias.count()) === aliasBefore,
+        empUnchanged: (await prisma.employee.count()) === empBefore,
+        histUnchanged: (await prisma.employeeHistory.count()) === histBefore,
+        auditUnchanged: (await prisma.auditLog.count()) === auditBefore,
+      })
+    );
+  }
+
+  // ============ [G7-36] merge → alias → import 真实回归（本阶段最重要） ============
+  {
+    // ① 真实执行门店合并（HTTP）：子(主,ACTIVE) + 子店(源,ACTIVE，2 名员工)
+    const pv36 = await api(
+      "GET",
+      `/api/stores/merge?mainStoreId=${stG36Main.id}&mergeStoreIds=${stG36Src.id}`
+    );
+    const snap36 = pv36.body?.data?.snapshot;
+    const exec36 = await api("POST", "/api/stores/merge", {
+      json: { mainStoreId: stG36Main.id, mergeStoreIds: [stG36Src.id], snapshot: snap36 },
+    });
+    const mainAfter = await prisma.store.findUnique({ where: { id: stG36Main.id } });
+    const srcAfter = await prisma.store.findUnique({ where: { id: stG36Src.id } });
+    const aliasRow = await prisma.storeAlias.findFirst({ where: { alias: SYN_G36_SRC } });
+    const mainEmps = await prisma.employee.count({ where: { storeId: stG36Main.id } });
+    const srcEmps = await prisma.employee.count({ where: { storeId: stG36Src.id } });
+    const mergeOk =
+      exec36.status === 200 &&
+      mainAfter?.status === "ACTIVE" &&
+      srcAfter?.status === "INACTIVE" &&
+      aliasRow?.storeId === stG36Main.id &&
+      mainEmps === 2 &&
+      srcEmps === 0;
+
+    // ② 模拟下一次 Excel 中出现源门店旧名称「7治理子店」（新员工的门店原文列）
+    const resolver36 = await storeService.resolveStoreByName(SYN_G36_SRC);
+    const pv36b = await uploadPreview(
+      { 5002: { 2: SYN_G36_SRC, 5: SYN_G36_IMPORT + "1", 6: "999001199001010002", 7: "13900000002", 3: "2026-08-01" } },
+      "stage715-g36.xlsx"
+    );
+    const created36 = pv36b.body?.data?.diff?.created?.find((c) => c.rowNo === 5002);
+    const commit36 = await api("POST", `/api/import/preview/${pv36b.body?.data?.id}`, {});
+    const emp36 = await prisma.employee.findFirst({ where: { name: SYN_G36_IMPORT + "1" } });
+    const importOk =
+      resolver36?.storeId === stG36Main.id &&
+      resolver36?.matchedBy === "alias" &&
+      resolver36?.storeId !== stG36Src.id &&
+      created36?.storeResolution === "alias" &&
+      commit36.status === 200 &&
+      emp36?.storeId === stG36Main.id &&
+      emp36?.storeNameRaw === SYN_G36_SRC;
+    check(
+      "G7-36",
+      "merge→alias→import：合并后主店 ACTIVE/源店 INACTIVE/别名已建/员工已迁；旧店名 Excel 在 resolver/预览/commit 三级一致指向 ACTIVE 主店（绝不指向 INACTIVE 源店）",
+      mergeOk && importOk,
+      JSON.stringify({
+        merge: {
+          status: exec36.status,
+          main: mainAfter?.status,
+          src: srcAfter?.status,
+          alias: aliasRow?.storeId === stG36Main.id,
+          mainEmps,
+          srcEmps,
+        },
+        resolver: resolver36,
+        createdResolution: created36?.storeResolution,
+        commitStatus: commit36.status,
+        empStoreId: emp36?.storeId,
+        empRaw: emp36?.storeNameRaw,
+        expectMain: stG36Main.id,
+      })
+    );
+  }
+
   // ============ [G7-18] 清理后零残留 ============
   {
     await removeSynthetic();
@@ -1547,6 +1883,28 @@ async function main() {
       },
     });
     const remainClusterEmp = await prisma.employee.count({ where: { name: "7治理簇员工" } });
+    // Stage 7.1.5：G7-36 merge 迁移员工 / G7-33/G7-36 导入创建的新员工 也必须清空
+    const remainG36Emp = await prisma.employee.count({ where: { name: { startsWith: SYN_G36_EMP } } });
+    const remainG33Emp = await prisma.employee.count({ where: { name: { startsWith: SYN_G33_EMP } } });
+    const remainG36Import = await prisma.employee.count({ where: { name: { startsWith: SYN_G36_IMPORT } } });
+    // Stage 7.1.5：G31-G36 专用合成门店必须清空
+    const remainG15Store = await prisma.store.count({
+      where: {
+        name: {
+          in: [
+            SYN_G31_MAIN, SYN_G31_INACT, SYN_G32_INACT, SYN_G34_STORE,
+            SYN_G36_MAIN, SYN_G36_SRC,
+          ],
+        },
+      },
+    });
+    const remainG15Alias = await prisma.storeAlias.count({
+      where: {
+        alias: {
+          in: [SYN_G31_INACT, SYN_G34_ALIAS, SYN_G34_ALIAS_2, SYN_G36_SRC],
+        },
+      },
+    });
     const remainAlias = await prisma.storeAlias.count({
       where: {
         alias: {
@@ -1565,23 +1923,33 @@ async function main() {
     });
     check(
       "G7-18",
-      "清理后零残留（合成 员工/迁移/straggler/簇员工/部门/规则/门店/别名 全清空）",
+      "清理后零残留（合成 员工/迁移/straggler/簇员工/部门/规则/门店/别名 全清空，含 7.1.5 导入/合并数据）",
       remainEmp === 0 &&
         remainMig === 0 &&
         remainStrag === 0 &&
         remainClusterEmp === 0 &&
+        remainG36Emp === 0 &&
+        remainG33Emp === 0 &&
+        remainG36Import === 0 &&
         remainDept === 0 &&
         remainRule === 0 &&
         remainStore === 0 &&
+        remainG15Store === 0 &&
+        remainG15Alias === 0 &&
         remainAlias === 0,
       JSON.stringify({
         remainEmp,
         remainMig,
         remainStrag,
         remainClusterEmp,
+        remainG36Emp,
+        remainG33Emp,
+        remainG36Import,
         remainDept,
         remainRule,
         remainStore,
+        remainG15Store,
+        remainG15Alias,
         remainAlias,
       })
     );

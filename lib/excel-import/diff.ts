@@ -12,6 +12,7 @@
  */
 import { prisma } from "../prisma";
 import { maskByField } from "../mask";
+import { resolveStoreNamesBatch, isStoreUsable } from "../store-service";
 import type { EmployeeRecord, ParseResult } from "./types";
 import { COMPARABLE_SPECS, FIELD_LABELS, SENSITIVE_FIELDS, SPEC_BY_FIELD } from "./field-mapping";
 import { DB_SHEET } from "./parser";
@@ -52,6 +53,14 @@ export interface NewEmployeeRow {
   hireDate: string | null;
   jobGrade: string | null;
   reason: string;
+  /**
+   * Stage 7.1.5：门店原文名的统一解析结果（可选，兼容 7.1.5 之前生成的 diffJson）。
+   * "name"      —— 命中 ACTIVE 同名门店
+   * "alias"     —— 命中指向 ACTIVE 门店的别名
+   * "unresolved"—— INACTIVE 同名门店且无有效别名（不自动重绑，storeId=null，记 STORE_UNRESOLVED）
+   * "absent"    —— 门店与别名都不存在（预览/提交保持 storeId=null；正式导入可新建 ACTIVE 门店）
+   */
+  storeResolution?: "name" | "alias" | "unresolved" | "absent";
 }
 
 export interface DiffSummary {
@@ -111,10 +120,10 @@ export async function computeDiff(
 ): Promise<DiffResult> {
   const includeRaw = opts.includeRaw === true;
 
-  const [employeesRaw, stores, aliases, positions, sourceRows] = await Promise.all([
+  const [employeesRaw, stores, positions, sourceRows] = await Promise.all([
     prisma.employee.findMany({ where: { deletedAt: null }, select: EMPLOYEE_SELECT }),
+    // stores 仅用于「id → 名称」展示映射；外键解析一律走下方统一 resolver（含 ACTIVE/别名判定）
     prisma.store.findMany({ select: { id: true, name: true } }),
-    prisma.storeAlias.findMany({ select: { storeId: true, alias: true } }),
     prisma.position.findMany({ select: { id: true, name: true } }),
     prisma.employeeSourceRow.findMany({
       where: { sheet: DB_SHEET },
@@ -122,10 +131,16 @@ export async function computeDiff(
     }),
   ]);
 
-  const storeNameToId = new Map<string, number>();
-  for (const s of stores) storeNameToId.set(s.name.trim(), s.id);
-  for (const a of aliases) if (!storeNameToId.has(a.alias.trim())) storeNameToId.set(a.alias.trim(), a.storeId);
   const storeIdToName = new Map(stores.map((s) => [s.id, s.name]));
+
+  // Stage 7.1.5：门店外键解析统一走 resolveStoreNamesBatch（单一事实来源，
+  // 与 import-excel.ts / resolveStoreByName 完全同一套规则）：
+  //   ACTIVE 同名门店 > 指向 ACTIVE 门店的别名 > null（INACTIVE 同名且无别名绝不重绑）。
+  // 预览与提交（commit）共用本函数，「预览看到挂 A 店、提交却挂 INACTIVE A」从此不可能发生。
+  const rowStoreNames = Array.from(
+    new Set(parsed.rows.map((r) => (r.storeNameRaw ?? "").trim()).filter(Boolean))
+  );
+  const storeResolutions = await resolveStoreNamesBatch(rowStoreNames);
   const positionNameToId = new Map(positions.map((p) => [p.name.trim(), p.id]));
   const positionIdToName = new Map(positions.map((p) => [p.id, p.name]));
 
@@ -187,12 +202,26 @@ export async function computeDiff(
     if (empId === null) empId = bySourceRow.get(row.rowNo) ?? null;
 
     if (empId === null || !byIdEmp.has(empId)) {
+      // Stage 7.1.5：created 行也走统一 resolver，标出门店解析结果，
+      // 预览 / 提交对同一行得到一致的门店归属（ACTIVE 门店 > 指向 ACTIVE 门店的别名 > 无法解析）。
+      const cStoreRes = row.storeNameRaw ? storeResolutions.get(row.storeNameRaw.trim()) : undefined;
+      const storeResolution: NewEmployeeRow["storeResolution"] =
+        cStoreRes === undefined
+          ? "absent"
+          : cStoreRes.matchedBy === "name"
+            ? "name"
+            : cStoreRes.matchedBy === "alias"
+              ? "alias"
+              : cStoreRes.matchedBy === "inactive-no-alias"
+                ? "unresolved"
+                : "absent";
       created.push({
         rowNo: row.rowNo,
         name: row.name,
         storeName: row.storeNameRaw,
         hireDate: row.hireDate,
         jobGrade: row.jobGradeRaw,
+        storeResolution,
         reason: row.idCardKey ? "库中没有匹配的身份证号 + 入职日期" : "无任何可用去重键，无法匹配",
       });
       continue;
@@ -229,10 +258,13 @@ export async function computeDiff(
       push(spec.field, (e as Record<string, unknown>)[spec.field], row.values[spec.field]);
     }
 
-    // ---- 门店（外键）----
-    const newStoreId = row.storeNameRaw
-      ? (storeNameToId.get(row.storeNameRaw.trim()) ?? null)
-      : null;
+    // ---- 门店（外键）—— Stage 7.1.5 统一 resolver ----
+    // 解析规则（与 import-excel.ts 完全一致）：
+    //   ACTIVE 同名门店 > 指向 ACTIVE 门店的别名 > null。
+    //   INACTIVE 同名门店且无有效别名（unresolved）→ newStoreId = null（不自动重绑，
+    //   会生成 storeId→null 的变更并记 STORE_UNRESOLVED，绝不挂回 INACTIVE 门店）。
+    const storeRes = row.storeNameRaw ? storeResolutions.get(row.storeNameRaw.trim()) : undefined;
+    const newStoreId = storeRes && isStoreUsable(storeRes) ? storeRes.storeId : null;
     if ((newStoreId ?? null) !== (e.storeId ?? null)) {
       const c: FieldChange = {
         field: "storeId",

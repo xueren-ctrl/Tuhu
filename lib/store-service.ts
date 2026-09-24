@@ -124,27 +124,120 @@ export async function listStoresWithCounts(opts: { includeInactive?: boolean } =
   });
 }
 
+// ------------------------------------------------------------
+// 统一门店名称解析（Stage 7.1.5 P0）
+//
+// 单一事实来源：scripts/import-excel.ts / lib/import-preview-service.ts /
+// lib/excel-import/diff.ts 解析原始门店名（storeNameRaw）时**全部**走这里，
+// 不再各写一套匹配算法。INACTIVE 门店记录**绝不能**作为有效员工归属目标。
+// ------------------------------------------------------------
+
+/** 单个门店名解析结果。 */
+export interface StoreNameResolution {
+  /** 解析出的 storeId；该原始名不可作为归属目标时为 null */
+  storeId: number | null;
+  /** 解析路径：name=ACTIVE 同名门店 / alias=指向 ACTIVE 门店的别名 /
+ *  inactive-no-alias=INACTIVE 同名门店且无有效别名 / not-found=门店与别名都不存在 */
+  matchedBy: "name" | "alias" | "inactive-no-alias" | "not-found";
+}
+
 /**
- * 门店名称解析：先按标准名精确匹配，再按别名匹配。
- * 供导入脚本 / 各处在「只拿到一个名称字符串」时统一归属。
+ * 统一门店名称解析入口（单值版）。
+ *
+ * 规则（rawName → storeId），严格优先级：
+ *   1. ACTIVE Store.name === rawName
+ *        → 使用该 ACTIVE Store（matchedBy "name"）
+ *   2. 不存在 ACTIVE 同名 Store，但存在 StoreAlias.alias === rawName
+ *        且该别名指向 ACTIVE Store
+ *        → 使用 alias.storeId（matchedBy "alias"）
+ *   3. 存在 INACTIVE 同名 Store 且存在有效 ACTIVE Alias
+ *        → 必须优先 Alias（已被规则 2 覆盖），绝不返回 INACTIVE Store
+ *   4. 存在 INACTIVE 同名 Store，但没有有效 ACTIVE Alias
+ *        → storeId = null（matchedBy "inactive-no-alias"）
+ *          调用方【不得】自动重新绑定 / 重新激活该 INACTIVE Store，并应记录数据质量问题
+ *   5. 既没有 Store，也没有 Alias
+ *        → storeId = null（matchedBy "not-found"）
+ *          导入流程可创建新的 ACTIVE Store；预览 / 提交保持 storeId = null
+ *
+ * INACTIVE 门店记录绝不能作为正常员工归属目标。
+ * 单值与批量共用同一实现，保证规则永不漂移。
  */
 export async function resolveStoreByName(
-  name: string
-): Promise<{ storeId: number; storeName: string; matchedBy: "name" | "alias" } | null> {
-  const n = name?.trim();
-  if (!n) return null;
+  name: string,
+  tx?: Prisma.TransactionClient
+): Promise<StoreNameResolution> {
+  const n = (name ?? "").trim();
+  if (!n) return { storeId: null, matchedBy: "not-found" };
+  const map = await resolveStoreNamesBatch([n], tx);
+  return map.get(n) ?? { storeId: null, matchedBy: "not-found" };
+}
 
-  const byName = await prisma.store.findUnique({ where: { name: n } });
-  if (byName) return { storeId: byName.id, storeName: byName.name, matchedBy: "name" };
+/**
+ * 统一门店名称解析（批量版，规则与 resolveStoreByName 完全一致，共用同一实现）。
+ * 供导入 / diff 批量解析使用。入参 names 中每个去重后的 trim 名都会出现在结果 Map 中。
+ */
+export async function resolveStoreNamesBatch(
+  names: string[],
+  tx?: Prisma.TransactionClient
+): Promise<Map<string, StoreNameResolution>> {
+  const db = tx ?? prisma;
+  const trimmed = Array.from(new Set(names.map((n) => (n ?? "").trim()).filter(Boolean)));
+  const out = new Map<string, StoreNameResolution>();
+  if (!trimmed.length) return out;
 
-  const byAlias = await prisma.storeAlias.findUnique({
-    where: { alias: n },
-    include: { store: true },
-  });
-  if (byAlias) {
-    return { storeId: byAlias.store.id, storeName: byAlias.store.name, matchedBy: "alias" };
+  const [stores, aliases] = await Promise.all([
+    db.store.findMany({
+      where: { name: { in: trimmed } },
+      select: { id: true, name: true, status: true },
+    }),
+    db.storeAlias.findMany({
+      where: { alias: { in: trimmed } },
+      select: { alias: true, storeId: true },
+    }),
+  ]);
+
+  // 别名指向的门店（用于判断别名目标是否仍为 ACTIVE）
+  const aliasTargetIds = Array.from(new Set(aliases.map((a) => a.storeId)));
+  const aliasTargets = aliasTargetIds.length
+    ? await db.store.findMany({
+        where: { id: { in: aliasTargetIds } },
+        select: { id: true, status: true },
+      })
+    : [];
+  const aliasTargetStatus = new Map(aliasTargets.map((s) => [s.id, s.status]));
+
+  const storeByName = new Map(stores.map((s) => [s.name.trim(), s]));
+  // alias 为唯一键（每个别名串至多一条记录）
+  const aliasByStr = new Map(aliases.map((a) => [a.alias.trim(), a]));
+
+  for (const n of trimmed) {
+    const store = storeByName.get(n);
+    const alias = aliasByStr.get(n);
+
+    // 规则 1：ACTIVE 同名门店 → 直接使用
+    if (store && store.status === "ACTIVE") {
+      out.set(n, { storeId: store.id, matchedBy: "name" });
+      continue;
+    }
+    // 规则 2/3：有效别名（别名必须指向 ACTIVE 门店）
+    if (alias && aliasTargetStatus.get(alias.storeId) === "ACTIVE") {
+      out.set(n, { storeId: alias.storeId, matchedBy: "alias" });
+      continue;
+    }
+    // 规则 4：INACTIVE 同名门店、无有效别名 → null（绝不重绑 / 复活）
+    if (store) {
+      out.set(n, { storeId: null, matchedBy: "inactive-no-alias" });
+      continue;
+    }
+    // 规则 5：无门店、无别名
+    out.set(n, { storeId: null, matchedBy: "not-found" });
   }
-  return null;
+  return out;
+}
+
+/** 解析结果是否可用作员工归属目标（仅前两种：ACTIVE 门店 / 指向 ACTIVE 门店的别名）。 */
+export function isStoreUsable(res: StoreNameResolution | undefined): boolean {
+  return res?.matchedBy === "name" || res?.matchedBy === "alias";
 }
 
 /** 某门店的全部可识别名称（标准名 + 全部别名） */
@@ -258,8 +351,15 @@ export async function repointEmployeesByName(
  *   2. 事务内验证 Store.status === ACTIVE（已停用 → StoreNotActiveError → 409 STORE_NOT_ACTIVE，零写入）
  *   3. 事务内再查 Alias 唯一（TOCTOU）
  *   4. 创建 StoreAlias
- *   5. targets 查询在 tx 内执行（repointEmployeesByName 传入 tx）
- *   6. 更新 Employee / 7. 写 EmployeeHistory / 8. 写批次 AuditLog（同事务）
+ *   5. 写 StoreAlias CREATE AuditLog（无论有无员工迁移，必有审计）
+ *   6. targets 查询在 tx 内执行（repointEmployeesByName 传入 tx）
+ *   7. 有员工迁移时：更新 Employee / 写 EmployeeHistory / 写批次 AuditLog（同事务）
+ *
+ * Stage 7.1.5（P1）：CREATE 审计补齐。旧实现在 targets 为 0 时
+ * repointEmployeesByName 直接 return，导致「别名创建成功但 0 条审计」。
+ * 现改为：创建别名后**立即**写 AuditLog(CREATE/StoreAlias)，
+ * 员工迁移（若存在）再写 AuditLog(BATCH_UPDATE/Store)。全部同一事务，
+ * 任一失败整体回滚（别名 / 员工 / 历史 / 审计零残留）。
  */
 export async function addStoreAlias(opts: {
   storeId: number;
@@ -311,7 +411,25 @@ export async function addStoreAlias(opts: {
       const created = await tx.storeAlias.create({
         data: { storeId: opts.storeId, alias, note },
       });
-      // ⑤⑥⑦⑧ 立即统一归属（targets 查询在 tx 内；员工重挂 + 历史 + 批次审计）
+      // ⑤ 审计：别名创建本身必有 CREATE AuditLog（Stage 7.1.5 P1，
+      //    即使没有任何员工需要迁移；actor = Session operator，不含敏感字段）
+      await tx.auditLog.create({
+        data: {
+          actor: operator,
+          action: "CREATE",
+          entity: "StoreAlias",
+          entityId: String(created.id),
+          summary: `新增门店别名「${alias}」→ 门店 ${opts.storeId}`,
+          detail: JSON.stringify({
+            aliasId: created.id,
+            alias,
+            storeId: opts.storeId,
+            note,
+          }),
+        },
+      });
+      // ⑥⑦⑧ 立即统一归属（targets 查询在 tx 内；员工重挂 + 历史 + 批次审计，
+      //    仅当确有员工需要迁移时才写 BATCH_UPDATE 审计；repointed=0 时本步骤零写入）
       const applied = await repointEmployeesByName(opts.storeId, [alias], operator, tx);
 
       return { alias: created, applied };
