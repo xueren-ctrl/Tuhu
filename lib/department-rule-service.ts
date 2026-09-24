@@ -90,27 +90,51 @@ export async function listRules(onlyEnabled = false): Promise<RuleRow[]> {
   return rows.map((r) => shapeRule(r as unknown as RawRule));
 }
 
-export async function createRule(input: {
-  departmentId: number;
-  storeId?: number | null;
-  positionId?: number | null;
-  employeeType?: string | null;
-  priority?: number;
-  enabled?: boolean;
-  remark?: string | null;
-}): Promise<RuleRow> {
+export async function createRule(
+  input: {
+    departmentId: number;
+    storeId?: number | null;
+    positionId?: number | null;
+    employeeType?: string | null;
+    priority?: number;
+    enabled?: boolean;
+    remark?: string | null;
+  },
+  operator = DEFAULT_OPERATOR
+): Promise<RuleRow> {
   if (!input.departmentId) throw new Error("必须选择要归属的部门");
-  const created = await prisma.departmentRule.create({
-    data: {
-      departmentId: input.departmentId,
-      storeId: input.storeId ?? null,
-      positionId: input.positionId ?? null,
-      employeeType: input.employeeType?.trim() || null,
-      priority: input.priority ?? 100,
-      enabled: input.enabled ?? true,
-      remark: input.remark?.trim() || null,
-    },
-    select: selectRule,
+  const data = {
+    departmentId: input.departmentId,
+    storeId: input.storeId ?? null,
+    positionId: input.positionId ?? null,
+    employeeType: input.employeeType?.trim() || null,
+    priority: input.priority ?? 100,
+    enabled: input.enabled ?? true,
+    remark: input.remark?.trim() || null,
+  };
+  // Stage 7.1.4：业务写入 + 审计 同一事务（失败整体回滚，不留「改了没审计」）
+  const created = await prisma.$transaction(async (tx) => {
+    const row = await tx.departmentRule.create({ data, select: selectRule });
+    await tx.auditLog.create({
+      data: {
+        actor: operator,
+        action: "CREATE",
+        entity: "DepartmentRule",
+        entityId: String(row.id),
+        summary: `新增部门自动归属规则 → 部门=${row.departmentId}`,
+        detail: JSON.stringify({
+          ruleId: row.id,
+          departmentId: data.departmentId,
+          storeId: data.storeId,
+          positionId: data.positionId,
+          employeeType: data.employeeType,
+          priority: data.priority,
+          enabled: data.enabled,
+          remark: data.remark,
+        }),
+      },
+    });
+    return row;
   });
   return shapeRule(created as unknown as RawRule);
 }
@@ -125,28 +149,101 @@ export async function updateRule(
     priority: number;
     enabled: boolean;
     remark: string | null;
-  }>
+  }>,
+  operator = DEFAULT_OPERATOR
 ): Promise<RuleRow> {
-  const updated = await prisma.departmentRule.update({
-    where: { id },
-    data: {
-      ...(input.departmentId !== undefined ? { departmentId: input.departmentId } : {}),
-      ...(input.storeId !== undefined ? { storeId: input.storeId } : {}),
-      ...(input.positionId !== undefined ? { positionId: input.positionId } : {}),
-      ...(input.employeeType !== undefined
-        ? { employeeType: input.employeeType?.trim() || null }
-        : {}),
-      ...(input.priority !== undefined ? { priority: input.priority } : {}),
-      ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
-      ...(input.remark !== undefined ? { remark: input.remark?.trim() || null } : {}),
-    },
-    select: selectRule,
+  // Stage 7.1.4：查旧值 + 业务修改 + 审计 同一事务（任一失败整体回滚）
+  const result = await prisma.$transaction(async (tx) => {
+    const before = await tx.departmentRule.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        departmentId: true,
+        storeId: true,
+        positionId: true,
+        employeeType: true,
+        priority: true,
+        enabled: true,
+        remark: true,
+      },
+    });
+    if (!before) throw new Error("规则不存在");
+
+    const updates: Record<string, unknown> = {};
+    if (input.departmentId !== undefined) updates.departmentId = input.departmentId;
+    if (input.storeId !== undefined) updates.storeId = input.storeId;
+    if (input.positionId !== undefined) updates.positionId = input.positionId;
+    if (input.employeeType !== undefined)
+      updates.employeeType = input.employeeType?.trim() || null;
+    if (input.priority !== undefined) updates.priority = input.priority;
+    if (input.enabled !== undefined) updates.enabled = input.enabled;
+    if (input.remark !== undefined) updates.remark = input.remark?.trim() || null;
+
+    const after = await tx.departmentRule.update({
+      where: { id },
+      data: updates,
+      select: selectRule,
+    });
+
+    // 审计：只记「真正变化」的字段（修改前 + 修改后）
+    const auditFields = [
+      "departmentId",
+      "storeId",
+      "positionId",
+      "employeeType",
+      "priority",
+      "enabled",
+      "remark",
+    ] as const;
+    const changed: Record<string, { oldValue: unknown; newValue: unknown }> = {};
+    for (const f of auditFields) {
+      const ov = before[f as "departmentId"];
+      const nv = after[f as "departmentId"];
+      if (JSON.stringify(ov) !== JSON.stringify(nv)) changed[f] = { oldValue: ov, newValue: nv };
+    }
+    if (Object.keys(changed).length) {
+      await tx.auditLog.create({
+        data: {
+          actor: operator,
+          action: "UPDATE",
+          entity: "DepartmentRule",
+          entityId: String(id),
+          summary: `修改部门自动归属规则（${Object.keys(changed).join("、")}）`,
+          detail: JSON.stringify({ ruleId: id, changes: changed }),
+        },
+      });
+    }
+    return after;
   });
-  return shapeRule(updated as unknown as RawRule);
+  return shapeRule(result as unknown as RawRule);
 }
 
-export async function deleteRule(id: number) {
-  await prisma.departmentRule.delete({ where: { id } });
+export async function deleteRule(id: number, operator = DEFAULT_OPERATOR) {
+  // Stage 7.1.4：删除 + 审计 同一事务（审计 detail 保存删除前规则内容）
+  await prisma.$transaction(async (tx) => {
+    const before = await tx.departmentRule.findUnique({ where: { id } });
+    if (!before) throw new Error("规则不存在");
+    await tx.departmentRule.delete({ where: { id } });
+    await tx.auditLog.create({
+      data: {
+        actor: operator,
+        action: "DELETE",
+        entity: "DepartmentRule",
+        entityId: String(id),
+        summary: `删除部门自动归属规则（部门=${before.departmentId}）`,
+        detail: JSON.stringify({
+          ruleId: id,
+          departmentId: before.departmentId,
+          storeId: before.storeId,
+          positionId: before.positionId,
+          employeeType: before.employeeType,
+          priority: before.priority,
+          enabled: before.enabled,
+          remark: before.remark,
+        }),
+      },
+    });
+  });
   return { id };
 }
 
@@ -206,6 +303,12 @@ export interface AutoPreviewSnapshot {
    * 防止「规则数量不变 + 匹配总人数不变，但实际命中员工集合已变化」的陈旧执行。
    */
   matchedFingerprint: string;
+  /**
+   * Stage 7.1.4：预览时使用的「是否覆盖已有部门」参数。
+   * apply 时若与当前请求的 overrideExisting 不一致 → 409 STALE_PREVIEW（不执行）。
+   * 治理快照必须显式绑定执行参数，不能只靠 baseCount/noDeptCount 间接兜底。
+   */
+  overrideExisting: boolean;
 }
 
 export class StalePreviewError extends Error {
@@ -376,6 +479,8 @@ export async function previewDepartmentAuto(opts: {
       matchedCount: matched.length,
       noDeptCount,
       matchedFingerprint: computeMatchedFingerprint(matched),
+      // Stage 7.1.4：快照显式绑定「是否覆盖已有部门」参数，apply 时错配直接拒绝
+      overrideExisting,
     },
   };
 }
@@ -421,7 +526,10 @@ export async function assertSnapshotFresh(
     baseCount !== snapshot.baseEmployeeCount ||
     noDeptCount !== snapshot.noDeptCount ||
     // Stage 7.1.3：命中集合指纹（规则数量不变但命中员工集合变化 → 也拒绝）
-    computeMatchedFingerprint(matched) !== snapshot.matchedFingerprint
+    computeMatchedFingerprint(matched) !== snapshot.matchedFingerprint ||
+    // Stage 7.1.4：执行参数绑定（预览 overrideExisting=false 的快照不能拿去 override=true 执行；
+    // 旧快照缺该字段 → undefined !== 请求值 → 同样拒绝，要求重新预览）
+    (snapshot.overrideExisting ?? false) !== overrideExisting
   ) {
     throw new StalePreviewError(
       `预览时 员工=${snapshot.baseEmployeeCount} 无部门=${snapshot.noDeptCount} ` +

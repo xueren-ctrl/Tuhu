@@ -406,14 +406,29 @@ async function main() {
 
   // ============ [SEC-13] API 认证覆盖率 100% ============
   {
+    // Windows 下同步 spawn（execSync/execFileSync）派生第二个 node 进程会因
+    // node.exe 句柄锁报 EBUSY，故用异步 spawn + await（与启动 next 服务器同一机制）。
+    const runAuthCheck = () =>
+      new Promise((resolve) => {
+        const child = spawn(NODE, ["scripts/check-auth-coverage.mjs"], {
+          cwd: ROOT,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => (out += d));
+        child.stderr.on("data", (d) => (err += d));
+        child.on("close", (code) => resolve({ code, out, err }));
+        child.on("error", (e) => resolve({ code: 1, out: out + String(e) }));
+      });
     let ok = true;
     let detail = "";
-    try {
-      execSync("node scripts/check-auth-coverage.mjs", { cwd: ROOT, stdio: "pipe" });
+    const r = await runAuthCheck();
+    if (r.code === 0) {
       detail = "check:auth exit 0";
-    } catch (e) {
+    } else {
       ok = false;
-      detail = String(e.stdout ?? e.message).slice(-500);
+      detail = (r.out || r.err).slice(-500);
     }
     check("SEC-13", "API 认证覆盖率 = 100%（scripts/check-auth-coverage.mjs）", ok, detail);
   }

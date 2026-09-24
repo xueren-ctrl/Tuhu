@@ -1,6 +1,6 @@
 # Stage 7.1 数据治理安全底座 —— 当前数据库真实基线报告
 
-> 生成时间：2026-09-22（Stage 7.1）· 追加：2026-09-22（Stage 7.1.1 收口）· 追加：2026-09-22（Stage 7.1.2 闭环）· 追加：2026-09-23（Stage 7.1.3 最终收口）· 追加：2026-09-23（Stage 7.1.3 最终收口）
+> 生成时间：2026-09-22（Stage 7.1）· 追加：2026-09-22（Stage 7.1.1 收口）· 追加：2026-09-22（Stage 7.1.2 闭环）· 追加：2026-09-23（Stage 7.1.3 最终收口）· 追加：2026-09-24（Stage 7.1.4 治理配置审计与事务一致性）
 > 数据来源：直接查询当前 `data/hr.db`（实时统计，非旧文档数字）
 > 本阶段**不执行**任何生产批量治理，只建安全底座 + 出预览 + 全量测试。
 > 本报告**不含**任何真实身份证号 / 手机号 / 银行卡号 / 详细个人信息。
@@ -430,6 +430,66 @@ Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。
   stage6 25/25 · stage6:security 14/14 · tenure 22/22 · **stage7.1 28/28**（G7-01~26）。
 - 生产 `data/hr.db` 实测：员工 1920 · ACTIVE 门店 66 · 门店 66 · 别名 0 ·
   历史 0 · 审计 121，全部与基线一致；**Excel SHA256 = `aac5f0ca...e19129` 不变**。
+
+### 8. 边界（本阶段**不做**，等下一步指令）
+16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
+Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。
+
+---
+
+## Stage 7.1.4 治理配置审计与事务一致性（2026-09-24）
+
+> 提交基线：`5b40225`（Stage 7.1.3）。本阶段只做代码 + 副本库测试，**不执行任何生产治理**。
+
+### 1. DepartmentRule CRUD 纳入事务审计（P0）
+- `createRule/updateRule/deleteRule`（`lib/department-rule-service.ts`）改为业务写入 + AuditLog
+  同一 `prisma.$transaction`：任一步失败整体回滚，不留「改了没审计」。
+  - **CREATE**：entity=DepartmentRule、action=CREATE、entityId=新规则 id、actor=Session 操作人，
+    detail 记 departmentId/storeId/positionId/employeeType/priority/enabled/remark（无敏感字段）。
+  - **UPDATE**：查旧值 + 修改 + 审计同事务；detail 只记**真正变化**的字段（oldValue/newValue）。
+  - **DELETE**：查删除前内容 + 删除 + 审计同事务；detail 保存删除前规则全字段。
+- 三个 API 路由（`POST /api/department-rules`、`PUT/DELETE /api/department-rules/[id]`）
+  统一 `await operatorFromRequest(req)` 传入 operator（Session 真实用户），禁止
+  `body.operator` / `x-operator` / query operator（grep 零命中）。
+
+### 2. StoreAlias DELETE 纳入审计（P0）
+- `removeStoreAlias(aliasId, operator)`：「查删除前信息 → 删别名 → 写 AuditLog(DELETE/StoreAlias)」
+  同一事务；detail 含 aliasId/alias/storeId/note（无敏感数据）；员工 storeId 不动。
+- 事务整体回滚（含触发器强制审计失败）→ 别名未删、审计未落，零残留，API 映射
+  **409 ALIAS_DELETE_ABORTED**；`DELETE /api/store-aliases/[id]` 取 Session operator 传入。
+
+### 3. addStoreAlias 员工目标查询进入事务 + 门店 ACTIVE 二次验证（P1）
+- `repointEmployeesByName` 传入 `tx` 时，**targets 查询也走 tx**（事务内读），
+  绝不使用事务外提前查询出的 targets 作为最终写入依据（堵竞态窗口）。
+- `addStoreAlias` 事务内顺序：再查 Store 存在 → 再验 `Store.status===ACTIVE`
+  （已停用 → `StoreNotActiveError` → **409 STORE_NOT_ACTIVE**，整笔零写入）→ 再查 Alias 唯一（TOCTOU）
+  → 创建 StoreAlias → tx 内查 targets → 更新 Employee → 写 EmployeeHistory → 写批次 AuditLog。
+
+### 4. DepartmentRule snapshot 显式绑定 overrideExisting
+- `AutoPreviewSnapshot` 新增 `overrideExisting: boolean`；preview 记录当前参数，
+  apply 时 `snapshot.overrideExisting !== 请求 overrideExisting` → **409 STALE_PREVIEW** 不执行
+  （旧快照缺该字段 `?? false` 兜底，同样要求重新预览）。
+
+### 5. 测试基础设施修复（SEC-13）
+- `test:stage6:security` 的 SEC-13 原用 `execSync`（Windows 走 cmd.exe）派生第二个 node 进程，
+  触发 `EBUSY` 句柄竞态；改为**异步 spawn + await**（与启动 next 服务器同机制）直跑
+  `check-auth-coverage.mjs`，stage6:security 恢复 14/14。
+
+### 6. 新增 4 项测试 G7-27 ~ G7-30
+- **G7-27**：规则 CREATE → HTTP 201 + AuditLog +1（entity=DepartmentRule/action=CREATE/
+  actor=Session「系统管理员」）；携带伪造 `x-operator` 头，审计 actor 仍为 Session 用户（伪造无效）。
+- **G7-28**：规则 UPDATE 审计记录变化字段 old/new（priority 950→960、enabled true→false、
+  remark）；DELETE 审计记录删除前全字段；actor 均为 Session 用户，伪造无效。
+- **G7-29**：别名 DELETE 成功 +1 审计（actor=Session）；触发器 `trg714_aliasdel_fail`
+  强制 AuditLog 写入失败 → 别名删除整体回滚（别名仍在、审计未新增，零残留，409 ALIAS_DELETE_ABORTED）。
+- **G7-30**：preview overrideExisting=false 的快照拿去 apply overrideExisting=true
+  → **409 STALE_PREVIEW**，Employee/History/Audit 三表零变化。
+
+### 7. 全量回归与生产验证
+- typecheck 0 错 · build 成功 · check:auth 41/41 (100%) · stage5 18/18 ·
+  stage6 25/25 · stage6:security 14/14 · tenure 22/22 · **stage7.1 32/32**（G7-01~30）。
+- 生产 `data/hr.db` 实测：员工 1920 · ACTIVE 门店 66 · 门店 66 · 别名 0 ·
+  历史 0 · 审计 121 · 规则 0，全部与基线一致；**Excel SHA256 = `aac5f0ca...e19129` 不变**。
 
 ### 8. 边界（本阶段**不做**，等下一步指令）
 16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、

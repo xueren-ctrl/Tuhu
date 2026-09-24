@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { addStoreAlias, listStoreAllNames, StoreAliasAbortedError } from "@/lib/store-service";
+import {
+  addStoreAlias,
+  listStoreAllNames,
+  StoreAliasAbortedError,
+  StoreNotActiveError,
+} from "@/lib/store-service";
 import { requireApiUser } from "@/lib/auth";
 import { operatorFromRequest } from "@/lib/operator";
 
@@ -31,6 +36,8 @@ export async function GET(_req: Request, ctx: Ctx) {
  *
  * 副作用（按需求「查询时统一归属」）：把门店原文列写着该别名的员工
  * 重新挂到标准门店（只改 storeId 外键，原文列保留），并逐条写变更记录。
+ *
+ * Stage 7.1.4：事务内再验证标准门店 ACTIVE；门店已停用 → 409 STORE_NOT_ACTIVE（零写入）。
  */
 export async function POST(req: Request, ctx: Ctx) {
   const auth = await requireApiUser(req);
@@ -53,6 +60,13 @@ export async function POST(req: Request, ctx: Ctx) {
     });
     return NextResponse.json({ ok: true, data: result }, { status: 201 });
   } catch (e) {
+    if (e instanceof StoreNotActiveError) {
+      // Stage 7.1.4：写入前一刻标准门店被停用 → 整笔零写入
+      return NextResponse.json(
+        { ok: false, code: "STORE_NOT_ACTIVE", error: e.message },
+        { status: 409 }
+      );
+    }
     if (e instanceof StoreAliasAbortedError) {
       // Stage 7.1.3 全批事务：整笔已回滚（别名 / 员工 / 历史 / 审计 零残留）
       return NextResponse.json(

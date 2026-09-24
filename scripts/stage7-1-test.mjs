@@ -40,6 +40,10 @@
  *   [G7-24] 部门 apply 缺 snapshot → 400 DEPARTMENT_PREVIEW_REQUIRED（三表零变化）
  *   [G7-25] 门店别名统一归属确定性失败 → 全批回滚（四表零残留，409）
  *   [G7-26] 门店合并竞态保护（写库前 source 被停用 → 409 MERGE_STATE_CHANGED，五表零变化）
+ *   [G7-27] DepartmentRule CREATE 审计（AuditLog +1，actor=Session 用户，x-operator 伪造无效）
+ *   [G7-28] DepartmentRule UPDATE（old/new 变化字段）+ DELETE（删除前内容）审计
+ *   [G7-29] StoreAlias DELETE 审计 +1；触发器制造审计失败 → 别名删除整体回滚（零残留）
+ *   [G7-30] 部门 apply 的 overrideExisting 与 snapshot 错配 → 409 STALE_PREVIEW（三表零变化）
  * ============================================================
  */
 import { copyFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
@@ -326,6 +330,7 @@ async function main() {
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg71_merge_fail`);
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg71_batch_fail`);
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg713_alias_fail`);
+    await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg714_aliasdel_fail`);
     // 先解绑 FK（员工 → 全部合成门店 / 合成部门）
     await prisma.employee.updateMany({
       where: {
@@ -356,7 +361,17 @@ async function main() {
     await prisma.departmentRule.deleteMany({ where: { department: { name: SYN_DEPT } } });
     await prisma.storeAlias.deleteMany({
       where: {
-        alias: { in: [SYN_STORE_A, SYN_STORE_B, SYN_INACT, SYN_ALIAS_NAME, ...SYN_CLUSTER_NAMES] },
+        alias: {
+          in: [
+            SYN_STORE_A,
+            SYN_STORE_B,
+            SYN_INACT,
+            SYN_ALIAS_NAME,
+            "阶段7别名删除",
+            "阶段7别名删除2",
+            ...SYN_CLUSTER_NAMES,
+          ],
+        },
       },
     });
     await prisma.store.deleteMany({
@@ -1287,6 +1302,221 @@ async function main() {
     );
     // 恢复 source 为 ACTIVE，供 cleanup 正常删店（FK 解绑不受 status 影响）
     await prisma.$executeRawUnsafe(`UPDATE store SET status = 'ACTIVE' WHERE id = ${stG26B.id}`);
+  }
+
+  // ============ [G7-27] DepartmentRule CREATE 审计（actor = Session，不可伪造） ============
+  {
+    const admin = await prisma.appUser.findFirst({ where: { username: "admin" } });
+    const expectActor = (admin?.displayName?.trim() || admin?.username?.trim() || "").slice(0, 64);
+    const auditBefore = await prisma.auditLog.count();
+    // 携带伪造 x-operator 头：审计 actor 必须仍是真实 Session 用户，不能被头覆盖
+    const r27 = await api(
+      "POST",
+      "/api/department-rules",
+      {
+        json: { departmentId: dept.id, priority: 900, employeeType: "阶段7治理测试工种", enabled: false, remark: "stage7.1.4 测试规则" },
+        headers: { "x-operator": "forged-operator" },
+      }
+    );
+    const log = await prisma.auditLog.findFirst({
+      where: { entity: "DepartmentRule", action: "CREATE" },
+      orderBy: { id: "desc" },
+    });
+    const ruleId = r27.body?.data?.id;
+    const detail = log?.detail ? JSON.parse(log.detail) : null;
+    check(
+      "G7-27",
+      "规则 CREATE：HTTP 成功 + AuditLog +1（entity=DepartmentRule, action=CREATE, actor=Session 用户，x-operator 伪造无效）",
+      r27.status === 201 &&
+        ruleId !== undefined &&
+        (await prisma.auditLog.count()) === auditBefore + 1 &&
+        log?.entity === "DepartmentRule" &&
+        log?.action === "CREATE" &&
+        log?.entityId === String(ruleId) &&
+        log?.actor === expectActor &&
+        log?.actor !== "forged-operator" &&
+        detail?.departmentId === dept.id &&
+        detail?.priority === 900 &&
+        detail?.enabled === false &&
+        detail?.employeeType === "阶段7治理测试工种",
+      JSON.stringify({
+        status: r27.status,
+        ruleId,
+        expectActor,
+        logActor: log?.actor,
+        auditDelta: (await prisma.auditLog.count()) - auditBefore,
+      })
+    );
+    if (ruleId) await prisma.departmentRule.delete({ where: { id: ruleId } });
+  }
+
+  // ============ [G7-28] DepartmentRule UPDATE（old/new）+ DELETE（删除前内容）审计 ============
+  {
+    const admin = await prisma.appUser.findFirst({ where: { username: "admin" } });
+    const expectActor = (admin?.displayName?.trim() || admin?.username?.trim() || "").slice(0, 64);
+    // 新建一条规则给 G7-28 独立使用（enabled 变化走 UPDATE 审计）
+    const rule28 = await prisma.departmentRule.create({
+      data: { departmentId: dept.id, priority: 950, enabled: true, remark: "g7-28" },
+    });
+
+    // ---- UPDATE：enabled true→false + priority 950→960 + remark 变更；只记变化字段 ----
+    const upd = await api("PUT", `/api/department-rules/${rule28.id}`, {
+      json: { enabled: false, priority: 960, remark: "g7-28-modified" },
+      headers: { "x-operator": "forged-operator" },
+    });
+    const upLog = await prisma.auditLog.findFirst({
+      where: { entity: "DepartmentRule", action: "UPDATE", entityId: String(rule28.id) },
+      orderBy: { id: "desc" },
+    });
+    const upDetail = upLog?.detail ? JSON.parse(upLog.detail) : null;
+    const upChanges = upDetail?.changes ?? {};
+    const updOk =
+      upd.status === 200 &&
+      upLog?.entity === "DepartmentRule" &&
+      upLog?.entityId === String(rule28.id) &&
+      upLog?.actor === expectActor &&
+      upLog?.actor !== "forged-operator" &&
+      upChanges.enabled?.oldValue === true &&
+      upChanges.enabled?.newValue === false &&
+      upChanges.priority?.oldValue === 950 &&
+      upChanges.priority?.newValue === 960 &&
+      upChanges.remark?.oldValue === "g7-28" &&
+      upChanges.remark?.newValue === "g7-28-modified";
+
+    // ---- DELETE：审计 detail 必须保存删除前规则内容 ----
+    const del = await api("DELETE", `/api/department-rules/${rule28.id}`);
+    const delLog = await prisma.auditLog.findFirst({
+      where: { entity: "DepartmentRule", action: "DELETE", entityId: String(rule28.id) },
+      orderBy: { id: "desc" },
+    });
+    const delDetail = delLog?.detail ? JSON.parse(delLog.detail) : null;
+    const delOk =
+      del.status === 200 &&
+      (await prisma.departmentRule.count({ where: { id: rule28.id } })) === 0 &&
+      delLog?.entity === "DepartmentRule" &&
+      delLog?.entityId === String(rule28.id) &&
+      delLog?.actor === expectActor &&
+      delDetail?.enabled === false &&
+      delDetail?.priority === 960 &&
+      delDetail?.departmentId === dept.id &&
+      delDetail?.remark === "g7-28-modified";
+    check(
+      "G7-28",
+      "规则 UPDATE 审计记录 old/new 变化字段 + DELETE 审计记录删除前内容（actor=Session，伪造无效）",
+      updOk && delOk,
+      JSON.stringify({
+        updStatus: upd.status,
+        upChanges: upChanges,
+        delStatus: del.status,
+        delDetail: delDetail,
+        expectActor,
+      })
+    );
+  }
+
+  // ============ [G7-29] StoreAlias DELETE 审计 + 触发器制造审计失败 → 别名删除回滚（零残留） ============
+  {
+    const admin = await prisma.appUser.findFirst({ where: { username: "admin" } });
+    const expectActor = (admin?.displayName?.trim() || admin?.username?.trim() || "").slice(0, 64);
+    // 在 G7-25 主店（7别名主店）上新建一个别名供本测试删除
+    const rCreate = await api("POST", `/api/stores/${stAliasStore.id}/aliases`, {
+      json: { alias: "阶段7别名删除" },
+    });
+    const alias = await prisma.storeAlias.findFirst({ where: { alias: "阶段7别名删除" } });
+    const aliasCntBefore = await prisma.storeAlias.count();
+    const auditBefore = await prisma.auditLog.count();
+
+    // ① 正常 DELETE：成功 + AuditLog +1（entity=StoreAlias, action=DELETE, actor=Session）
+    const rDel = await api("DELETE", `/api/store-aliases/${alias.id}`, {
+      headers: { "x-operator": "forged-operator" },
+    });
+    const delLog = await prisma.auditLog.findFirst({
+      where: { entity: "StoreAlias", action: "DELETE", entityId: String(alias.id) },
+      orderBy: { id: "desc" },
+    });
+    const delDetail = delLog?.detail ? JSON.parse(delLog.detail) : null;
+    const delOk =
+      rDel.status === 200 &&
+      (await prisma.storeAlias.count({ where: { id: alias.id } })) === 0 &&
+      (await prisma.auditLog.count()) === auditBefore + 1 &&
+      delLog?.actor === expectActor &&
+      delLog?.actor !== "forged-operator" &&
+      delDetail?.alias === "阶段7别名删除" &&
+      delDetail?.storeId === stAliasStore.id;
+
+    // ② 新建第二个别名，用触发器强制 AuditLog 写入失败 → 删除必须整体回滚
+    const rCreate2 = await api("POST", `/api/stores/${stAliasStore.id}/aliases`, {
+      json: { alias: "阶段7别名删除2" },
+    });
+    const alias2 = await prisma.storeAlias.findFirst({ where: { alias: "阶段7别名删除2" } });
+    const aliasCntBefore2 = await prisma.storeAlias.count();
+    const auditBefore2 = await prisma.auditLog.count();
+    await prisma.$executeRawUnsafe(
+      `CREATE TRIGGER IF NOT EXISTS trg714_aliasdel_fail
+       BEFORE INSERT ON "AuditLog"
+       WHEN "AuditLog".entity = 'StoreAlias'
+       BEGIN
+         SELECT RAISE(ABORT, 'stage7.1.4-test: 强制别名删除审计写入失败');
+       END`
+    );
+    const rDel2 = await api("DELETE", `/api/store-aliases/${alias2.id}`);
+    await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS trg714_aliasdel_fail`);
+    const aliasAfter2 = await prisma.storeAlias.count();
+    const auditAfter2 = await prisma.auditLog.count();
+    // 回滚后：别名还在（未删）、审计没新增（未落），零残留零半成功
+    const rollbackOk =
+      rDel2.status === 409 &&
+      rDel2.body?.code === "ALIAS_DELETE_ABORTED" &&
+      (await prisma.storeAlias.count({ where: { id: alias2.id } })) === 1 &&
+      aliasCntBefore2 === aliasAfter2 &&
+      auditBefore2 === auditAfter2;
+    // 收尾：删掉残留的测试别名（不带触发器，走审计，正常成功）
+    await api("DELETE", `/api/store-aliases/${alias2.id}`);
+
+    check(
+      "G7-29",
+      "别名 DELETE：成功 +1 审计（actor=Session）；审计写入失败时别名删除整体回滚（零残留）",
+      delOk && rollbackOk,
+      JSON.stringify({
+        delStatus: rDel.status,
+        delDetail,
+        del2Status: rDel2.status,
+        del2Code: rDel2.body?.code,
+        aliasUnchangedAfterFail: aliasCntBefore2 === aliasAfter2,
+        auditUnchangedAfterFail: auditBefore2 === auditAfter2,
+      })
+    );
+  }
+
+  // ============ [G7-30] 部门 apply 的 overrideExisting 与 snapshot 错配 → 409 STALE_PREVIEW ============
+  {
+    const empBefore = await prisma.employee.count();
+    const histBefore = await prisma.employeeHistory.count();
+    const auditBefore = await prisma.auditLog.count();
+    // 预览 overrideExisting=false（快照记录 overrideExisting=false）
+    const pv30 = await api("POST", "/api/departments/auto", {
+      json: { action: "preview", overrideExisting: false },
+    });
+    const snap30 = pv30.body?.data?.snapshot;
+    // 用同一快照但请求 overrideExisting=true → 执行参数与快照绑定不一致 → 必须 409 STALE_PREVIEW
+    const r30 = await api("POST", "/api/departments/auto", {
+      json: { action: "apply", overrideExisting: true, snapshot: snap30 },
+    });
+    const empAfter = await prisma.employee.count();
+    const histAfter = await prisma.employeeHistory.count();
+    const auditAfter = await prisma.auditLog.count();
+    const noChange = empBefore === empAfter && histBefore === histAfter && auditBefore === auditAfter;
+    check(
+      "G7-30",
+      "apply 的 overrideExisting 与 snapshot 错配 → 409 STALE_PREVIEW，Employee/History/Audit 零变化",
+      r30.status === 409 && r30.body?.code === "STALE_PREVIEW" && noChange,
+      JSON.stringify({
+        status: r30.status,
+        code: r30.body?.code,
+        snapOverride: snap30?.overrideExisting,
+        noChange,
+      })
+    );
   }
 
   // ============ [G7-18] 清理后零残留 ============

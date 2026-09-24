@@ -26,6 +26,28 @@ export class StoreAliasAbortedError extends Error {
   }
 }
 
+/**
+ * Stage 7.1.4：addStoreAlias 事务内二次验证发现标准门店已停用（ACTIVE → INACTIVE 竞态）
+ * 时抛出（API 层映射 409 STORE_NOT_ACTIVE）。整个事务零写入。
+ */
+export class StoreNotActiveError extends Error {
+  constructor(detail: string) {
+    super("标准门店状态已变化（已停用），别名操作被拒绝：" + detail);
+    this.name = "StoreNotActiveError";
+  }
+}
+
+/**
+ * Stage 7.1.4：removeStoreAlias 的「删除别名 + 审计」事务被整体回滚时抛出
+ * （API 层映射 409 ALIAS_DELETE_ABORTED）：别名未删、审计未落，零残留。
+ */
+export class StoreAliasDeleteAbortedError extends Error {
+  constructor(detail: string) {
+    super("删除门店别名已整体回滚（别名 / 审计均未保留任何改动）：" + detail);
+    this.name = "StoreAliasDeleteAbortedError";
+  }
+}
+
 export interface StoreAliasRow {
   id: number;
   alias: string;
@@ -148,6 +170,10 @@ export async function listStoreAllNames(storeId: number): Promise<string[]> {
  *   - 半套 EmployeeHistory
  *   - 记了「成功」的批次 AuditLog
  * @param tx 可选：外部事务客户端（addStoreAlias 传入）。不传则本函数自开事务。
+ *
+ * Stage 7.1.4（P1）：当传入 tx 时，**targets 查询也通过 tx 执行**（事务内读），
+ * 绝不用事务外提前查询出的 targets 作为最终写入依据 —— 堵住
+ * 「查询 targets → 事务写入」之间员工被并发修改的竞态窗口。
  */
 export async function repointEmployeesByName(
   storeId: number,
@@ -155,31 +181,30 @@ export async function repointEmployeesByName(
   operator = DEFAULT_OPERATOR,
   tx?: Prisma.TransactionClient
 ): Promise<{ scanned: number; repointed: number; batchKey: string | null }> {
-  const db = tx ?? prisma;
   const candidates = names.map((n) => n.trim()).filter(Boolean);
   if (!candidates.length) return { scanned: 0, repointed: 0, batchKey: null };
 
-  // 待重挂：原文列命中别名，且当前 storeId 不是标准门店
-  //
-  // ⚠️ 这里必须显式包含 storeId 为 null 的行。
-  // Prisma 的 `NOT: { storeId: x }` 会翻译成 `NOT (storeId = x)`，
-  // 而 SQL 里 `NULL = x` 结果是 NULL、`NOT NULL` 仍是 NULL → 整行被排除。
-  // 也就是说：门店为空（尚未归属）的员工会被静默漏掉 —— 而这恰恰是别名
-  // 功能最需要处理的那批人。因此用 OR 显式覆盖 null。
-  const targets = await db.employee.findMany({
-    where: {
-      deletedAt: null,
-      storeNameRaw: { in: candidates },
-      OR: [{ storeId: null }, { storeId: { not: storeId } }],
-    },
-    select: { id: true, employeeId: true, storeId: true, storeNameRaw: true },
-  });
-  if (!targets.length) return { scanned: 0, repointed: 0, batchKey: null };
-
-  const batchKey = `alias-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  let repointed = 0;
-
+  // 事务内执行「查 targets + 逐个重挂 + 历史 + 批次审计」
   const runInTx = async (t: Prisma.TransactionClient) => {
+    // Stage 7.1.4：targets 查询走 tx（t.employee…）
+    //
+    // ⚠️ 这里必须显式包含 storeId 为 null 的行。
+    // Prisma 的 `NOT: { storeId: x }` 会翻译成 `NOT (storeId = x)`，
+    // 而 SQL 里 `NULL = x` 结果是 NULL、`NOT NULL` 仍是 NULL → 整行被排除。
+    // 也就是说：门店为空（尚未归属）的员工会被静默漏掉 —— 而这恰恰是别名
+    // 功能最需要处理的那批人。因此用 OR 显式覆盖 null。
+    const targets = await t.employee.findMany({
+      where: {
+        deletedAt: null,
+        storeNameRaw: { in: candidates },
+        OR: [{ storeId: null }, { storeId: { not: storeId } }],
+      },
+      select: { id: true, employeeId: true, storeId: true, storeNameRaw: true },
+    });
+    if (!targets.length) return { scanned: 0, repointed: 0, batchKey: null as string | null };
+
+    const batchKey = `alias-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let repointed = 0;
     for (const tg of targets) {
       await t.employee.update({ where: { id: tg.id }, data: { storeId } });
       await recordEmployeeHistory({
@@ -211,16 +236,13 @@ export async function repointEmployeesByName(
         }),
       },
     });
+    return { scanned: targets.length, repointed, batchKey };
   };
 
   if (tx) {
-    await runInTx(tx);
-  } else {
-    await prisma.$transaction(async (t) => {
-      await runInTx(t);
-    });
+    return await runInTx(tx);
   }
-  return { scanned: targets.length, repointed, batchKey };
+  return await prisma.$transaction(async (t) => runInTx(t));
 }
 
 /**
@@ -230,6 +252,14 @@ export async function repointEmployeesByName(
  * 全部包进同一个 prisma.$transaction。任一步失败 → 整体回滚。
  * 预检（门店存在 / 别名重名 / 与标准名相同）仍在事务外做（只读、快速失败），
  * 但事务内会对别名唯一性再查一次（防 TOCTOU：预检与写入之间他人建了同别名）。
+ *
+ * Stage 7.1.4（P1 + ACTIVE 二次验证）：
+ *   1. 事务内再查 Store 存在
+ *   2. 事务内验证 Store.status === ACTIVE（已停用 → StoreNotActiveError → 409 STORE_NOT_ACTIVE，零写入）
+ *   3. 事务内再查 Alias 唯一（TOCTOU）
+ *   4. 创建 StoreAlias
+ *   5. targets 查询在 tx 内执行（repointEmployeesByName 传入 tx）
+ *   6. 更新 Employee / 7. 写 EmployeeHistory / 8. 写批次 AuditLog（同事务）
  */
 export async function addStoreAlias(opts: {
   storeId: number;
@@ -260,25 +290,36 @@ export async function addStoreAlias(opts: {
   const operator = opts.operator ?? DEFAULT_OPERATOR;
   const note = opts.note?.trim() || null;
 
-  // ---- 全批事务：别名创建 + 员工重挂 + 历史 + 审计 原子（Stage 7.1.3）----
+  // ---- 全批事务：别名创建 + 员工重挂 + 历史 + 审计 原子（Stage 7.1.3 / 7.1.4）----
   try {
     const result = await prisma.$transaction(async (tx) => {
-      // 事务内再查一次别名唯一（防预检与写入之间被他人抢先创建）
+      // ① 事务内再查 Store 存在 + ② ACTIVE 二次验证（Stage 7.1.4）
+      const storeInTx = await tx.store.findUnique({
+        where: { id: opts.storeId },
+        select: { id: true, name: true, status: true },
+      });
+      if (!storeInTx) throw new Error("门店不存在（写入前一刻已被删除）");
+      if (storeInTx.status !== "ACTIVE") {
+        throw new StoreNotActiveError(`门店「${storeInTx.name}」当前状态为 ${storeInTx.status}`);
+      }
+      // ③ 事务内再查别名唯一（防预检与写入之间被他人抢先创建）
       const dupInTx = await tx.storeAlias.findUnique({ where: { alias } });
       if (dupInTx) {
         throw new Error("该别名已存在（创建前一刻被占用），请更换别名");
       }
+      // ④ 创建 StoreAlias
       const created = await tx.storeAlias.create({
         data: { storeId: opts.storeId, alias, note },
       });
-
-      // 立即统一归属（与别名创建同事务；员工重挂 + 历史 + 批次审计）
+      // ⑤⑥⑦⑧ 立即统一归属（targets 查询在 tx 内；员工重挂 + 历史 + 批次审计）
       const applied = await repointEmployeesByName(opts.storeId, [alias], operator, tx);
 
       return { alias: created, applied };
     });
     return result;
   } catch (err) {
+    // StoreNotActiveError 原样抛出（409 STORE_NOT_ACTIVE，事务零写入）
+    if (err instanceof StoreNotActiveError) throw err;
     // 事务已整体回滚（别名 / 员工 / 历史 / 审计 全部未保留任何改动，0 残留）
     if (err instanceof Error && !(err instanceof StoreAliasAbortedError)) {
       throw new StoreAliasAbortedError(err.message);
@@ -287,12 +328,52 @@ export async function addStoreAlias(opts: {
   }
 }
 
-/** 删除别名（已挂到标准门店的员工不动，保持现状） */
-export async function removeStoreAlias(aliasId: number) {
-  const row = await prisma.storeAlias.findUnique({ where: { id: aliasId } });
-  if (!row) throw new Error("别名不存在");
-  await prisma.storeAlias.delete({ where: { id: aliasId } });
-  return row;
+/**
+ * 删除别名（已挂到标准门店的员工不动，保持现状）
+ *
+ * Stage 7.1.4（P0）：「查询删除前信息 → 删除别名 → 写 AuditLog(DELETE/StoreAlias)」
+ * 三个步骤在同一 prisma.$transaction 内完成。任一步失败（含触发器强制
+ * AuditLog 写入失败）→ 别名删除整体回滚，审计不留残留（0 半成功）。
+ * 员工当前 storeId 不做任何改变。
+ */
+export async function removeStoreAlias(aliasId: number, operator = DEFAULT_OPERATOR) {
+  try {
+    const row = await prisma.$transaction(async (tx) => {
+      // ① 查询删除前信息（同事务内读取）
+      const found = await tx.storeAlias.findUnique({
+        where: { id: aliasId },
+        select: { id: true, alias: true, storeId: true, note: true },
+      });
+      if (!found) throw new Error("别名不存在");
+      // ② 删除别名（员工 storeId 不动）
+      await tx.storeAlias.delete({ where: { id: aliasId } });
+      // ③ 审计（actor = Session 操作人；detail 含 aliasId / alias / storeId / note，无敏感数据）
+      await tx.auditLog.create({
+        data: {
+          actor: operator,
+          action: "DELETE",
+          entity: "StoreAlias",
+          entityId: String(aliasId),
+          summary: `删除门店别名「${found.alias}」`,
+          detail: JSON.stringify({
+            aliasId: found.id,
+            alias: found.alias,
+            storeId: found.storeId,
+            note: found.note,
+          }),
+        },
+      });
+      return found;
+    });
+    return row;
+  } catch (err) {
+    if (err instanceof Error && err.message === "别名不存在") throw err;
+    // 事务已整体回滚（别名未删、审计未落，零残留）
+    if (err instanceof Error && !(err instanceof StoreAliasDeleteAbortedError)) {
+      throw new StoreAliasDeleteAbortedError(err.message);
+    }
+    throw err;
+  }
 }
 
 export interface AliasCandidate {

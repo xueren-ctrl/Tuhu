@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { deleteRule, updateRule } from "@/lib/department-rule-service";
 import { requireApiUser } from "@/lib/auth";
+import { operatorFromRequest } from "@/lib/operator";
 
 export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-/** PUT /api/department-rules/:id —— 编辑规则 */
+/** PUT /api/department-rules/:id —— 编辑规则（Stage 7.1.4：审计 actor = Session 操作人） */
 export async function PUT(req: Request, ctx: Ctx) {
   const auth = await requireApiUser(req, { roles: ["ADMIN"] });
   if (auth instanceof Response) return auth;
@@ -17,25 +18,30 @@ export async function PUT(req: Request, ctx: Ctx) {
       return NextResponse.json({ ok: false, error: "无效的规则 ID" }, { status: 400 });
     }
     const body = (await req.json()) as Record<string, unknown>;
-    const data = await updateRule(numId, {
-      departmentId: body.departmentId === undefined ? undefined : Number(body.departmentId),
-      storeId: body.storeId === undefined ? undefined : body.storeId ? Number(body.storeId) : null,
-      positionId:
-        body.positionId === undefined ? undefined : body.positionId ? Number(body.positionId) : null,
-      employeeType: body.employeeType === undefined ? undefined : ((body.employeeType as string) || null),
-      priority: body.priority === undefined ? undefined : Number(body.priority),
-      enabled: body.enabled === undefined ? undefined : Boolean(body.enabled),
-      remark: body.remark === undefined ? undefined : ((body.remark as string) || null),
-    });
+    const data = await updateRule(
+      numId,
+      {
+        departmentId: body.departmentId === undefined ? undefined : Number(body.departmentId),
+        storeId: body.storeId === undefined ? undefined : body.storeId ? Number(body.storeId) : null,
+        positionId:
+          body.positionId === undefined ? undefined : body.positionId ? Number(body.positionId) : null,
+        employeeType:
+          body.employeeType === undefined ? undefined : (body.employeeType as string) || null,
+        priority: body.priority === undefined ? undefined : Number(body.priority),
+        enabled: body.enabled === undefined ? undefined : Boolean(body.enabled),
+        remark: body.remark === undefined ? undefined : (body.remark as string) || null,
+      },
+      await operatorFromRequest(req) // 审计 actor 只来自 Session；body/operator 头一律不读
+    );
     return NextResponse.json({ ok: true, data });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
   }
 }
 
-/** DELETE /api/department-rules/:id —— 删除规则 */
-export async function DELETE(_req: Request, ctx: Ctx) {
-  const auth = await requireApiUser(_req, { roles: ["ADMIN"] });
+/** DELETE /api/department-rules/:id —— 删除规则（Stage 7.1.4：审计 actor = Session 操作人） */
+export async function DELETE(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req, { roles: ["ADMIN"] });
   if (auth instanceof Response) return auth;
   try {
     const { id } = await ctx.params;
@@ -43,7 +49,7 @@ export async function DELETE(_req: Request, ctx: Ctx) {
     if (!Number.isFinite(numId) || numId <= 0) {
       return NextResponse.json({ ok: false, error: "无效的规则 ID" }, { status: 400 });
     }
-    await deleteRule(numId);
+    await deleteRule(numId, await operatorFromRequest(req));
     return NextResponse.json({ ok: true, data: { id: numId } });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 400 });
