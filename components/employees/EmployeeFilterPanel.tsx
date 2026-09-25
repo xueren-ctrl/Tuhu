@@ -25,6 +25,7 @@ export type FilterField =
   | "phone"
   | "idCardNo"
   | "storeId"
+  | "storeIds"
   | "departmentId"
   | "positionId"
   | "status"

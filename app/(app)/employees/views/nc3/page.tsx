@@ -44,7 +44,7 @@ export default async function Nc3Page({
       <PersonnelListView
         basePath="/employees/views/nc3"
         searchParams={sp}
-        locked={{ status: "ACTIVE" }}
+        locked={{ status: "ACTIVE", storeIds: stores.map((s) => s.id).join(",") }}
         title="南昌3店（在职）"
         hint="对应 Excel「南昌3店」Sheet —— 覆盖南昌抚河中路店 / 南昌崇仁人民大道店 / 抚州乐安新二中店三家门店的在职人员。"
         advanced

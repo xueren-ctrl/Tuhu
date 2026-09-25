@@ -261,15 +261,24 @@ export function buildEmployeeWhere(
       if (Number.isFinite(id) && id > 0) and.push({ storeId: id });
     }
   }
-  // Stage 7.3.1：排除指定门店（如「其他」），让待确认归属的人只出现在「其他员工」页
+  // Stage 7.3.8：限定某几个门店（「南昌3店」页覆盖三家门店）
+  if (q.storeIds?.trim()) {
+    const ids = q.storeIds
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (ids.length > 0) and.push({ storeId: { in: ids } });
+  }
+  // Stage 7.3.8：排除指定门店，让各类人只出现在各自的页面上：
+  //   在职页排除「其他」门店（归属待确认）+「南昌3店」三家门店
+  // 用纯 notIn：storeId 为 null 的人（只挂部门的运营部员工、无门店的待确认人员）
+  // 天然不满足 notIn，会被一起排除 —— 这正是「在职页 = 纯门店在职员工」想要的效果。
   if (q.excludeStoreIds?.trim()) {
     const ids = q.excludeStoreIds
       .split(",")
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isFinite(n) && n > 0);
-    // 注意：不能写成 { storeId: { notIn: ids } } —— 那会把 storeId 为 null 的人
-    // （例如只挂部门的运营部员工）也一起排除掉。必须显式保留 null。
-    if (ids.length > 0) and.push({ OR: [{ storeId: null }, { storeId: { notIn: ids } }] });
+    if (ids.length > 0) and.push({ storeId: { notIn: ids } });
   }
   if (q.departmentId?.trim()) {
     if (q.departmentId === UNASSIGNED) and.push({ departmentId: null });

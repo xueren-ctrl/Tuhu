@@ -6,15 +6,16 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 /**
- * /employees/views/active —— 在职人员（Stage 7.3 主视图）
+ * /employees/views/active —— 在职人员
  *
- * 替代 Excel「在职」Sheet。规则：status = ACTIVE（在 URL 中锁定，不可被覆盖）。
+ * **只对应 Excel「在职」Sheet**（290 人）。规则：status = ACTIVE（URL 中锁定，不可覆盖）。
  * 表中 7 个「是否」字段（是否住宿舍 / 社保购买 / 劳动合同 / 社保协议 /
- * 消防承诺书 / 宿舍免责协议 / 入职体检）可直接在下拉里改成 是 / 否 / 留空，
- * 无需进入详情页。
+ * 消防承诺书 / 宿舍免责协议 / 入职体检）可直接在下拉里改成 是 / 否 / 留空。
  *
- * Stage 7.3.1：**排除「其他」门店**。那里是「有入职记录但不在三张当前在职表里」的
- * 待确认人员，只该出现在「其他员工」页，不该混在正常在职列表中。
+ * 本页**排除**另外两类人，各自有自己的页：
+ *   - 「南昌3店」Sheet 的人 → /employees/views/nc3
+ *   - 「其他」门店（归属待确认） → /employees/views/other
+ * 「运营部」的人在库里 storeId 为空、挂在部门上，天然不落在本页 → /employees/views/dept-staff
  */
 export default async function ActiveEmployeesPage({
   searchParams,
@@ -24,10 +25,22 @@ export default async function ActiveEmployeesPage({
   const sp = await searchParams;
   const stats = await getDashboardStats();
 
-  // 「其他」门店 id（若存在则从本页排除）
-  const other = await prisma.store.findFirst({
-    where: { name: "其他" },
+  // 排除：其他门店 + 南昌3店三家门店
+  const excluded = await prisma.store.findMany({
+    where: {
+      name: { in: ["其他", "南昌抚河中路店", "南昌崇仁人民大道店", "抚州乐安新二中店"] },
+    },
     select: { id: true },
+  });
+  const excludeIds = excluded.map((s) => s.id);
+
+  // 本页真实人数 —— 条件必须与列表（buildEmployeeWhere 的 excludeStoreIds）逐字一致
+  const activeCount = await prisma.employee.count({
+    where: {
+      status: "ACTIVE",
+      deletedAt: null,
+      ...(excludeIds.length ? { storeId: { notIn: excludeIds } } : {}),
+    },
   });
 
   return (
@@ -35,9 +48,9 @@ export default async function ActiveEmployeesPage({
       basePath="/employees/views/active"
       searchParams={sp}
       locked={{ status: "ACTIVE" }}
-      hiddenLocked={other ? { excludeStoreIds: String(other.id) } : {}}
+      hiddenLocked={excludeIds.length ? { excludeStoreIds: excludeIds.join(",") } : {}}
       title="在职员工"
-      hint="对应 Excel「在职」+「南昌3店」+「运营部」三张表 —— 固定 status = ACTIVE。表中的「是否」字段可直接用下拉改成 是 / 否 / 留空。"
+      hint="对应 Excel「在职」Sheet —— 固定 status = ACTIVE，不含南昌3店与运营部（各自单独成页）。表中的「是否」字段可直接用下拉改成 是 / 否 / 留空。"
       advanced
       deletable
       emptyText="当前没有在职人员"
@@ -62,8 +75,8 @@ export default async function ActiveEmployeesPage({
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <StatCard
             label="在职人数"
-            value={stats.active}
-            sub={`占全员 ${stats.activeRate}%`}
+            value={activeCount}
+            sub="对应 Excel「在职」Sheet"
             tone="green"
           />
           <StatCard

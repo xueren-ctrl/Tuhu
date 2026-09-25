@@ -200,9 +200,14 @@ export const employeeQuerySchema = z.object({
   idCardNo: z.string().optional(),
   storeId: z.string().optional(),
   /**
+   * Stage 7.3.8：限定某几个门店（逗号分隔的 id）。
+   * 用于「南昌3店」页 —— 一个页面覆盖三家门店。
+   */
+  storeIds: z.string().optional(),
+  /**
    * Stage 7.3.1：排除某个门店（逗号分隔的多个 id）。
-   * 用于「在职员工」页排除「其他」门店 —— 那些是待确认归属的历史员工，
-   * 只该出现在「其他员工」页，不该混在正常在职列表里。
+   * 用于「在职员工」页排除「其他」门店与「南昌3店」三家门店 ——
+   * 他们各有自己的页面，不该混在正常在职列表里。
    */
   excludeStoreIds: z.string().optional(),
   departmentId: z.string().optional(),

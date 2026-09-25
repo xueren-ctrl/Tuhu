@@ -39,12 +39,12 @@ export default async function OtherEmployeesPage({
   }
 
   const count = await prisma.employee.count({
-    where: { storeId: other.id, deletedAt: null },
+    where: { storeId: other.id, deletedAt: null, status: "ACTIVE" },
   });
   // 按原始门店名统计，看看这些人原本挂在哪
   const rawGroups = await prisma.employee.groupBy({
     by: ["storeNameRaw"],
-    where: { storeId: other.id, deletedAt: null },
+    where: { storeId: other.id, deletedAt: null, status: "ACTIVE" },
     _count: { _all: true },
   });
 
@@ -52,8 +52,9 @@ export default async function OtherEmployeesPage({
     <PersonnelListView
       basePath="/employees/views/other"
       searchParams={sp}
-      locked={{ storeId: String(other.id) }}
-      title="其他员工"      hint="有真实入职日期、但不在「在职 / 南昌3店 / 运营部」三张当前在职表里、也不在离职表里的历史员工。"
+      locked={{ storeId: String(other.id), status: "ACTIVE" }}
+      title="其他员工"
+      hint="有真实入职日期、但不在「在职 / 南昌3店 / 运营部」三张当前在职表里、也不在离职表里的历史员工（原门店为骏达中路、常马路等已不在现行门店清单里的门店）。"
       advanced
       deletable
       emptyText="「其他」门店下暂无员工"
