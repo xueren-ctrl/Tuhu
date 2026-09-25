@@ -52,6 +52,9 @@
  *   [G7-36] merge → alias → import：真实合并后旧店名 Excel 解析/预览/commit 三级一致指向主店
  *   [G7-37] 服务器实时 preview 是确认与执行的唯一口径（人数漂移后 GET 返回最新值 +
  *           静态检查 StoreMergePanel 最终确认不再用 previewOf()）
+ *   [G7-38] snapshot → 事务竞态：preview 后源店 3→4 人，用旧 snapshot 执行必须
+ *           409 STALE_MERGE_PREVIEW，五表零变化；事务内存在最终 snapshot 复核
+ *   [G7-39] 最终 confirm 唯一数据源 = 服务器 preview（明确类型 + confirm 只读 sp.*）
  * ============================================================
  */
 import { copyFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
@@ -119,6 +122,13 @@ const SYN_G33_EMP = "阶段7导入测试"; // G7-33 commit 创建的新员工（
 const SYN_G37_MAIN = "7治理辰";
 const SYN_G37_SRC = "7治理辰店";
 const SYN_G37_EMP = "阶段7口径员工";
+
+// G7-38 专用：事务内 snapshot 最终防线（preview 后源店 3 人 → 并发改成 4 人）
+// 合法候选簇：去尾「店」相同（辰 / 辰店）
+const SYN_G38_MAIN = "7治理戌";
+const SYN_G38_SRC = "7治理戌店";
+const SYN_G38_EMP = "阶段7竞态员工";
+const SYN_G38_MAIN_EMP = "阶段7竞态主店员工";
 
 let pass = 0;
 let fail = 0;
@@ -376,6 +386,33 @@ async function main() {
     },
   });
 
+  // G7-38 专用：preview → 事务之间发生并发改库（源店 3 人 → 4 人），验证事务内最后防线
+  const stG38Main = await prisma.store.create({ data: { name: SYN_G38_MAIN } });
+  const stG38Src = await prisma.store.create({ data: { name: SYN_G38_SRC } });
+  for (let k = 1; k <= 3; k++) {
+    await prisma.employee.create({
+      data: {
+        employeeId: `stage716-g38-src-${k}`,
+        name: SYN_G38_EMP + k,
+        status: "ACTIVE",
+        sourceSheet: "数据库",
+        importBatch: "stage7-1-test",
+        storeId: stG38Src.id,
+      },
+    });
+  }
+  // 主店挂 1 人（用于验证 mainTotalBefore 也参与比对）
+  await prisma.employee.create({
+    data: {
+      employeeId: "stage716-g38-main-1",
+      name: SYN_G38_MAIN_EMP + "1",
+      status: "ACTIVE",
+      sourceSheet: "数据库",
+      importBatch: "stage7-1-test",
+      storeId: stG38Main.id,
+    },
+  });
+
 
   // ============ 启动服务器（副本数据库） ============
   const server = spawn(
@@ -406,6 +443,7 @@ async function main() {
             stG15Main.id, stG15Src.id, stG23A.id, stG23B.id, stAliasStore.id, stG26A.id, stG26B.id,
             stG31Main.id, stG31Inact.id, stG32Inact.id, stG34.id, stG36Main.id, stG36Src.id,
             stG37Main.id, stG37Src.id,
+            stG38Main.id, stG38Src.id,
           ],
         },
       },
@@ -427,6 +465,9 @@ async function main() {
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G33_EMP } } });
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G36_IMPORT } } });
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G37_EMP } } });
+    // Stage 7.1.6 事务收口：G7-38 竞态合成员工（源店 + 主店）
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G38_EMP } } });
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G38_MAIN_EMP } } });
     // G7-23/26 专用规则（指向 G23/G26 门店）
     await prisma.departmentRule.deleteMany({
       where: { storeId: { in: [stG23A.id, stG23B.id, stG26A.id, stG26B.id] } },
@@ -459,6 +500,7 @@ async function main() {
             ...SYN_CLUSTER_NAMES, ...SYN_G23_NAMES, SYN_ALIAS_STORE, ...SYN_G26_NAMES,
             SYN_G31_MAIN, SYN_G31_INACT, SYN_G32_INACT, SYN_G34_STORE, SYN_G36_MAIN, SYN_G36_SRC,
             SYN_G37_MAIN, SYN_G37_SRC,
+            SYN_G38_MAIN, SYN_G38_SRC,
           ],
         },
       },
@@ -1955,6 +1997,172 @@ async function main() {
     );
   }
 
+  // ============ [G7-38] snapshot → 事务之间发生并发改库：事务内最后防线 ============
+  {
+    // 确定性构造（无 sleep、无定时竞态）：
+    //   ① GET /api/stores/merge 拿 snapshot（源店 3 人）
+    //   ② 立刻用 Prisma 直接写库把源店加到 4 人（模拟「preview 与真正写入之间被并发修改」）
+    //   ③ 用**旧 snapshot** POST /api/stores/merge
+    // 期望：409 STALE_MERGE_PREVIEW（事务内复核拦下），
+    //       且 Employee / EmployeeHistory / StoreAlias / Store.status / AuditLog 五项零变化。
+    //
+    // 注：事务外的 assertMergeRequestFresh 本就会先拦下（dbVersion 已变），
+    //     本测试的真正价值在于同时验证**事务内**那道防线存在且不产生任何副作用：
+    //     即使事务外校验被绕过（未来重构/直调 service），事务内仍必须拦住。
+    //     为此额外做一次「直调 service 层」路径的等价验证不可行（需要真实 HTTP 才能拿 session），
+    //     故此处通过源码静态断言确认事务内复核块存在，并验证 HTTP 路径五表零变化。
+
+    const before38 = {
+      empSrc: await prisma.employee.count({ where: { storeId: stG38Src.id } }),
+      empMain: await prisma.employee.count({ where: { storeId: stG38Main.id } }),
+      hist: await prisma.employeeHistory.count(),
+      alias: await prisma.storeAlias.count(),
+      audit: await prisma.auditLog.count(),
+      srcStatus: (await prisma.store.findUnique({ where: { id: stG38Src.id } }))?.status,
+      mainStatus: (await prisma.store.findUnique({ where: { id: stG38Main.id } }))?.status,
+    };
+
+    // ① 预览：此时源店 3 人
+    const pv38 = await api(
+      "GET",
+      `/api/stores/merge?mainStoreId=${stG38Main.id}&mergeStoreIds=${stG38Src.id}`
+    );
+    const snap38 = pv38.body?.data?.snapshot;
+    const previewMove38 = pv38.body?.data?.preview?.moveCount;
+
+    // ② 并发改库：源店 3 人 → 4 人（在 preview 与真正执行之间）
+    await prisma.employee.create({
+      data: {
+        employeeId: "stage716-g38-src-4",
+        name: SYN_G38_EMP + "4",
+        status: "ACTIVE",
+        sourceSheet: "数据库",
+        importBatch: "stage7-1-test",
+        storeId: stG38Src.id,
+      },
+    });
+    const srcNow38 = await prisma.employee.count({ where: { storeId: stG38Src.id } });
+
+    // ③ 用**旧 snapshot** 执行
+    const r38 = await api("POST", "/api/stores/merge", {
+      json: {
+        mainStoreId: stG38Main.id,
+        mergeStoreIds: [stG38Src.id],
+        snapshot: snap38,
+      },
+    });
+
+    const after38 = {
+      empSrc: await prisma.employee.count({ where: { storeId: stG38Src.id } }),
+      empMain: await prisma.employee.count({ where: { storeId: stG38Main.id } }),
+      hist: await prisma.employeeHistory.count(),
+      alias: await prisma.storeAlias.count(),
+      audit: await prisma.auditLog.count(),
+      srcStatus: (await prisma.store.findUnique({ where: { id: stG38Src.id } }))?.status,
+      mainStatus: (await prisma.store.findUnique({ where: { id: stG38Main.id } }))?.status,
+    };
+
+    // 五项零变化（源店人数因测试自己加的 1 人而 +1，属预期；主店人数必须不变）
+    const noChange =
+      after38.empMain === before38.empMain &&
+      after38.hist === before38.hist &&
+      after38.alias === before38.alias &&
+      after38.audit === before38.audit &&
+      after38.srcStatus === before38.srcStatus &&
+      after38.mainStatus === before38.mainStatus &&
+      after38.empSrc === before38.empSrc + 1; // 仅测试自己加的那 1 人
+
+    // 静态断言：事务内复核块真实存在（snapshot 校验在 $transaction 内部、写入之前）
+    const svcSrc = readFileSync(path.join(ROOT, "lib", "store-merge-service.ts"), "utf8");
+    const txIdx = svcSrc.indexOf("prisma.$transaction(async (tx)");
+    const inTxGuardIdx = svcSrc.indexOf("computeDbVersion(tx)", txIdx);
+    const guardThrowsStale = svcSrc.indexOf("StaleMergePreviewError", inTxGuardIdx);
+    // guardIdx 必须落在事务块内（在第一个 employee.update 之前）
+    const firstWriteIdx = svcSrc.indexOf("tx.employee.update", txIdx);
+    const guardInsideTx = txIdx >= 0 && inTxGuardIdx > txIdx && firstWriteIdx > inTxGuardIdx;
+
+    check(
+      "G7-38",
+      "snapshot→事务竞态：preview 后源店 3→4 人，用旧 snapshot 执行必须 409 STALE_MERGE_PREVIEW，且 Employee/History/StoreAlias/Store.status/AuditLog 零变化；事务内存在最终 snapshot 复核（computeDbVersion(tx) 在首个写入之前）",
+      pv38.status === 200 &&
+        previewMove38 === 3 &&
+        srcNow38 === 4 &&
+        r38.status === 409 &&
+        r38.body?.code === "STALE_MERGE_PREVIEW" &&
+        noChange &&
+        guardInsideTx,
+      JSON.stringify({
+        previewMove38,
+        srcNow38,
+        status: r38.status,
+        code: r38.body?.code,
+        before38,
+        after38,
+        guardInsideTx: { txIdx, inTxGuardIdx, guardThrowsStale, firstWriteIdx },
+      })
+    );
+  }
+
+  // ============ [G7-39] 最终 confirm 唯一数据源 = 服务器 preview（独立静态断言） ============
+  {
+    const panel = readFileSync(path.join(ROOT, "components", "stores", "StoreMergePanel.tsx"), "utf8");
+
+    // ① 明确类型存在，且不是 `let snapshot: unknown`
+    const hasTypedResponse = /type\s+MergePreviewResponse\s*=/.test(panel);
+    const typedShapeOk =
+      hasTypedResponse &&
+      panel.includes("snapshot: MergePreviewSnapshot") &&
+      /preview:\s*\{/.test(panel);
+    const noUnknownSnapshot = !panel.includes("let snapshot: unknown");
+
+    // ② confirm 块只读 serverPreview 的 5 个字段
+    const cStart = panel.indexOf("!confirm(");
+    const cBlock = cStart >= 0 ? panel.slice(cStart, cStart + 1600) : "";
+    const confirmUsesServer =
+      cBlock.includes("sp.mainStore.name") &&
+      cBlock.includes("sp.mergedStores") &&
+      cBlock.includes("sp.moveCount") &&
+      cBlock.includes("sp.mainTotalAfter") &&
+      cBlock.includes("sp.aliasesToCreate");
+    const confirmNoPreviewOf = !cBlock.includes("previewOf(");
+
+    // ③ 明确禁止的旧写法：previewOf().moveCount / afterTotal / aliasesToCreate 作为 confirm 数据源
+    //    （页面静态展示区允许用 previewOf，但 confirm 块内一律不允许 —— 上面 ② 已覆盖）
+    const noConfirmMoveCount = !cBlock.includes("previewOf(idx).moveCount");
+    const noConfirmAfterTotal = !cBlock.includes("afterTotal");
+
+    // ④ POST 携带的是 serverPreview.snapshot（与 confirm 同一数据源）
+    const postServerSnapshot = panel.includes("snapshot: serverPreview.snapshot");
+
+    // ⑤ previewOf 仍保留但仅用于页面静态展示（必须仍有调用，说明未破坏旧 UI）
+    const previewOfStillUsed = panel.includes("previewOf(idx)");
+
+    check(
+      "G7-39",
+      "最终 confirm 唯一数据源为服务器 preview：存在 MergePreviewResponse 明确类型（无 snapshot:unknown）、confirm 块读 sp.mainStore/sp.mergedStores/sp.moveCount/sp.mainTotalAfter/sp.aliasesToCreate 且不含 previewOf/afterTotal、POST 携带 serverPreview.snapshot；previewOf 保留仅供页面静态展示",
+      typedShapeOk &&
+        noUnknownSnapshot &&
+        confirmUsesServer &&
+        confirmNoPreviewOf &&
+        noConfirmMoveCount &&
+        noConfirmAfterTotal &&
+        postServerSnapshot &&
+        previewOfStillUsed,
+      JSON.stringify({
+        hasTypedResponse,
+        typedShapeOk,
+        noUnknownSnapshot,
+        cStart,
+        confirmUsesServer,
+        confirmNoPreviewOf,
+        noConfirmMoveCount,
+        noConfirmAfterTotal,
+        postServerSnapshot,
+        previewOfStillUsed,
+      })
+    );
+  }
+
   // ============ [G7-18] 清理后零残留 ============
   {
     await removeSynthetic();
@@ -1989,6 +2197,16 @@ async function main() {
     const remainG36Import = await prisma.employee.count({ where: { name: { startsWith: SYN_G36_IMPORT } } });
     // Stage 7.1.6：G7-37 服务器预览口径测试的员工/门店
     const remainG37Emp = await prisma.employee.count({ where: { name: { startsWith: SYN_G37_EMP } } });
+    // Stage 7.1.6：G7-38 事务内竞态测试的合成员工/门店
+    const remainG38Emp = await prisma.employee.count({
+      where: { name: { startsWith: SYN_G38_EMP } },
+    });
+    const remainG38MainEmp = await prisma.employee.count({
+      where: { name: { startsWith: SYN_G38_MAIN_EMP } },
+    });
+    const remainG38Store = await prisma.store.count({
+      where: { name: { in: [SYN_G38_MAIN, SYN_G38_SRC] } },
+    });
     // Stage 7.1.5：G31-G36 专用合成门店必须清空
     const remainG15Store = await prisma.store.count({
       where: {
@@ -2034,6 +2252,9 @@ async function main() {
         remainG33Emp === 0 &&
         remainG36Import === 0 &&
         remainG37Emp === 0 &&
+        remainG38Emp === 0 &&
+        remainG38MainEmp === 0 &&
+        remainG38Store === 0 &&
         remainDept === 0 &&
         remainRule === 0 &&
         remainStore === 0 &&
@@ -2049,6 +2270,9 @@ async function main() {
         remainG33Emp,
         remainG36Import,
         remainG37Emp,
+        remainG38Emp,
+        remainG38MainEmp,
+        remainG38Store,
         remainDept,
         remainRule,
         remainStore,

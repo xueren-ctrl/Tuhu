@@ -457,6 +457,14 @@ export class MergeStoreStateChangedError extends Error {
  * 缺失 snapshot → `MergePreviewRequiredError`（API 映射 400 MERGE_PREVIEW_REQUIRED）。
  * （API 层仍保留前置校验以返回精确错误码；服务层是**有意的纵深防御**，
  *  两次校验之间若有人改库，服务层会拦住。校验逻辑复用同一函数，不重复实现。）
+ *
+ * Stage 7.1.6 事务收口：事务外校验与真正写入之间仍存在竞态窗口
+ * （preview → assert → 并发改库 → 写入），会出现「页面预览迁移 3 人、
+ * 实际写入 4 人」。因此在 `prisma.$transaction` **内部、任何写入之前**，
+ * 用同一个 tx 客户端重算主店人数 / 逐店人数 / 迁移总数 / dbVersion 指纹，
+ * 与 snapshot 逐一比对；任一不一致抛 `StaleMergePreviewError`（→ 409
+ * STALE_MERGE_PREVIEW）整笔回滚，零写入。**最终写操作使用的就是经过
+ * snapshot 校验后的同一个事务上下文。**
  */
 export async function mergeStores(opts: {
   mainStoreId: number;
@@ -525,6 +533,53 @@ export async function mergeStores(opts: {
     }
     if (srcInTx.some((s) => s.name === mainInTx.name)) {
       throw new MergeStoreStateChangedError("被合并门店与主门店同名，需人工处理");
+    }
+
+    // ---- Stage 7.1.6 事务收口：snapshot 的**最终写库边界**防线 ----
+    // 事务外的 assertMergeRequestFresh 与这里之间仍有一个竞态窗口：
+    //   preview → assert(事务外) → 并发改库 → $transaction 真正写入
+    // 典型后果：页面预览「迁移 3 人」，真正执行时源店已变成 4 人，
+    // 用户确认的数字与实际写入的数字不一致。
+    //
+    // 因此在事务内、**任何写入之前**，用同一个 tx 客户端重新读取并重算：
+    //   ① 主店当前员工数
+    //   ② 逐个 source store 当前员工数 + 迁移总数
+    //   ③ 数据库版本指纹（computeDbVersion(tx) —— 覆盖 Employee/Store/Position/
+    //      Department/DepartmentRule/StoreAlias/EmployeeHistory 七类）
+    // 与 snapshot 逐一比对；任一不一致 → StaleMergePreviewError，
+    // 整笔回滚，此处尚未发生任何写入，天然零残留。
+    const snap = opts.snapshot;
+    if (snap) {
+      const dbVersionInTx = await computeDbVersion(tx);
+      const perStoreInTx: Record<number, number> = {};
+      let moveInTx = 0;
+      for (const id of mergeIds) {
+        perStoreInTx[id] = await tx.employee.count({
+          where: { deletedAt: null, storeId: id },
+        });
+        moveInTx += perStoreInTx[id];
+      }
+      const mainTotalInTx = await tx.employee.count({
+        where: { deletedAt: null, storeId: mainStoreId },
+      });
+
+      const driftInTx: string[] = [];
+      if (dbVersionInTx !== snap.dbVersion) driftInTx.push("dbVersion");
+      if (mainTotalInTx !== snap.mainTotalBefore) driftInTx.push("mainTotalBefore");
+      if (moveInTx !== snap.moveCount) driftInTx.push("moveCount");
+      for (const id of mergeIds) {
+        if (perStoreInTx[id] !== (snap.perStoreCount[id] ?? 0)) {
+          driftInTx.push(`perStoreCount[${id}]`);
+        }
+      }
+
+      if (driftInTx.length > 0) {
+        throw new StaleMergePreviewError(
+          `写库前事务内复核发现预览已过期（${driftInTx.join("、")}）；` +
+            `预览时 迁移=${snap.moveCount} 主店=${snap.mainTotalBefore}；` +
+            `事务内 迁移=${moveInTx} 主店=${mainTotalInTx}。本次未写入任何数据，请重新预览。`
+        );
+      }
     }
 
     let employeesMoved = 0;

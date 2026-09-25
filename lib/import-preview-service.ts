@@ -79,18 +79,26 @@ function newPreviewId(): string {
  * priority/departmentId 等，写库即刷新 updatedAt），都会改变 dbVersion，
  * 部门自动归属的旧预览随即失效（409 STALE_PREVIEW）。
  */
-export async function computeDbVersion(): Promise<string> {
+export async function computeDbVersion(
+  /**
+   * Stage 7.1.6 事务收口：可传入 `prisma.$transaction` 回调里的 `tx` 客户端，
+   * 让调用方在**同一事务上下文内**重算版本指纹（避免事务外算一次、事务内再算一次
+   * 仍存在竞态窗口）。不传时行为与原来完全一致（用全局 prisma）。
+   */
+  client?: Prisma.TransactionClient
+): Promise<string> {
+  const db = client ?? prisma;
   const [emp, store, pos, dept, rule, alias, hist] = await Promise.all([
-    prisma.employee.aggregate({
+    db.employee.aggregate({
       _count: { _all: true },
       _max: { updatedAt: true },
     }),
-    prisma.store.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
-    prisma.position.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
-    prisma.department.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
-    prisma.departmentRule.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
-    prisma.storeAlias.aggregate({ _count: { _all: true } }),
-    prisma.employeeHistory.aggregate({ _count: { _all: true } }),
+    db.store.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
+    db.position.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
+    db.department.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
+    db.departmentRule.aggregate({ _count: { _all: true }, _max: { updatedAt: true } }),
+    db.storeAlias.aggregate({ _count: { _all: true } }),
+    db.employeeHistory.aggregate({ _count: { _all: true } }),
   ]);
   return JSON.stringify({
     e: [emp._count._all, emp._max.updatedAt?.toISOString() ?? ""],
