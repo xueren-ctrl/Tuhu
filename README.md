@@ -80,12 +80,50 @@ npm run check:sensitive  # 提交前敏感信息体检
 ```
 
 > ⚠️ **在 WorkBuddy IDE 内构建时的已知问题**：IDE 通过 `NODE_OPTIONS` 注入了文件删除保护
-> （`node-safe-delete-shim.cjs`），而 Next.js 构建结束时会批量清理自己的 `.next` 缓存，
-> 会被该保护拦截并报 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`。
-> 在 IDE 内构建请用：`NODE_OPTIONS= npx next build`；
+> （`node-safe-delete-shim.cjs`），而 Next.js 构建会批量清理自己的 `.next` 缓存，
+> 会被该保护拦截并报 `[safe-delete] ... ETIMEDOUT` / `SAFE_DELETE_BULK_CONFIRM_REQUIRED`。
+> 在 IDE 内构建请用：
+>
+> ```bash
+> CODEBUDDY_SAFE_DELETE_ENABLED=0 NODE_OPTIONS= npx next build
+> ```
+>
 > **在普通终端（CMD / PowerShell）直接 `npm run build` 不受影响。**
+> 构建是否成功只看 `.next/BUILD_ID` 是否生成（管道 `| tail` 会吞掉退出码）。
 
 ### 重新建立迁移基线（危险操作）
+
+若需要把 Excel 完整重新导入一遍（例如修正了字段映射规则后再跑一次）：
+
+服务默认监听本机所有网卡（`0.0.0.0:3000`），因此局域网内可直接访问。
+
+```bash
+# 启动（会打印本机 / 局域网的完整访问地址）
+npm run serve
+
+# 首次需要放行 Windows 防火墙 3000 端口（以管理员身份运行 PowerShell）
+npm run firewall
+
+# 手机在外面用 4G 访问：另开一个窗口开启临时隧道
+npm run tunnel
+```
+
+三种访问方式：
+
+| 场景 | 地址 | 说明 |
+| --- | --- | --- |
+| 本机 | `http://localhost:3000` | 这台电脑自己用 |
+| 局域网 | `http://<本机IP>:3000` | 手机 / 其他电脑连同一个 WiFi 即可，无需安装任何客户端 |
+| 外网 | `https://xxxx.trycloudflare.com` | 由 `npm run tunnel` 生成，地址是临时的，关窗即失效 |
+
+软件内「基础设置 → 访问入口」页（`/settings/access`）会实时列出当前可用的局域网地址，
+并给出连不上时的排查顺序，不需要自己去查 IP。
+
+> 安全提醒：隧道开启后，任何拿到该网址的人都能看到登录页，请使用强密码并及时关闭隧道窗口。
+> 数据始终保存在本机 `data/hr.db`，不会上传到任何云端。
+
+---
+
 
 若需要把 Excel 完整重新导入一遍（例如修正了字段映射规则后再跑一次）：
 

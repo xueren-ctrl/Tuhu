@@ -2,15 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { SHEET_LIST } from "@/lib/sheet-meta";
 
-/** 左侧导航栏（桌面优先，专业 HR 系统风格） */
+/** 左侧导航栏（桌面常驻；手机端由 AppShell 放进抽屉） */
 
 interface NavItem {
   href: string;
   label: string;
   icon: string;
-  /** 第一阶段是否已开放 */
-  ready?: boolean;
 }
 
 interface NavGroup {
@@ -20,90 +19,77 @@ interface NavGroup {
 
 const NAV: NavGroup[] = [
   {
-    // 与 Excel 的 Sheet 一一对应，内容原样镜像（列名 / 顺序 / 取值都与 Excel 一致）
+    // 与 Excel 的 Sheet 一一对应：数据就是该 Sheet 导入进来的原始数据
     title: "员工表（对应 Excel 各 Sheet）",
     items: [
-      { href: "/sheets/在职", label: "在职", icon: "✓", ready: true },
-      { href: "/sheets/离职", label: "离职", icon: "✗", ready: true },
-      { href: "/sheets/南昌3店", label: "南昌3店", icon: "③", ready: true },
-      { href: "/sheets/运营部", label: "运营部", icon: "▣", ready: true },
-      { href: "/sheets/招聘面试登记表", label: "招聘面试登记表", icon: "◷", ready: true },
-      { href: "/sheets/运营部离职", label: "运营部离职", icon: "◐", ready: true },
-      { href: "/sheets/薪资表", label: "薪资表", icon: "¥", ready: true },
-      { href: "/sheets/数据库", label: "数据库", icon: "▤", ready: true },
-      { href: "/employees/views/other", label: "其他", icon: "◇", ready: true },
+      ...SHEET_LIST.map((s) => ({ href: `/sheets/${encodeURIComponent(s.key)}`, label: s.label, icon: s.icon })),
+      { href: "/employees/views/other", label: "其他", icon: "◇" },
     ],
   },
   {
-    // 与上面同样的数据，但支持按条件检索 / 直接修改；改完会同步反映到上面的表
     title: "数据管理（可增删改查）",
     items: [
-      { href: "/employees/views/active", label: "在职员工", icon: "✓", ready: true },
-      { href: "/employees/views/resigned", label: "离职员工", icon: "✗", ready: true },
-      { href: "/employees/database", label: "全部员工（数据库）", icon: "▥", ready: true },
-      { href: "/employees/new", label: "新增员工", icon: "＋", ready: true },
-      { href: "/employees/batch", label: "批量编辑", icon: "⇉", ready: true },
+      { href: "/employees/views/active", label: "在职员工", icon: "✓" },
+      { href: "/employees/views/resigned", label: "离职员工", icon: "✗" },
+      { href: "/employees/database", label: "全部员工（数据库）", icon: "▥" },
+      { href: "/employees/new", label: "新增员工", icon: "＋" },
+      { href: "/employees/batch", label: "批量编辑", icon: "⇉" },
     ],
   },
   {
     title: "统计与查询",
     items: [
-      { href: "/", label: "首页看板", icon: "▦", ready: true },
-      { href: "/employees/views", label: "视图总览", icon: "◱", ready: true },
-      { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂", ready: true },
-      { href: "/employees/views/distribution", label: "人员分布统计", icon: "◔", ready: true },
+      { href: "/", label: "首页看板", icon: "▦" },
+      { href: "/employees/views", label: "视图总览", icon: "◱" },
+      { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂" },
+      { href: "/employees/views/distribution", label: "人员分布统计", icon: "◔" },
     ],
   },
   {
     title: "基础设置",
     items: [
-      { href: "/settings/stores", label: "门店管理", icon: "⌂", ready: true },
-      { href: "/settings/departments", label: "部门管理", icon: "▣", ready: true },
-      { href: "/settings/positions", label: "职位管理", icon: "◆", ready: true },
-      { href: "/settings/import", label: "导入与报告", icon: "⇪", ready: true },
+      { href: "/settings/access", label: "访问入口（手机/外网）", icon: "⇱" },
+      { href: "/settings/stores", label: "门店管理", icon: "⌂" },
+      { href: "/settings/departments", label: "部门管理", icon: "▣" },
+      { href: "/settings/positions", label: "职位管理", icon: "◆" },
+      { href: "/settings/import", label: "导入与报告", icon: "⇪" },
     ],
   },
   {
     title: "数据治理（工具）",
     items: [
-      { href: "/stores/merge", label: "门店合并", icon: "⊕", ready: true },
-      { href: "/data-quality", label: "数据质量中心", icon: "◎", ready: true },
-      { href: "/employees/department-auto", label: "部门自动归属", icon: "⇄", ready: true },
-      { href: "/import", label: "Excel 导入预览", icon: "⇧", ready: true },
+      { href: "/stores/merge", label: "门店合并", icon: "⊕" },
+      { href: "/data-quality", label: "数据质量中心", icon: "◎" },
+      { href: "/employees/department-auto", label: "部门自动归属", icon: "⇄" },
+      { href: "/import", label: "Excel 导入预览", icon: "⇧" },
     ],
   },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
     const base = href.split("?")[0];
-    // /employees 只精确匹配列表页，避免与 /employees/views、/employees/new 冲突
     if (base === "/employees") return pathname === "/employees";
-    // /employees/views 只精确匹配总览，子视图各自高亮
     if (base === "/employees/views") return pathname === "/employees/views";
-    // Sheet 镜像页的路径含中文，usePathname 可能返回编码或未编码形式，两种都比对
-    const enc = encodeURI(base);
-    const candidates = [base, enc];
+    // Sheet 页面路径含中文，usePathname 可能返回编码或未编码形式，两种都比对
+    const decoded = decodeURI(base);
+    const candidates = [base, decoded, encodeURI(decoded)];
     return candidates.some((c) => pathname === c || pathname.startsWith(c + "/"));
   };
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--hr-border)] bg-white">
+    <aside className="flex h-full w-full flex-col border-r border-[var(--hr-border)] bg-white">
       {/* 系统标识 */}
-      <div className="flex h-14 items-center gap-2.5 border-b border-[var(--hr-border)] px-4">
+      <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-[var(--hr-border)] px-4">
         <span className="flex h-8 w-8 items-center justify-center rounded-md bg-brand-600 text-sm font-bold text-white">
           途
         </span>
         <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold leading-tight">
-            途虎加盟店
-          </div>
-          <div className="truncate text-[11px] leading-tight text-sub">
-            HR 人事管理系统
-          </div>
+          <div className="truncate text-[13px] font-semibold leading-tight">途虎加盟店</div>
+          <div className="truncate text-[11px] leading-tight text-sub">HR 人事管理系统</div>
         </div>
       </div>
 
@@ -115,21 +101,12 @@ export default function Sidebar() {
             </div>
             <ul className="space-y-0.5">
               {group.items.map((item) => {
-                const active = item.ready && isActive(item.href);
-                if (!item.ready) {
-                  return (
-                    <li key={item.label}>
-                      <span className="flex cursor-not-allowed items-center gap-2 rounded-md px-2 py-[7px] text-[13px] text-slate-300">
-                        <span className="w-4 text-center text-[12px]">{item.icon}</span>
-                        {item.label}
-                      </span>
-                    </li>
-                  );
-                }
+                const active = isActive(item.href);
                 return (
-                  <li key={item.label}>
+                  <li key={item.href}>
                     <Link
                       href={item.href}
+                      onClick={onNavigate}
                       className={
                         "flex items-center gap-2 rounded-md px-2 py-[7px] text-[13px] transition-colors " +
                         (active
@@ -137,8 +114,8 @@ export default function Sidebar() {
                           : "text-slate-600 hover:bg-slate-100 hover:text-slate-900")
                       }
                     >
-                      <span className="w-4 text-center text-[12px]">{item.icon}</span>
-                      {item.label}
+                      <span className="w-4 shrink-0 text-center text-[12px]">{item.icon}</span>
+                      <span className="truncate">{item.label}</span>
                     </Link>
                   </li>
                 );
@@ -149,8 +126,8 @@ export default function Sidebar() {
       </nav>
 
       <div className="border-t border-[var(--hr-border)] px-4 py-3 text-[11px] leading-relaxed text-slate-400">
-        <div>第一阶段：核心数据库 + 员工档案</div>
-        <div className="mt-0.5">SQLite · Prisma · Next.js</div>
+        <div>SQLite · Prisma · Next.js</div>
+        <div className="mt-0.5">数据源：Excel 各 Sheet 导入</div>
       </div>
     </aside>
   );

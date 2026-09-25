@@ -1,32 +1,40 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import {
+  filterRows,
+  loadSheet,
+  maskRows,
+  paginate,
+  sortRows,
+  type FilterOp,
+} from "@/lib/sheet-service";
+import { SHEET_MAP } from "@/lib/sheet-meta";
 import { prisma } from "@/lib/prisma";
-import { Card } from "@/components/ui";
+import SheetDataTable from "@/components/sheets/SheetDataTable";
+import { Alert } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
 /**
- * /sheets/[sheet] —— Excel 某张 Sheet 的原样镜像
+ * /sheets/[sheet] —— Excel 某张 Sheet 的数据在软件里的「数据表」视图
  *
- * 数据来自 SheetRow（导入时从 Excel 原样抓取，公式取缓存结果、日期格式化为 YYYY-MM-DD），
- * 列名与顺序严格按 Excel 的表头，不做任何加工 —— 用户在软件里看到的就是 Excel 里的样子。
+ * 数据来源与 Excel 该 Sheet 完全一致（导入时原样抓取），
+ * 但展示方式是标准业务系统：搜索 / 按列筛选 / 排序 / 分页 / 行详情 / 手机卡片。
+ * 页面本身只读，不修改任何数据。
  */
 
-const PAGE_SIZE = 100;
+const PAGE_SIZES = [20, 50, 100, 200];
+const DEFAULT_SIZE = 50;
 
-/** 支持的 Sheet（与导入脚本一致）+ 中文名 */
-const SHEETS: Record<string, { label: string; desc: string }> = {
-  在职: { label: "在职", desc: "各门店在职人员统计汇总明细表" },
-  离职: { label: "离职", desc: "离职人员登记表" },
-  南昌3店: { label: "南昌3店", desc: "南昌抚河中路店 / 南昌崇仁人民大道店 / 抚州乐安新二中店" },
-  运营部: { label: "运营部", desc: "公司管理层（非门店人员）" },
-  招聘面试登记表: { label: "招聘面试登记表", desc: "2026 年招聘面试登记" },
-  运营部离职: { label: "运营部离职", desc: "运营部离职人员" },
-  薪资表: { label: "薪资表", desc: "薪资待遇与首月保障登记" },
-  数据库: { label: "数据库", desc: "全部历史数据（所有 Sheet 的来源）" },
-};
+const FILTER_OPS: FilterOp[] = ["contains", "equals", "neq", "empty", "notEmpty"];
 
-export default async function SheetMirrorPage({
+function pick(sp: Record<string, string | string[] | undefined>, key: string): string {
+  const v = sp[key];
+  const s = Array.isArray(v) ? v[0] : v;
+  return (s ?? "").toString();
+}
+
+export default async function SheetPage({
   params,
   searchParams,
 }: {
@@ -35,164 +43,97 @@ export default async function SheetMirrorPage({
 }) {
   const { sheet: rawSheet } = await params;
   const sheet = decodeURIComponent(rawSheet);
+  const meta = SHEET_MAP[sheet];
+  if (!meta) notFound();
+
   const sp = await searchParams;
+  const loaded = await loadSheet(sheet);
+  if (!loaded) notFound();
 
-  if (!SHEETS[sheet]) notFound();
-  const meta = SHEETS[sheet];
+  const keyword = pick(sp, "q").trim();
+  const colRaw = pick(sp, "col").trim();
+  const col = colRaw === "" ? null : Number(colRaw);
+  const opRaw = pick(sp, "op").trim() as FilterOp;
+  const op: FilterOp = FILTER_OPS.includes(opRaw) ? opRaw : "contains";
+  const val = pick(sp, "val");
+  const sortRaw = pick(sp, "sort").trim();
+  const sort = sortRaw === "" ? null : Number(sortRaw);
+  const dir = pick(sp, "dir") === "desc" ? "desc" : "asc";
+  const sizeRaw = Number(pick(sp, "size"));
+  const size = PAGE_SIZES.includes(sizeRaw) ? sizeRaw : DEFAULT_SIZE;
+  const page = Math.max(1, Number(pick(sp, "page")) || 1);
 
-  const keyword = (Array.isArray(sp.keyword) ? sp.keyword[0] : sp.keyword)?.trim() ?? "";
-  const page = Math.max(1, Number(Array.isArray(sp.page) ? sp.page[0] : sp.page) || 1);
+  const { columns, rows } = loaded;
+  const safeCol = col !== null && Number.isFinite(col) && col >= 0 && col < columns.length ? col : null;
+  const safeSort = sort !== null && Number.isFinite(sort) && sort >= 0 && sort < columns.length ? sort : null;
 
-  // 取表头（每行都存了一份，取第一行即可）
-  const first = await prisma.sheetRow.findFirst({
+  const matched = sortRows(
+    filterRows(rows, { q: keyword, col: safeCol, op, val }),
+    safeSort,
+    dir
+  );
+  const pager = paginate(matched, page, size);
+
+  // 敏感列默认在**服务端**打码后再下发（勾选「显示完整信息」时 ?reveal=1 才取完整值）
+  const reveal = pick(sp, "reveal") === "1";
+  const displayRows = reveal ? pager.slice : maskRows(pager.slice, columns);
+
+  const lastImport = await prisma.sheetRow.findFirst({
     where: { sheet },
-    orderBy: { rowNo: "asc" },
-    select: { headersJson: true },
+    orderBy: { importedAt: "desc" },
+    select: { importedAt: true },
   });
-  if (!first) notFound();
-  const headers: string[] = JSON.parse(first.headersJson);
-
-  // 关键词过滤：在服务端按整行 JSON 文本匹配
-  const where = keyword ? { sheet, cellsJson: { contains: keyword } } : { sheet };
-  const total = await prisma.sheetRow.count({ where });
-  const rows = await prisma.sheetRow.findMany({
-    where,
-    orderBy: { rowNo: "asc" },
-    skip: (page - 1) * PAGE_SIZE,
-    take: PAGE_SIZE,
-    select: { id: true, rowNo: true, cellsJson: true },
-  });
-
-  const data = rows.map((r) => ({
-    id: r.id,
-    rowNo: r.rowNo,
-    cells: JSON.parse(r.cellsJson) as string[],
-  }));
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const qs = (over: Record<string, string | number>) => {
-    const u = new URLSearchParams();
-    if (keyword) u.set("keyword", keyword);
-    for (const [k, v] of Object.entries(over)) u.set(k, String(v));
-    return `/sheets/${encodeURIComponent(sheet)}?${u.toString()}`;
-  };
 
   return (
-    <div className="mx-auto max-w-[1900px] px-4 py-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <div className="mx-auto max-w-[1700px] space-y-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-[17px] font-semibold text-slate-800">{meta.label}</h1>
-          <p className="mt-0.5 text-[12px] text-slate-500">
-            {meta.desc} · 共 <strong className="text-slate-700">{total}</strong> 行
-            {keyword ? `（筛选「${keyword}」）` : ""}
+          <h1 className="text-[18px] font-semibold text-slate-800">{meta.label}</h1>
+          <p className="mt-0.5 text-[12.5px] text-slate-500">
+            {meta.desc} · {columns.length} 个字段 · {rows.length} 行
+            {lastImport ? (
+              <span className="ml-2 text-slate-400">
+                数据更新时间 {lastImport.importedAt.toLocaleString("zh-CN", { hour12: false })}
+              </span>
+            ) : null}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <form action={`/sheets/${encodeURIComponent(sheet)}`} method="get" className="flex items-center gap-1.5">
-            <input
-              type="text"
-              name="keyword"
-              defaultValue={keyword}
-              placeholder="搜索这一页的内容…"
-              className="h-8 w-56 rounded-md border border-[var(--hr-border)] px-2.5 text-[12.5px] outline-none focus:border-brand-500"
-            />
-            <button
-              type="submit"
-              className="h-8 rounded-md bg-brand-600 px-3 text-[12.5px] font-medium text-white hover:bg-brand-700"
-            >
-              搜索
-            </button>
-            {keyword ? (
-              <Link
-                href={`/sheets/${encodeURIComponent(sheet)}`}
-                className="h-8 rounded-md border border-[var(--hr-border)] px-3 text-[12.5px] leading-8 text-slate-600 hover:bg-slate-50"
-              >
-                清除
-              </Link>
-            ) : null}
-          </form>
+          <Link
+            href="/employees/database"
+            className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-600 hover:bg-slate-50"
+          >
+            在员工档案里改数据
+          </Link>
+          <Link
+            href={`/sheets/${encodeURIComponent(sheet)}`}
+            className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-600 hover:bg-slate-50"
+          >
+            重置条件
+          </Link>
         </div>
       </div>
 
-      <Card className="overflow-hidden p-0">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-[12px]">
-            <thead>
-              <tr className="bg-slate-50 text-left text-[11.5px] font-medium text-slate-500">
-                <th className="sticky left-0 z-10 border-b border-[var(--hr-border)] bg-slate-50 px-2 py-2 text-center">
-                  #
-                </th>
-                {headers.map((h, i) => (
-                  <th
-                    key={i}
-                    className="whitespace-nowrap border-b border-[var(--hr-border)] px-3 py-2"
-                    title={h || `第 ${i + 1} 列（Excel 中无表头）`}
-                  >
-                    {h || <span className="text-slate-300">—</span>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.length === 0 ? (
-                <tr>
-                  <td colSpan={headers.length + 1} className="px-4 py-16 text-center text-[13px] text-slate-400">
-                    {keyword ? "没有匹配的行" : "这张表还没有数据"}
-                  </td>
-                </tr>
-              ) : (
-                data.map((row, ri) => (
-                  <tr key={row.id} className="hover:bg-brand-50/40">
-                    <td className="sticky left-0 z-10 border-b border-slate-100 bg-white px-2 py-1.5 text-center font-mono text-[11px] text-slate-400">
-                      {(page - 1) * PAGE_SIZE + ri + 1}
-                    </td>
-                    {row.cells.map((c, ci) => (
-                      <td
-                        key={ci}
-                        className="whitespace-nowrap border-b border-slate-100 px-3 py-1.5 text-slate-700"
-                        title={c}
-                      >
-                        {c || <span className="text-slate-200">·</span>}
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+      <SheetDataTable
+        sheet={sheet}
+        columns={columns}
+        rows={displayRows}
+        reveal={reveal}
+        hasSensitiveColumns={columns.some((c) => c.sensitive)}
+        totalRows={rows.length}
+        filtered={matched.length}
+        page={pager.page}
+        pageSize={pager.pageSize}
+        totalPages={pager.totalPages}
+        query={{ q: keyword, col: colRaw, op, val, sort: sortRaw, dir }}
+      />
 
-      {totalPages > 1 ? (
-        <div className="mt-3 flex items-center justify-between text-[12.5px] text-slate-500">
-          <div>
-            第 {page} / {totalPages} 页 · 每页 {PAGE_SIZE} 行
-          </div>
-          <div className="flex gap-2">
-            {page > 1 ? (
-              <Link
-                href={qs({ page: page - 1 })}
-                className="rounded-md border border-[var(--hr-border)] px-3 py-1 hover:bg-slate-50"
-              >
-                上一页
-              </Link>
-            ) : null}
-            {page < totalPages ? (
-              <Link
-                href={qs({ page: page + 1 })}
-                className="rounded-md border border-[var(--hr-border)] px-3 py-1 hover:bg-slate-50"
-              >
-                下一页
-              </Link>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
-      <div className="mt-3 text-[11.5px] leading-relaxed text-slate-400">
-        本页内容为 Excel 原样镜像（公式取计算结果、日期按 YYYY-MM-DD 显示），列名与顺序与 Excel 完全一致。
-        如需按员工编号 / 门店等条件检索并修改，请使用左侧「数据管理」里的对应页面。
-      </div>
+      <Alert tone="info">
+        这里的每一行都来自 Excel「{meta.label}」Sheet 的原始数据（含历史脏值，不做任何自动修改）。
+        敏感信息（身份证 / 银行卡 / 电话 / 地址 / 薪资）<strong>在服务端就已打码</strong>，页面源码里也拿不到完整值；
+        需要查看时勾选右上角「显示完整信息」。
+        要新增 / 修改员工，请到左侧「数据管理」里的员工档案页操作。
+      </Alert>
     </div>
   );
 }

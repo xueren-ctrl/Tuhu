@@ -140,7 +140,30 @@ export async function touchSession(sessionId: string | undefined | null): Promis
 // Cookie 选项
 // ------------------------------------------------------------
 
-export function sessionCookieOptions(): {
+/**
+ * Cookie 选项。
+ *
+ * ⚠️ 远程访问要点：Secure Cookie 浏览器只在 HTTPS（以及 http://localhost）下才保存。
+ * 若在用 http://192.168.x.x:3000 这类局域网地址访问时下发 Secure Cookie，
+ * 会出现「登录看起来成功、但一刷新又回到登录页」的诡异现象。
+ * 因此这里改成**按本次请求的真实协议**决定：
+ *   - 通过的请求是 HTTPS（含 Cloudflare 隧道 / 反向代理转发）→ Secure
+ *   - 普通 HTTP（局域网 / 本机）→ 不加 Secure，保证登录可用
+ *
+ * 传入的 Request/NextRequest 都可以用（只读 header 与 url）。
+ */
+export function isHttpsRequest(req?: Request): boolean {
+  if (!req) return false;
+  const proto = req.headers.get("x-forwarded-proto");
+  if (proto) return proto.split(",")[0].trim().toLowerCase() === "https";
+  try {
+    return new URL(req.url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function sessionCookieOptions(opts?: { secure?: boolean }): {
   httpOnly: true;
   sameSite: "lax";
   path: string;
@@ -151,8 +174,7 @@ export function sessionCookieOptions(): {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
-    // 生产环境（HTTPS）才开 Secure；本地开发（http://localhost）保持 false 以免登录失败
-    secure: process.env.NODE_ENV === "production",
+    secure: opts?.secure ?? process.env.NODE_ENV === "production",
     maxAge: SESSION_TTL_MS / 1000,
   };
 }

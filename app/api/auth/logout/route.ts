@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { SESSION_COOKIE, destroySession, getApiUser, sessionCookieOptions } from "@/lib/auth";
+import { isHttpsRequest, SESSION_COOKIE, destroySession, getApiUser, sessionCookieOptions } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     },
   }).catch(() => {});
   const res = NextResponse.json({ ok: true });
-  res.cookies.set(SESSION_COOKIE, "", { ...sessionCookieOptions(), maxAge: 0 });
+  res.cookies.set(SESSION_COOKIE, "", { ...sessionCookieOptions({ secure: isHttpsRequest(req) }), maxAge: 0 });
   return res;
 }
 

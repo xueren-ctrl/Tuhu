@@ -1,5 +1,4 @@
-import Sidebar from "@/components/layout/Sidebar";
-import Topbar from "@/components/layout/Topbar";
+import AppShell from "@/components/layout/AppShell";
 import { requirePageUser } from "@/lib/auth";
 
 /**
@@ -9,6 +8,8 @@ import { requirePageUser } from "@/lib/auth";
  * Stage 6.1：middleware 只是第一层「Cookie 是否存在」的粗筛（Edge 不能查库），
  * 这里才是页面层的真校验 —— 每次进入业务页面都重新验证服务端 Session
  * （Session 过期 / 用户被停用 / 角色变更 都会在这里被拦截并重定向）。
+ *
+ * 手机适配：外壳（AppShell）是客户端组件，负责把侧边栏收进抽屉。
  */
 export default async function AppLayout({
   children,
@@ -16,15 +17,5 @@ export default async function AppLayout({
   children: React.ReactNode;
 }) {
   await requirePageUser();
-  return (
-    <div className="flex h-screen overflow-hidden">
-      {/* 左侧导航栏 */}
-      <Sidebar />
-      {/* 右侧：顶部系统栏 + 内容区 */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar />
-        <main className="min-w-0 flex-1 overflow-auto p-5">{children}</main>
-      </div>
-    </div>
-  );
+  return <AppShell>{children}</AppShell>;
 }

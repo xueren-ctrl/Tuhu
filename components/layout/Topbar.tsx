@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { SHEET_MAP } from "@/lib/sheet-meta";
 
 /** 顶部系统栏 */
 
 const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
   { match: /^\/$/, title: "首页看板", sub: "员工 / 门店 / 部门 / 职位 实时统计" },
-  { match: /^\/employees\/views$/, title: "人员视图总览", sub: "替代 Excel 分表视图，全部实时查询员工表" },
+  { match: /^\/employees\/views$/, title: "人员视图总览", sub: "按在职 / 离职 / 门店 / 部门查看人员" },
   { match: /^\/employees\/views\/active$/, title: "在职人员", sub: "status = ACTIVE" },
   { match: /^\/employees\/views\/resigned$/, title: "离职人员", sub: "status = RESIGNED" },
   { match: /^\/employees\/views\/stores$/, title: "门店人员查询", sub: "按 Store 表动态生成" },
@@ -23,7 +24,7 @@ const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
   { match: /^\/employees\/batch$/, title: "批量编辑", sub: "按条件批量设置门店 / 部门 / 岗位" },
   { match: /^\/data-quality\/[^/]+$/, title: "数据质量问题明细", sub: "可下钻到具体员工" },
   { match: /^\/data-quality$/, title: "数据质量中心", sub: "状态冲突 · 无部门 · 无岗位 · 无门店 · 重复员工" },
-  { match: /^\/stores$/, title: "门店管理", sub: "门店人数 · 别名归并（同一门店多种写法）" },
+  { match: /^\/settings\/access$/, title: "访问入口", sub: "手机 / 其它电脑 / 外网访问地址与说明" },
   { match: /^\/settings\/stores$/, title: "门店基础设置", sub: "新增 · 编辑 · 停用 · 搜索" },
   { match: /^\/settings\/departments$/, title: "部门管理", sub: "新增 · 编辑 · 停用" },
   { match: /^\/settings\/positions$/, title: "职位管理", sub: "新增 · 编辑 · 停用" },
@@ -36,12 +37,22 @@ interface MeUser {
   role: string;
 }
 
-export default function Topbar() {
+export default function Topbar({ onMenu }: { onMenu?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
-  const hit = TITLE_MAP.find((t) => t.match.test(pathname));
   const [me, setMe] = useState<MeUser | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+
+  // /sheets/<中文表名> —— 从路径里取出表名，显示该表的名称与说明
+  const sheetHit = (() => {
+    const m = /^\/sheets\/([^/]+)$/.exec(pathname);
+    if (!m) return null;
+    const key = decodeURIComponent(m[1]);
+    const meta = SHEET_MAP[key];
+    return meta ? { title: meta.label, sub: meta.desc } : { title: key, sub: "Excel 导入的数据表" };
+  })();
+
+  const hit = sheetHit ?? TITLE_MAP.find((t) => t.match.test(pathname));
 
   useEffect(() => {
     let alive = true;
@@ -69,25 +80,37 @@ export default function Topbar() {
   const roleLabel = me?.role === "ADMIN" ? "管理员" : "HR";
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--hr-border)] bg-white px-5">
-      <div className="min-w-0">
-        <h1 className="truncate text-[15px] font-semibold leading-tight">
-          {hit?.title ?? "HR 人事管理系统"}
-        </h1>
-        {hit?.sub ? (
-          <p className="truncate text-[11px] leading-tight text-sub">{hit.sub}</p>
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-[var(--hr-border)] bg-white px-3 md:px-5">
+      <div className="flex min-w-0 items-center gap-2">
+        {onMenu ? (
+          <button
+            type="button"
+            onClick={onMenu}
+            className="rounded-md border border-slate-300 px-2 py-1.5 text-[13px] leading-none text-slate-600 md:hidden"
+            aria-label="打开菜单"
+          >
+            ☰
+          </button>
         ) : null}
+        <div className="min-w-0">
+          <h1 className="truncate text-[15px] font-semibold leading-tight">
+            {hit?.title ?? "HR 人事管理系统"}
+          </h1>
+          {hit?.sub ? (
+            <p className="truncate text-[11px] leading-tight text-sub">{hit.sub}</p>
+          ) : null}
+        </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <span className="hidden rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 md:inline">
+      <div className="flex shrink-0 items-center gap-3">
+        <span className="hidden rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 lg:inline">
           ● 数据库已连接
         </span>
         <div className="flex items-center gap-2 rounded-full border border-[var(--hr-border)] py-1 pl-1 pr-2">
           <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-600 text-[11px] font-semibold text-white">
             {me?.displayName?.[0] ?? me?.username?.[0] ?? "?"}
           </span>
-          <div className="flex flex-col leading-tight">
+          <div className="hidden flex-col leading-tight sm:flex">
             <span className="text-[12px] font-medium text-slate-700">
               {me?.displayName || me?.username || "未登录"}
             </span>

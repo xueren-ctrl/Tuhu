@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/password";
-import { createSession, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth";
+import { createSession, isHttpsRequest, SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth";
 import { clearLoginFailures, recordLoginFailure } from "@/lib/login-rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -108,7 +108,9 @@ export async function POST(req: Request) {
         role: user.role,
       },
     });
-    res.cookies.set(SESSION_COOKIE, sid, sessionCookieOptions());
+    // Secure 跟随本次请求的真实协议：https（含隧道/反代转发）才加 Secure，
+    // 局域网 http://IP:3000 不加 —— 否则浏览器不会保存 Cookie，登录会「闪回登录页」。
+    res.cookies.set(SESSION_COOKIE, sid, sessionCookieOptions({ secure: isHttpsRequest(req) }));
     return res;
   } catch (e) {
     return NextResponse.json(

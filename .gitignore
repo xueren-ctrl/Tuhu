@@ -46,6 +46,8 @@ next-env.d.ts
 scripts/_analyze*.py
 scripts/_out*.txt
 scripts/_diag*.ts
+# 外网隧道程序（npm run tunnel 自动下载的二进制，约 40MB，不进 Git）
+/tools/
 .tmp_*
 .t1.json
 .t2.json
