@@ -21,6 +21,7 @@ export default async function PersonnelListView({
   basePath,
   searchParams,
   locked = {},
+  hiddenLocked = {},
   columns,
   title,
   hint,
@@ -35,6 +36,11 @@ export default async function PersonnelListView({
   searchParams: Record<string, string | string[] | undefined>;
   /** 锁定条件：固定写入查询（如在职视图固定 status=ACTIVE） */
   locked?: Partial<Record<FilterField, string>>;
+  /**
+   * Stage 7.3.1：额外锁定条件（不显示在筛选面板里）。
+   * 用于「在职员工」页排除「其他」门店 —— 那些待确认归属的人只该出现在「其他员工」页。
+   */
+  hiddenLocked?: Record<string, string>;
   columns: ViewColumnKey[];
   title: string;
   hint?: string;
@@ -54,6 +60,10 @@ export default async function PersonnelListView({
   }
   // 锁定条件优先级最高，防止被 URL 覆盖
   for (const [k, v] of Object.entries(locked)) {
+    if (v !== undefined && v !== null && v !== "") flat[k] = String(v);
+  }
+  // Stage 7.3.1：隐藏锁定（不显示在筛选面板，但生效）
+  for (const [k, v] of Object.entries(hiddenLocked)) {
     if (v !== undefined && v !== null && v !== "") flat[k] = String(v);
   }
 

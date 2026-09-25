@@ -199,6 +199,12 @@ export const employeeQuerySchema = z.object({
   phone: z.string().optional(),
   idCardNo: z.string().optional(),
   storeId: z.string().optional(),
+  /**
+   * Stage 7.3.1：排除某个门店（逗号分隔的多个 id）。
+   * 用于「在职员工」页排除「其他」门店 —— 那些是待确认归属的历史员工，
+   * 只该出现在「其他员工」页，不该混在正常在职列表里。
+   */
+  excludeStoreIds: z.string().optional(),
   departmentId: z.string().optional(),
   positionId: z.string().optional(),
   status: z.enum(["ACTIVE", "RESIGNED", "CANDIDATE", ""]).optional(),

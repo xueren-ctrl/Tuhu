@@ -53,8 +53,7 @@ export default async function OtherEmployeesPage({
       basePath="/employees/views/other"
       searchParams={sp}
       locked={{ storeId: String(other.id) }}
-      title="其他员工"
-      hint="有真实入职日期、但不在「在职 / 南昌3店 / 运营部」三张当前在职表里、也不在离职表里的历史员工。"
+      title="其他员工"      hint="有真实入职日期、但不在「在职 / 南昌3店 / 运营部」三张当前在职表里、也不在离职表里的历史员工。"
       advanced
       deletable
       emptyText="「其他」门店下暂无员工"

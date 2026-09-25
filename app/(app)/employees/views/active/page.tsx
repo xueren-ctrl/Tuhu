@@ -1,6 +1,7 @@
 import PersonnelListView from "@/components/employees/PersonnelListView";
 import { getDashboardStats } from "@/lib/employee-service";
 import { Card, StatCard } from "@/components/ui";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,9 @@ export const dynamic = "force-dynamic";
  * 表中 7 个「是否」字段（是否住宿舍 / 社保购买 / 劳动合同 / 社保协议 /
  * 消防承诺书 / 宿舍免责协议 / 入职体检）可直接在下拉里改成 是 / 否 / 留空，
  * 无需进入详情页。
+ *
+ * Stage 7.3.1：**排除「其他」门店**。那里是「有入职记录但不在三张当前在职表里」的
+ * 待确认人员，只该出现在「其他员工」页，不该混在正常在职列表中。
  */
 export default async function ActiveEmployeesPage({
   searchParams,
@@ -20,13 +24,20 @@ export default async function ActiveEmployeesPage({
   const sp = await searchParams;
   const stats = await getDashboardStats();
 
+  // 「其他」门店 id（若存在则从本页排除）
+  const other = await prisma.store.findFirst({
+    where: { name: "其他" },
+    select: { id: true },
+  });
+
   return (
     <PersonnelListView
       basePath="/employees/views/active"
       searchParams={sp}
       locked={{ status: "ACTIVE" }}
+      hiddenLocked={other ? { excludeStoreIds: String(other.id) } : {}}
       title="在职员工"
-      hint="对应 Excel「在职」Sheet —— 固定 status = ACTIVE。表中的「是否」字段可直接用下拉改成 是 / 否 / 留空。"
+      hint="对应 Excel「在职」+「南昌3店」+「运营部」三张表 —— 固定 status = ACTIVE。表中的「是否」字段可直接用下拉改成 是 / 否 / 留空。"
       advanced
       deletable
       emptyText="当前没有在职人员"
