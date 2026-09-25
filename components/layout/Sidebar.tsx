@@ -20,13 +20,9 @@ interface NavGroup {
 
 const NAV: NavGroup[] = [
   {
-    title: "总览",
-    items: [{ href: "/", label: "首页看板", icon: "▤", ready: true }],
-  },
-  {
-    // Stage 7.3：按 Excel 的表分栏，点进去就能直接增删改查
     title: "员工表（对应 Excel 各 Sheet）",
     items: [
+      { href: "/employees/database", label: "数据库（全表）", icon: "▤", ready: true },
       { href: "/employees/views/active", label: "在职员工", icon: "✓", ready: true },
       { href: "/employees/views/resigned", label: "离职员工", icon: "✗", ready: true },
       { href: "/employees/views/nc3", label: "南昌3店", icon: "③", ready: true },
@@ -36,9 +32,13 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    title: "总览",
+    items: [{ href: "/", label: "首页看板", icon: "▦", ready: true }],
+  },
+  {
     title: "人事档案",
     items: [
-      { href: "/employees", label: "全部员工档案", icon: "▦", ready: true },
+      { href: "/employees", label: "全部员工档案", icon: "▥", ready: true },
       { href: "/employees/new", label: "新增员工", icon: "＋", ready: true },
       { href: "/employees/batch", label: "批量编辑", icon: "⇉", ready: true },
     ],
@@ -68,15 +68,6 @@ const NAV: NavGroup[] = [
       { href: "/data-quality", label: "数据质量中心", icon: "◎", ready: true },
       { href: "/employees/department-auto", label: "部门自动归属", icon: "⇄", ready: true },
       { href: "/import", label: "Excel 导入预览", icon: "⇧", ready: true },
-    ],
-  },
-  {
-    title: "后续阶段（未开发）",
-    items: [
-      { href: "#", label: "社保管理", icon: "◈", ready: false },
-      { href: "#", label: "薪资管理", icon: "¥", ready: false },
-      { href: "#", label: "Excel 导出", icon: "⇩", ready: false },
-      { href: "#", label: "手机 APP", icon: "▢", ready: false },
     ],
   },
 ];

@@ -35,7 +35,41 @@ export type ViewColumnKey =
   | "socialInsuranceAgreement"
   | "fireSafetyCommitment"
   | "dormitoryWaiver"
-  | "onboardingMedical";
+  | "onboardingMedical"
+  // Stage 7.3.5：「数据库」全表视图 —— 完整原始字段
+  | "storeNameRaw"
+  | "departmentNameRaw"
+  | "jobGradeRaw"
+  | "ageRaw"
+  | "currentAddress"
+  | "emergencyContact1"
+  | "emergencyPhone1"
+  | "emergencyContact2"
+  | "emergencyPhone2"
+  | "mentorName"
+  | "positionNote"
+  | "certificateLevel"
+  | "salaryTerms"
+  | "firstMonthGuarantee"
+  | "bankBranch"
+  | "bankAccountNo"
+  | "docResume"
+  | "docInterviewEvaluation"
+  | "docOnboardingForm"
+  | "docInterviewEvaluation2"
+  | "resignDateRaw"
+  | "recruiterName"
+  | "interviewDate"
+  | "interviewLocation"
+  | "interviewResult"
+  | "interviewerName"
+  | "interviewHired"
+  | "remark3"
+  | "sourceSheet"
+  | "importBatch"
+  | "sourceRowNo"
+  | "dataFlags"
+  | "createdAt";
 
 /** Stage 7.3：可在列表里直接下拉编辑的「是否」字段 */
 export const YES_NO_FIELDS = [
@@ -82,6 +116,40 @@ const COLUMNS: Record<ViewColumnKey, ColumnDef> = {
   fireSafetyCommitment: { key: "fireSafetyCommitment", label: "消防承诺书", className: "w-[104px]" },
   dormitoryWaiver: { key: "dormitoryWaiver", label: "宿舍免责协议", className: "w-[116px]" },
   onboardingMedical: { key: "onboardingMedical", label: "入职体检", className: "w-[92px]" },
+  // Stage 7.3.5：「数据库」全表 —— 完整原始字段
+  storeNameRaw: { key: "storeNameRaw", label: "门店(原文)", className: "min-w-[140px]" },
+  departmentNameRaw: { key: "departmentNameRaw", label: "部门(原文)", className: "min-w-[110px]" },
+  jobGradeRaw: { key: "jobGradeRaw", label: "工种(原文)", className: "min-w-[120px]" },
+  ageRaw: { key: "ageRaw", label: "年龄(原文)", className: "w-[92px]" },
+  currentAddress: { key: "currentAddress", label: "现居住地址", className: "min-w-[160px]" },
+  emergencyContact1: { key: "emergencyContact1", label: "紧急联系人1", className: "w-[92px]" },
+  emergencyPhone1: { key: "emergencyPhone1", label: "联系人电话1", className: "w-[116px]" },
+  emergencyContact2: { key: "emergencyContact2", label: "紧急联系人2", className: "w-[92px]" },
+  emergencyPhone2: { key: "emergencyPhone2", label: "联系人电话2", className: "w-[116px]" },
+  mentorName: { key: "mentorName", label: "带教人", className: "w-[84px]" },
+  positionNote: { key: "positionNote", label: "职位备注", className: "min-w-[110px]" },
+  certificateLevel: { key: "certificateLevel", label: "证书等级", className: "w-[92px]" },
+  salaryTerms: { key: "salaryTerms", label: "薪资待遇", className: "min-w-[180px]" },
+  firstMonthGuarantee: { key: "firstMonthGuarantee", label: "首月保障", className: "min-w-[130px]" },
+  bankBranch: { key: "bankBranch", label: "开户银行", className: "min-w-[150px]" },
+  bankAccountNo: { key: "bankAccountNo", label: "银行卡账号", className: "w-[170px] font-mono" },
+  docResume: { key: "docResume", label: "简历", className: "w-[62px]" },
+  docInterviewEvaluation: { key: "docInterviewEvaluation", label: "面试评价", className: "w-[84px]" },
+  docOnboardingForm: { key: "docOnboardingForm", label: "入职表", className: "w-[72px]" },
+  docInterviewEvaluation2: { key: "docInterviewEvaluation2", label: "面试评价2", className: "w-[84px]" },
+  resignDateRaw: { key: "resignDateRaw", label: "离职日期(原文)", className: "w-[116px]" },
+  recruiterName: { key: "recruiterName", label: "招聘人", className: "w-[84px]" },
+  interviewDate: { key: "interviewDate", label: "面试日期", className: "w-[104px]" },
+  interviewLocation: { key: "interviewLocation", label: "面试地点", className: "min-w-[110px]" },
+  interviewResult: { key: "interviewResult", label: "面试结果", className: "w-[92px]" },
+  interviewerName: { key: "interviewerName", label: "面试官", className: "w-[84px]" },
+  interviewHired: { key: "interviewHired", label: "是否入职", className: "w-[84px]" },
+  remark3: { key: "remark3", label: "备注3", className: "min-w-[130px]" },
+  sourceSheet: { key: "sourceSheet", label: "来源Sheet", className: "w-[104px]" },
+  importBatch: { key: "importBatch", label: "导入批次", className: "w-[130px]" },
+  sourceRowNo: { key: "sourceRowNo", label: "源行号", className: "w-[74px]" },
+  dataFlags: { key: "dataFlags", label: "数据标记", className: "min-w-[120px]" },
+  createdAt: { key: "createdAt", label: "建档时间", className: "w-[150px]" },
 };
 
 export default function EmployeeViewTable({
@@ -202,8 +270,34 @@ export default function EmployeeViewTable({
             value={(r as unknown as Record<string, string | null>)[key]}
           />
         );
-      default:
-        return "—";
+      // Stage 7.3.5：「数据库」全表的日期 / 数字 / 文本字段
+      case "hireDate":
+      case "resignDate":
+      case "createdAt":
+        break; // 上面已处理
+      default: {
+        const v = (r as unknown as Record<string, unknown>)[key];
+        if (v === null || v === undefined || v === "") {
+          return <span className="text-slate-300">—</span>;
+        }
+        if (key === "interviewDate") {
+          return <span className="text-slate-600">{formatDate(v as string) || "—"}</span>;
+        }
+        if (key === "sourceRowNo") {
+          return <span className="font-mono text-[11.5px] text-slate-500">{String(v)}</span>;
+        }
+        if (key === "bankAccountNo" || key === "emergencyPhone1" || key === "emergencyPhone2") {
+          return <span className="font-mono text-[11.5px] text-slate-600">{String(v)}</span>;
+        }
+        if (key === "interviewHired" || key === "docResume" || key === "docInterviewEvaluation" || key === "docOnboardingForm" || key === "docInterviewEvaluation2") {
+          const s = String(v);
+          if (s === "是") return <span className="text-emerald-600">是</span>;
+          if (s === "否") return <span className="text-slate-400">否</span>;
+          if (s === "×" || s === "/") return <span className="text-amber-600">{s}</span>;
+          return <span className="text-slate-600">{s}</span>;
+        }
+        return <span className="text-slate-600">{String(v)}</span>;
+      }
     }
   };
 

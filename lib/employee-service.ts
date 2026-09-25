@@ -46,6 +46,37 @@ export interface EmployeeListRow {
   fireSafetyCommitment: string | null;
   dormitoryWaiver: string | null;
   onboardingMedical: string | null;
+  // Stage 7.3.5：「数据库」全表视图需要的完整字段
+  storeId: number | null;
+  departmentId: number | null;
+  positionId: number | null;
+  ageRaw: string | null;
+  currentAddress: string | null;
+  emergencyContact1: string | null;
+  emergencyPhone1: string | null;
+  emergencyContact2: string | null;
+  emergencyPhone2: string | null;
+  mentorName: string | null;
+  positionNote: string | null;
+  certificateLevel: string | null;
+  salaryTerms: string | null;
+  firstMonthGuarantee: string | null;
+  bankBranch: string | null;
+  bankAccountNo: string | null;
+  docResume: string | null;
+  docInterviewEvaluation: string | null;
+  docOnboardingForm: string | null;
+  docInterviewEvaluation2: string | null;
+  resignDateRaw: string | null;
+  recruiterName: string | null;
+  interviewDate: string | null;
+  interviewLocation: string | null;
+  interviewResult: string | null;
+  interviewerName: string | null;
+  interviewHired: string | null;
+  remark3: string | null;
+  sourceSheet: string | null;
+  importBatch: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -77,6 +108,37 @@ const listSelect = {
   fireSafetyCommitment: true,
   dormitoryWaiver: true,
   onboardingMedical: true,
+  // Stage 7.3.5：「数据库」全表视图需要的完整字段
+  storeId: true,
+  departmentId: true,
+  positionId: true,
+  ageRaw: true,
+  currentAddress: true,
+  emergencyContact1: true,
+  emergencyPhone1: true,
+  emergencyContact2: true,
+  emergencyPhone2: true,
+  mentorName: true,
+  positionNote: true,
+  certificateLevel: true,
+  salaryTerms: true,
+  firstMonthGuarantee: true,
+  bankBranch: true,
+  bankAccountNo: true,
+  docResume: true,
+  docInterviewEvaluation: true,
+  docOnboardingForm: true,
+  docInterviewEvaluation2: true,
+  resignDateRaw: true,
+  recruiterName: true,
+  interviewDate: true,
+  interviewLocation: true,
+  interviewResult: true,
+  interviewerName: true,
+  interviewHired: true,
+  remark3: true,
+  sourceSheet: true,
+  importBatch: true,
   createdAt: true,
   updatedAt: true,
   deletedAt: true,
@@ -116,6 +178,37 @@ function shapeListRow(r: RawListRow): EmployeeListRow {
     fireSafetyCommitment: r.fireSafetyCommitment ?? null,
     dormitoryWaiver: r.dormitoryWaiver ?? null,
     onboardingMedical: r.onboardingMedical ?? null,
+    // Stage 7.3.5
+    storeId: r.storeId,
+    departmentId: r.departmentId,
+    positionId: r.positionId,
+    ageRaw: r.ageRaw ?? null,
+    currentAddress: r.currentAddress ?? null,
+    emergencyContact1: r.emergencyContact1 ?? null,
+    emergencyPhone1: r.emergencyPhone1 ?? null,
+    emergencyContact2: r.emergencyContact2 ?? null,
+    emergencyPhone2: r.emergencyPhone2 ?? null,
+    mentorName: r.mentorName ?? null,
+    positionNote: r.positionNote ?? null,
+    certificateLevel: r.certificateLevel ?? null,
+    salaryTerms: r.salaryTerms ?? null,
+    firstMonthGuarantee: r.firstMonthGuarantee ?? null,
+    bankBranch: r.bankBranch ?? null,
+    bankAccountNo: r.bankAccountNo ?? null,
+    docResume: r.docResume ?? null,
+    docInterviewEvaluation: r.docInterviewEvaluation ?? null,
+    docOnboardingForm: r.docOnboardingForm ?? null,
+    docInterviewEvaluation2: r.docInterviewEvaluation2 ?? null,
+    resignDateRaw: r.resignDateRaw ?? null,
+    recruiterName: r.recruiterName ?? null,
+    interviewDate: r.interviewDate ? r.interviewDate.toISOString() : null,
+    interviewLocation: r.interviewLocation ?? null,
+    interviewResult: r.interviewResult ?? null,
+    interviewerName: r.interviewerName ?? null,
+    interviewHired: r.interviewHired ?? null,
+    remark3: r.remark3 ?? null,
+    sourceSheet: r.sourceSheet ?? null,
+    importBatch: r.importBatch ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
