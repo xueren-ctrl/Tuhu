@@ -5,6 +5,7 @@ import { EMPLOYEE_STATUS, UNASSIGNED, UNASSIGNED_LABEL } from "./constants";
 import { nextEmployeeId } from "./employee-id";
 import { genderFromIdCard } from "./format";
 import type { EmployeeQueryInput } from "./validation";
+import { computeTenure, renderTenureCn } from "./tenure";
 import {
   DEFAULT_OPERATOR,
   diffFields,
@@ -77,6 +78,13 @@ export interface EmployeeListRow {
   remark3: string | null;
   sourceSheet: string | null;
   importBatch: string | null;
+  // Stage 7.3.9：Excel 里的计算列（实时推算，不写库）
+  /** 在职年限，中文「X年X个月」（Excel「在职年限」列口径） */
+  tenureCn: string;
+  /** 是否满 7 天（Excel「是否满7天」列） */
+  past7Days: boolean | null;
+  /** 是否入职满 2 个月（Excel「是否入职满2个月」列） */
+  past2Months: boolean | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -209,6 +217,10 @@ function shapeListRow(r: RawListRow): EmployeeListRow {
     remark3: r.remark3 ?? null,
     sourceSheet: r.sourceSheet ?? null,
     importBatch: r.importBatch ?? null,
+    // Stage 7.3.9：与 Excel 一致的计算列（实时推算，不写库）
+    tenureCn: renderTenureCn(r.hireDate, r.resignDate),
+    past7Days: computeTenure(r.hireDate, r.resignDate).past7Days,
+    past2Months: computeTenure(r.hireDate, r.resignDate).past2Months,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,

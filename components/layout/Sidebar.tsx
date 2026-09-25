@@ -20,25 +20,27 @@ interface NavGroup {
 
 const NAV: NavGroup[] = [
   {
+    // 与 Excel 的 Sheet 一一对应，内容原样镜像（列名 / 顺序 / 取值都与 Excel 一致）
     title: "员工表（对应 Excel 各 Sheet）",
     items: [
-      { href: "/employees/database", label: "数据库（全表）", icon: "▤", ready: true },
-      { href: "/employees/views/active", label: "在职员工", icon: "✓", ready: true },
-      { href: "/employees/views/resigned", label: "离职员工", icon: "✗", ready: true },
-      { href: "/employees/views/nc3", label: "南昌3店", icon: "③", ready: true },
-      { href: "/employees/views/dept-staff", label: "运营部", icon: "▣", ready: true },
-      { href: "/employees/views/other", label: "其他员工", icon: "◇", ready: true },
-      { href: "/employees/views/candidates", label: "候选人（只面试）", icon: "◷", ready: true },
+      { href: "/sheets/在职", label: "在职", icon: "✓", ready: true },
+      { href: "/sheets/离职", label: "离职", icon: "✗", ready: true },
+      { href: "/sheets/南昌3店", label: "南昌3店", icon: "③", ready: true },
+      { href: "/sheets/运营部", label: "运营部", icon: "▣", ready: true },
+      { href: "/sheets/招聘面试登记表", label: "招聘面试登记表", icon: "◷", ready: true },
+      { href: "/sheets/运营部离职", label: "运营部离职", icon: "◐", ready: true },
+      { href: "/sheets/薪资表", label: "薪资表", icon: "¥", ready: true },
+      { href: "/sheets/数据库", label: "数据库", icon: "▤", ready: true },
+      { href: "/employees/views/other", label: "其他", icon: "◇", ready: true },
     ],
   },
   {
-    title: "总览",
-    items: [{ href: "/", label: "首页看板", icon: "▦", ready: true }],
-  },
-  {
-    title: "人事档案",
+    // 与上面同样的数据，但支持按条件检索 / 直接修改；改完会同步反映到上面的表
+    title: "数据管理（可增删改查）",
     items: [
-      { href: "/employees", label: "全部员工档案", icon: "▥", ready: true },
+      { href: "/employees/views/active", label: "在职员工", icon: "✓", ready: true },
+      { href: "/employees/views/resigned", label: "离职员工", icon: "✗", ready: true },
+      { href: "/employees/database", label: "全部员工（数据库）", icon: "▥", ready: true },
       { href: "/employees/new", label: "新增员工", icon: "＋", ready: true },
       { href: "/employees/batch", label: "批量编辑", icon: "⇉", ready: true },
     ],
@@ -46,9 +48,9 @@ const NAV: NavGroup[] = [
   {
     title: "统计与查询",
     items: [
+      { href: "/", label: "首页看板", icon: "▦", ready: true },
       { href: "/employees/views", label: "视图总览", icon: "◱", ready: true },
       { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂", ready: true },
-      { href: "/employees/views/departments", label: "部门人员查询", icon: "▣", ready: true },
       { href: "/employees/views/distribution", label: "人员分布统计", icon: "◔", ready: true },
     ],
   },
@@ -82,7 +84,10 @@ export default function Sidebar() {
     if (base === "/employees") return pathname === "/employees";
     // /employees/views 只精确匹配总览，子视图各自高亮
     if (base === "/employees/views") return pathname === "/employees/views";
-    return pathname === base || pathname.startsWith(base + "/");
+    // Sheet 镜像页的路径含中文，usePathname 可能返回编码或未编码形式，两种都比对
+    const enc = encodeURI(base);
+    const candidates = [base, enc];
+    return candidates.some((c) => pathname === c || pathname.startsWith(c + "/"));
   };
 
   return (

@@ -549,3 +549,25 @@ model ImportPreview {
 
   @@index([status, createdAt])
 }
+
+/// Stage 7.3.10：Excel 各 Sheet 的原样镜像。
+/// 用户要求「软件里的表跟我的 Excel 一模一样」——对于没有对应 Employee 字段的 Sheet
+/// （薪资表、招聘面试登记表等），最可靠的方式是把整行原样存下来，按 Excel 的列顺序渲染。
+/// 只读镜像，不参与员工增删改查（那是 Employee 表的职责）。
+model SheetRow {
+  id        Int      @id @default(autoincrement())
+  /// Sheet 名（在职 / 离职 / 南昌3店 / 运营部 / 招聘面试登记表 / 运营部离职 / 薪资表 / 数据库）
+  sheet     String
+  /// Excel 里的行号（从 1 开始），便于溯源
+  rowNo     Int
+  /// 该行的单元格值，JSON 数组（按列顺序，与表头一一对应）
+  cellsJson String
+  /// 表头，JSON 数组
+  headersJson String
+  /// 数据来源文件指纹（Excel SHA256），用于判断是否需要重新导入
+  sourceSha String?
+  importedAt DateTime @default(now())
+
+  @@unique([sheet, rowNo])
+  @@index([sheet])
+}

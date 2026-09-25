@@ -147,6 +147,7 @@ export default async function PersonnelListView({
           basePath={basePath}
           labelOverrides={labelOverrides}
           emptyText={emptyText}
+          seqOffset={(result.page - 1) * result.pageSize}
         />
         {result.data.length > 0 ? (
           <ListPagination

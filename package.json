@@ -30,7 +30,8 @@
     "test:tenure": "tsx scripts/tenure-test.mjs",
     "check:auth": "node scripts/check-auth-coverage.mjs",
     "test:cleanup": "tsx scripts/cleanup-test-data.ts",
-    "backup": "tsx scripts/backup-db.ts"
+    "backup": "tsx scripts/backup-db.ts",
+    "import:sheets": "tsx scripts/import-sheets.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

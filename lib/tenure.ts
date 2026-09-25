@@ -218,3 +218,46 @@ export function renderDate(d: Date | null): string {
   const dd = d.getTime() % DAY_MS === 0 ? d.getUTCDate() : d.getDate();
   return `${y}-${String(m).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
 }
+
+/**
+ * 在职年限（中文「X年X个月」格式，与 Excel「在职年限」列一致）。
+ *
+ * 口径：按自然月做减法 —— 年 = 参考日年 − 入职日年，月 = 参考日月 − 入职日月，
+ * 若参考日的「日」小于入职日的「日」则月数 −1（未满整月）。月数为负则借位。
+ * 缺入职日期返回空串（Excel 里这种行该列也是空的）。
+ *
+ * @param hireDate   入职日期
+ * @param resignDate 离职日期（提供则以离职日为参考，否则以 now 为准）
+ * @param now        参考当前时间（可注入，便于测试）
+ */
+export function renderTenureCn(
+  hireDate: string | Date | null | undefined,
+  resignDate?: string | Date | null | undefined,
+  now: Date = new Date()
+): string {
+  const h = toDate(hireDate, "renderTenureCn(hireDate)");
+  if (!h) return "";
+  const r = toDate(resignDate, "renderTenureCn(resignDate)");
+  const ref = r ?? now;
+
+  // 统一取「日历日」分量（UTC 零点 Date 用 UTC 分量，否则本地分量）
+  const isUtc = h.getTime() % DAY_MS === 0;
+  const hy = isUtc ? h.getUTCFullYear() : h.getFullYear();
+  const hm = isUtc ? h.getUTCMonth() : h.getMonth();
+  const hd = isUtc ? h.getUTCDate() : h.getDate();
+
+  const refUtc = ref.getTime() % DAY_MS === 0;
+  const ry = refUtc ? ref.getUTCFullYear() : ref.getFullYear();
+  const rm = refUtc ? ref.getUTCMonth() : ref.getMonth();
+  const rd = refUtc ? ref.getUTCDate() : ref.getDate();
+
+  let years = ry - hy;
+  let months = rm - hm;
+  if (rd < hd) months -= 1;
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+  if (years < 0) return "0年0个月";
+  return `${years}年${months}个月`;
+}

@@ -69,7 +69,12 @@ export type ViewColumnKey =
   | "importBatch"
   | "sourceRowNo"
   | "dataFlags"
-  | "createdAt";
+  | "createdAt"
+  // Stage 7.3.9：Excel 里的计算列 / 序号
+  | "seq"
+  | "tenureCn"
+  | "past7Days"
+  | "past2Months";
 
 /** Stage 7.3：可在列表里直接下拉编辑的「是否」字段 */
 export const YES_NO_FIELDS = [
@@ -150,6 +155,11 @@ const COLUMNS: Record<ViewColumnKey, ColumnDef> = {
   sourceRowNo: { key: "sourceRowNo", label: "源行号", className: "w-[74px]" },
   dataFlags: { key: "dataFlags", label: "数据标记", className: "min-w-[120px]" },
   createdAt: { key: "createdAt", label: "建档时间", className: "w-[150px]" },
+  // Stage 7.3.9
+  seq: { key: "seq", label: "序号", className: "w-[58px]" },
+  tenureCn: { key: "tenureCn", label: "在职年限", className: "w-[100px]" },
+  past7Days: { key: "past7Days", label: "是否满7天", className: "w-[96px]" },
+  past2Months: { key: "past2Months", label: "是否入职满2个月", className: "w-[130px]" },
 };
 
 export default function EmployeeViewTable({
@@ -159,12 +169,15 @@ export default function EmployeeViewTable({
   /** 门店/部门视图下，门店列标题可自定义（如「原门店」） */
   labelOverrides,
   emptyText = "没有符合条件的员工",
+  /** 「序号」列的起始偏移（分页时传 (page-1)*pageSize，保证跨页连续） */
+  seqOffset = 0,
 }: {
   rows: EmployeeListRow[];
   columns: ViewColumnKey[];
   basePath: string;
   labelOverrides?: Partial<Record<ViewColumnKey, string>>;
   emptyText?: string;
+  seqOffset?: number;
 }) {
   const router = useRouter();
   const sp = useSearchParams();
@@ -183,8 +196,27 @@ export default function EmployeeViewTable({
     router.push(`${basePath}?${params.toString()}`);
   };
 
-  const cell = (r: EmployeeListRow, key: ViewColumnKey): React.ReactNode => {
+  const cell = (r: EmployeeListRow, key: ViewColumnKey, rowIndex: number): React.ReactNode => {
     switch (key) {
+      // Stage 7.3.9：序号 / 计算列
+      case "seq":
+        return <span className="font-mono text-[11.5px] text-slate-400">{seqOffset + rowIndex + 1}</span>;
+      case "tenureCn":
+        return r.tenureCn ? (
+          <span className="text-slate-600">{r.tenureCn}</span>
+        ) : (
+          <span className="text-slate-300">—</span>
+        );
+      case "past7Days":
+      case "past2Months": {
+        const v = key === "past7Days" ? r.past7Days : r.past2Months;
+        if (v === null) return <span className="text-slate-300">—</span>;
+        return v ? (
+          <span className="text-emerald-600">{key === "past7Days" ? "入职满7天" : "入职满2个月"}</span>
+        ) : (
+          <span className="text-amber-600">{key === "past7Days" ? "未达7天" : "未达2个月"}</span>
+        );
+      }
       case "employeeId":
         return (
           <Link
@@ -337,11 +369,11 @@ export default function EmployeeViewTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
+          {rows.map((r, ri) => (
             <tr key={r.id} className={"text-[12.5px] " + (r.deletedAt ? "opacity-55" : "")}>
               {columns.map((k, i) => (
                 <td key={k} className={`px-3 py-2 ${i === 0 ? "pl-4" : ""}`}>
-                  {cell(r, k)}
+                  {cell(r, k, ri)}
                   {k === "name" && r.deletedAt ? (
                     <Badge tone="slate" className="ml-1.5">
                       已停用
