@@ -311,7 +311,187 @@ async function main() {
     );
   }
 
+  // ================================================================
+  // Stage 7.2C.1 —— 重置语义（只改 passwordHash）+ Session 撤销 + 新旧密码认证
+  // ================================================================
+
+  // ---------- S7-U9：reset 只改 passwordHash，metadata 完全保留 ----------
+  // 「重置密码 ≠ 自动重新激活账号」：INACTIVE 账号 reset 后仍必须是 INACTIVE。
+  {
+    // 先把 admin 改成一个有辨识度的自定义状态：停用 + 自定义显示名
+    await prisma.appUser.update({
+      where: { username: "admin" },
+      data: { displayName: "自定义显示名U9", role: "ADMIN", status: "INACTIVE" },
+    });
+    const before9 = await prisma.appUser.findUnique({
+      where: { username: "admin" },
+      select: { passwordHash: true, displayName: true, role: true, status: true },
+    });
+
+    const r = await runSeed(["--reset-password", "--only=admin"], {
+      DATABASE_URL: TEST_DB_URL,
+      SEED_ADMIN_PASSWORD: PWD_A2,
+    });
+    const after9 = await prisma.appUser.findUnique({
+      where: { username: "admin" },
+      select: { passwordHash: true, displayName: true, role: true, status: true },
+    });
+
+    check(
+      "S7-U9a",
+      "--only=admin reset：passwordHash 改变，但 displayName/role/status 完全不变（停用账号仍为 INACTIVE）",
+      r.status === 0 &&
+        after9.passwordHash !== before9.passwordHash &&
+        after9.displayName === before9.displayName &&
+        after9.role === before9.role &&
+        after9.status === before9.status,
+      JSON.stringify({
+        exit: r.status,
+        hashChanged: after9.passwordHash !== before9.passwordHash,
+        displayNameUnchanged: after9.displayName === before9.displayName,
+        roleUnchanged: after9.role === before9.role,
+        statusUnchanged: after9.status === before9.status,
+        statusValue: after9.status,
+      })
+    );
+
+    // HR 同样验证（共用逻辑）
+    await prisma.appUser.update({
+      where: { username: "hr" },
+      data: { displayName: "自定义显示名U9HR", role: "HR", status: "INACTIVE" },
+    });
+    const before9h = await prisma.appUser.findUnique({
+      where: { username: "hr" },
+      select: { passwordHash: true, displayName: true, role: true, status: true },
+    });
+    const rh = await runSeed(["--reset-password", "--only=hr"], {
+      DATABASE_URL: TEST_DB_URL,
+      SEED_HR_PASSWORD: PWD_H2,
+    });
+    const after9h = await prisma.appUser.findUnique({
+      where: { username: "hr" },
+      select: { passwordHash: true, displayName: true, role: true, status: true },
+    });
+    check(
+      "S7-U9b",
+      "--only=hr reset：passwordHash 改变，但 displayName/role/status 完全不变",
+      rh.status === 0 &&
+        after9h.passwordHash !== before9h.passwordHash &&
+        after9h.displayName === before9h.displayName &&
+        after9h.role === before9h.role &&
+        after9h.status === before9h.status,
+      JSON.stringify({
+        exit: rh.status,
+        hashChanged: after9h.passwordHash !== before9h.passwordHash,
+        displayNameUnchanged: after9h.displayName === before9h.displayName,
+        roleUnchanged: after9h.role === before9h.role,
+        statusUnchanged: after9h.status === before9h.status,
+      })
+    );
+  }
+
+  // ---------- S7-U10：密码重置必须撤销该账号全部 Session，且不波及其他账号 ----------
+  {
+    // 恢复为 ACTIVE 并造 2 条 admin Session + 1 条 hr Session
+    const adminRow = await prisma.appUser.update({
+      where: { username: "admin" },
+      data: { displayName: "系统管理员", role: "ADMIN", status: "ACTIVE" },
+      select: { id: true },
+    });
+    const hrRow = await prisma.appUser.update({
+      where: { username: "hr" },
+      data: { displayName: "HR 操作员", role: "HR", status: "ACTIVE" },
+      select: { id: true },
+    });
+    await prisma.session.deleteMany({});
+    const exp = new Date(Date.now() + 8 * 3600 * 1000);
+    for (let i = 1; i <= 2; i++) {
+      await prisma.session.create({
+        data: {
+          id: `s7u10-admin-${i}-${rnd()}`,
+          userId: adminRow.id,
+          username: "admin",
+          displayName: "系统管理员",
+          role: "ADMIN",
+          expiresAt: exp,
+        },
+      });
+    }
+    await prisma.session.create({
+      data: {
+        id: `s7u10-hr-1-${rnd()}`,
+        userId: hrRow.id,
+        username: "hr",
+        displayName: "HR 操作员",
+        role: "HR",
+        expiresAt: exp,
+      },
+    });
+    const adminSessBefore = await prisma.session.count({ where: { userId: adminRow.id } });
+    const hrSessBefore = await prisma.session.count({ where: { userId: hrRow.id } });
+
+    // reset admin
+    const r10 = await runSeed(["--reset-password", "--only=admin"], {
+      DATABASE_URL: TEST_DB_URL,
+      SEED_ADMIN_PASSWORD: PWD_A1,
+    });
+    const adminSessAfter = await prisma.session.count({ where: { userId: adminRow.id } });
+    const hrSessAfterAdminReset = await prisma.session.count({ where: { userId: hrRow.id } });
+    check(
+      "S7-U10a",
+      "--only=admin reset 后：admin Session 全部清零（2→0），hr Session 不受影响",
+      r10.status === 0 &&
+        adminSessBefore === 2 &&
+        hrSessBefore === 1 &&
+        adminSessAfter === 0 &&
+        hrSessAfterAdminReset === hrSessBefore,
+      JSON.stringify({
+        exit: r10.status,
+        adminSessBefore,
+        adminSessAfter,
+        hrSessBefore,
+        hrSessAfterAdminReset,
+      })
+    );
+
+    // reset hr
+    const r10h = await runSeed(["--reset-password", "--only=hr"], {
+      DATABASE_URL: TEST_DB_URL,
+      SEED_HR_PASSWORD: PWD_H1,
+    });
+    const hrSessAfter = await prisma.session.count({ where: { userId: hrRow.id } });
+    check(
+      "S7-U10b",
+      "--only=hr reset 后：hr Session 全部清零（1→0）",
+      r10h.status === 0 && hrSessAfter === 0,
+      JSON.stringify({ exit: r10h.status, hrSessBefore, hrSessAfter })
+    );
+  }
+
+  // ---------- S7-U11：新密码可用于认证，旧密码失效 ----------
+  {
+    const { verifyPassword } = await import("../lib/password.ts");
+
+    // admin：刚被 reset 成 PWD_A1
+    const adminHash = await hashOf(prisma, "admin");
+    const adminNewOk = await verifyPassword(PWD_A1, adminHash);
+    const adminOldFail = (await verifyPassword(PWD_A2, adminHash)) === false;
+
+    // hr：刚被 reset 成 PWD_H1
+    const hrHash = await hashOf(prisma, "hr");
+    const hrNewOk = await verifyPassword(PWD_H1, hrHash);
+    const hrOldFail = (await verifyPassword(PWD_H2, hrHash)) === false;
+
+    check(
+      "S7-U11",
+      "reset 后 verifyPassword：新密码校验通过、旧密码校验失败（admin 与 hr 均验证；不输出密码/hash）",
+      adminNewOk && adminOldFail && hrNewOk && hrOldFail,
+      JSON.stringify({ adminNewOk, adminOldRejected: adminOldFail, hrNewOk, hrOldRejected: hrOldFail })
+    );
+  }
+
   // ---------- 清理 ----------
+  await prisma.session.deleteMany({});
   await prisma.$disconnect();
   if (existsSync(TEST_DB)) unlinkSync(TEST_DB);
 

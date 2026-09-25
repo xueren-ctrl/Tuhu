@@ -18,6 +18,14 @@
  *   - **绝不向 stdout 打印密码明文**（Stage 7.2C：避免密码进入终端日志/审计）。
  *   - 参数冲突（同时给两个 --only / 未知用户名）一律拒绝。
  *
+ * Stage 7.2C.1（重置语义 + 会话失效收口）：
+ *   - `--reset-password --only=<user>` **只修改 passwordHash**，
+ *     绝不修改 displayName / role / status。
+ *     「重置密码」≠「重新激活账号」：停用账号（INACTIVE）重置后仍为 INACTIVE。
+ *   - 密码重置成功后**立即删除该账号的全部 Session**
+ *     （`prisma.session.deleteMany({ where: { userId } })`），
+ *     旧凭据签发的会话立刻失效；只影响被重置的账号，不波及其他账号。
+ *
  * 用法：
  *   # 首次部署（生产/正式环境）：两个账号一起初始化
  *   SEED_ADMIN_PASSWORD="<强密码1>" SEED_HR_PASSWORD="<强密码2>" npm run db:seed:users
@@ -166,17 +174,28 @@ async function main() {
     const existing = await prisma.appUser.findUnique({ where: { username: u.username } });
     if (existing) {
       if (resetPassword) {
+        // Stage 7.2C.1：**只改 passwordHash**。
+        // 最小权限语义 —— 重置密码绝不能顺带改角色、账号状态或显示名：
+        //   · 停用账号（status=INACTIVE）重置密码后必须**仍是 INACTIVE**，
+        //     绝不能被「顺手激活」；
+        //   · role / displayName 属于账号治理字段，只能通过专用的账号管理入口修改。
         await prisma.appUser.update({
           where: { username: u.username },
-          data: {
-            displayName: u.displayName,
-            role: u.role,
-            status: "ACTIVE",
-            passwordHash: hashPassword(u.password),
-          },
+          data: { passwordHash: hashPassword(u.password) },
         });
+
+        // Stage 7.2C.1：密码变了 → 该账号已签发的所有 Session 必须立即失效，
+        // 否则旧 Session 会继续以旧凭据代表的身份存活。
+        // 只删被重置账号自己的 Session，绝不波及其他账号。
+        const revoked = await prisma.session.deleteMany({
+          where: { userId: existing.id },
+        });
+
         // Stage 7.2C：绝不输出密码明文
-        console.log(`↻ 账号 ${u.username} 密码已重置（--reset-password ${scope}），角色 ${u.role}`);
+        console.log(
+          `↻ 账号 ${u.username} 密码已重置（--reset-password ${scope}），角色 ${u.role}；` +
+            `已撤销该账号 Session ${revoked.count} 条（角色/状态/显示名保持不变）`
+        );
       } else {
         // 默认：不碰密码，只补齐元数据
         await prisma.appUser.update({
