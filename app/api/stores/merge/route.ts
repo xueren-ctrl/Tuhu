@@ -115,10 +115,13 @@ export async function POST(req: Request) {
     }
 
     // ② 执行（mergeStores 内部仍重查 ACTIVE/同名/存在性/实时员工；整簇事务原子）
+    // Stage 7.1.6：snapshot 一并透传给 mergeStores —— 服务层会再做一次
+    // assertMergeRequestFresh 作为最终防线（绕过路由直接调用也无法跳过闭环校验）。
     const result = await mergeStores({
       mainStoreId,
       mergeStoreIds,
       operator: await operatorFromRequest(req),
+      snapshot: body.snapshot,
     });
     return NextResponse.json({ ok: true, data: result });
   } catch (e) {

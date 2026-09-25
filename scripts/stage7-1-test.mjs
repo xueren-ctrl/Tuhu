@@ -50,6 +50,8 @@
  *   [G7-34] StoreAlias 创建零迁移也必写 CREATE 审计（actor=Session，绝不 0 审计）
  *   [G7-35] Alias 创建 + CREATE 审计触发器强制失败 → 整笔回滚（四表零残留，409）
  *   [G7-36] merge → alias → import：真实合并后旧店名 Excel 解析/预览/commit 三级一致指向主店
+ *   [G7-37] 服务器实时 preview 是确认与执行的唯一口径（人数漂移后 GET 返回最新值 +
+ *           静态检查 StoreMergePanel 最终确认不再用 previewOf()）
  * ============================================================
  */
 import { copyFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
@@ -113,6 +115,10 @@ const SYN_G36_SRC = "7治理子店";
 const SYN_G36_EMP = "阶段7合并迁移"; // 挂在 source（子店）的员工，merge 后迁到主店
 const SYN_G36_IMPORT = "阶段7合并导入"; // G7-36：合并后用旧店名导入的新员工 → 必落主店
 const SYN_G33_EMP = "阶段7导入测试"; // G7-33 commit 创建的新员工（库中不存在，必然新建）
+// Stage 7.1.6 G7-37 专用：服务器实时 preview 是确认与执行的唯一口径（辰/辰店 去掉「店」= 辰 → 合法候选簇）
+const SYN_G37_MAIN = "7治理辰";
+const SYN_G37_SRC = "7治理辰店";
+const SYN_G37_EMP = "阶段7口径员工";
 
 let pass = 0;
 let fail = 0;
@@ -356,6 +362,19 @@ async function main() {
       },
     });
   }
+  // G7-37 专用：源店先挂 1 人（模拟「页面加载时的旧数据」），测试中再加到 2 人制造漂移
+  const stG37Main = await prisma.store.create({ data: { name: SYN_G37_MAIN } });
+  const stG37Src = await prisma.store.create({ data: { name: SYN_G37_SRC } });
+  await prisma.employee.create({
+    data: {
+      employeeId: "stage716-g37-src-1",
+      name: SYN_G37_EMP + "1",
+      status: "ACTIVE",
+      sourceSheet: "数据库",
+      importBatch: "stage7-1-test",
+      storeId: stG37Src.id,
+    },
+  });
 
 
   // ============ 启动服务器（副本数据库） ============
@@ -386,6 +405,7 @@ async function main() {
             stMain.id, stA.id, stB.id, stInact.id, stCA.id, stCB.id, stCC.id, stBX.id, stBY.id,
             stG15Main.id, stG15Src.id, stG23A.id, stG23B.id, stAliasStore.id, stG26A.id, stG26B.id,
             stG31Main.id, stG31Inact.id, stG32Inact.id, stG34.id, stG36Main.id, stG36Src.id,
+            stG37Main.id, stG37Src.id,
           ],
         },
       },
@@ -406,6 +426,7 @@ async function main() {
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G36_EMP } } });
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G33_EMP } } });
     await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G36_IMPORT } } });
+    await prisma.employee.deleteMany({ where: { name: { startsWith: SYN_G37_EMP } } });
     // G7-23/26 专用规则（指向 G23/G26 门店）
     await prisma.departmentRule.deleteMany({
       where: { storeId: { in: [stG23A.id, stG23B.id, stG26A.id, stG26B.id] } },
@@ -437,6 +458,7 @@ async function main() {
             SYN_STORE_MAIN, SYN_STORE_A, SYN_STORE_B, SYN_INACT,
             ...SYN_CLUSTER_NAMES, ...SYN_G23_NAMES, SYN_ALIAS_STORE, ...SYN_G26_NAMES,
             SYN_G31_MAIN, SYN_G31_INACT, SYN_G32_INACT, SYN_G34_STORE, SYN_G36_MAIN, SYN_G36_SRC,
+            SYN_G37_MAIN, SYN_G37_SRC,
           ],
         },
       },
@@ -1855,6 +1877,84 @@ async function main() {
     );
   }
 
+  // ============ [G7-37] 服务器实时 preview 是确认与执行的唯一口径 ============
+  {
+    // 场景：页面加载时源店 1 人（页面 clusters 快照 = 1）；执行前数据库已变成 2 人。
+    // 期望：GET /api/stores/merge 返回的**服务器实时 preview** moveCount=2、
+    //       mainTotalAfter=主店真实人数+2 —— 确认框与 POST 的 snapshot 都以它为准。
+    // 同时静态检查 StoreMergePanel.tsx：最终确认弹窗不再用 previewOf(...) 的旧页面数据。
+    // ① 页面「旧数据」：源店此刻 1 人（setup 只挂了 1 人）
+    const staleSnapshotMoveCount = await prisma.employee.count({ where: { storeId: stG37Src.id } });
+    const mainRealBefore = await prisma.employee.count({ where: { storeId: stG37Main.id } });
+
+    // ② 制造漂移：源店加到 2 人（页面旧 clusters 仍停留在 1 人）
+    await prisma.employee.create({
+      data: {
+        employeeId: "stage716-g37-src-2",
+        name: SYN_G37_EMP + "2",
+        status: "ACTIVE",
+        sourceSheet: "数据库",
+        importBatch: "stage7-1-test",
+        storeId: stG37Src.id,
+      },
+    });
+    const srcRealNow = await prisma.employee.count({ where: { storeId: stG37Src.id } });
+
+    // ③ 执行前重新请求服务器预览（与前端 merge() 点击「执行合并」时做的 GET 一致）
+    const pv37 = await api(
+      "GET",
+      `/api/stores/merge?mainStoreId=${stG37Main.id}&mergeStoreIds=${stG37Src.id}`
+    );
+    const sp = pv37.body?.data?.preview;
+    const snap37 = pv37.body?.data?.snapshot;
+
+    // ④ 静态检查：最终确认弹窗必须读服务器 preview，而不是页面 previewOf()
+    const panelSrc = readFileSync(
+      path.join(ROOT, "components", "stores", "StoreMergePanel.tsx"),
+      "utf8"
+    );
+    // 抽出 confirm(...) 那一段（从 confirm( 到对应闭合）作为检查范围
+    const confirmStart = panelSrc.indexOf("!confirm(");
+    const confirmBlock = confirmStart >= 0 ? panelSrc.slice(confirmStart, confirmStart + 1400) : "";
+    // 确认块内必须出现服务器 preview 的 5 个字段，且**不得**出现 previewOf(
+    const usesServerFields =
+      confirmBlock.includes("sp.mainStore.name") &&
+      confirmBlock.includes("sp.mergedStores") &&
+      confirmBlock.includes("sp.moveCount") &&
+      confirmBlock.includes("sp.mainTotalAfter") &&
+      confirmBlock.includes("sp.aliasesToCreate");
+    const noPreviewOfInConfirm = !confirmBlock.includes("previewOf(");
+    // 且不得再有 `let snapshot: unknown`（Stage 7.1.6 已改为 MergePreviewResponse）
+    const noUnknownSnapshot = !panelSrc.includes("let snapshot: unknown");
+    const postsServerSnapshot = panelSrc.includes("snapshot: serverPreview.snapshot");
+    const staticOk =
+      confirmStart >= 0 && usesServerFields && noPreviewOfInConfirm && noUnknownSnapshot && postsServerSnapshot;
+
+    const apiOk =
+      pv37.status === 200 &&
+      staleSnapshotMoveCount === 1 &&
+      srcRealNow === 2 &&
+      sp?.moveCount === 2 &&
+      sp?.mainTotalAfter === mainRealBefore + 2 &&
+      sp?.mainStore?.id === stG37Main.id &&
+      sp?.mergedStores?.[0]?.id === stG37Src.id &&
+      Array.isArray(snap37?.mergeStoreIds);
+
+    check(
+      "G7-37",
+      "服务器实时 preview 是确认与执行唯一口径：源店 1→2 人漂移后 GET preview.moveCount=2、mainTotalAfter=真实人数+2；静态检查 StoreMergePanel 最终确认用 sp.*（无 previewOf/无 snapshot:unknown、POST 携带 serverPreview.snapshot）",
+      apiOk && staticOk,
+      JSON.stringify({
+        staleSnapshotMoveCount,
+        srcRealNow,
+        apiMoveCount: sp?.moveCount,
+        apiMainTotalAfter: sp?.mainTotalAfter,
+        expectAfter: mainRealBefore + 2,
+        static: { confirmStart, usesServerFields, noPreviewOfInConfirm, noUnknownSnapshot, postsServerSnapshot },
+      })
+    );
+  }
+
   // ============ [G7-18] 清理后零残留 ============
   {
     await removeSynthetic();
@@ -1887,13 +1987,15 @@ async function main() {
     const remainG36Emp = await prisma.employee.count({ where: { name: { startsWith: SYN_G36_EMP } } });
     const remainG33Emp = await prisma.employee.count({ where: { name: { startsWith: SYN_G33_EMP } } });
     const remainG36Import = await prisma.employee.count({ where: { name: { startsWith: SYN_G36_IMPORT } } });
+    // Stage 7.1.6：G7-37 服务器预览口径测试的员工/门店
+    const remainG37Emp = await prisma.employee.count({ where: { name: { startsWith: SYN_G37_EMP } } });
     // Stage 7.1.5：G31-G36 专用合成门店必须清空
     const remainG15Store = await prisma.store.count({
       where: {
         name: {
           in: [
             SYN_G31_MAIN, SYN_G31_INACT, SYN_G32_INACT, SYN_G34_STORE,
-            SYN_G36_MAIN, SYN_G36_SRC,
+            SYN_G36_MAIN, SYN_G36_SRC, SYN_G37_MAIN, SYN_G37_SRC,
           ],
         },
       },
@@ -1931,6 +2033,7 @@ async function main() {
         remainG36Emp === 0 &&
         remainG33Emp === 0 &&
         remainG36Import === 0 &&
+        remainG37Emp === 0 &&
         remainDept === 0 &&
         remainRule === 0 &&
         remainStore === 0 &&
@@ -1945,6 +2048,7 @@ async function main() {
         remainG36Emp,
         remainG33Emp,
         remainG36Import,
+        remainG37Emp,
         remainDept,
         remainRule,
         remainStore,

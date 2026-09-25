@@ -448,16 +448,37 @@ export class MergeStoreStateChangedError extends Error {
  * 存在性 / ACTIVE / 主店不在来源 / 名称与主店不同 —— 堵住「事务外检查通过、
  * 写库前一刻门店被停用」的竞态。任何失败抛 MergeStoreStateChangedError，
  * 整笔回滚。
+ *
+ * Stage 7.1.6（服务层 snapshot 最终防线）：本函数接收 snapshot，并在事务外、
+ * **任何写入之前**调用 `assertMergeRequestFresh()`。此前 snapshot 校验只存在于
+ * API 路由层，未来若有代码绕过路由直接调用 `mergeStores()`，就能跳过
+ * 「预览→确认→执行」闭环。本函数是最后一道闸：直接调用同样无法绕过
+ * snapshot / 当前人数 / ACTIVE / 当前候选簇四项校验。
+ * 缺失 snapshot → `MergePreviewRequiredError`（API 映射 400 MERGE_PREVIEW_REQUIRED）。
+ * （API 层仍保留前置校验以返回精确错误码；服务层是**有意的纵深防御**，
+ *  两次校验之间若有人改库，服务层会拦住。校验逻辑复用同一函数，不重复实现。）
  */
 export async function mergeStores(opts: {
   mainStoreId: number;
   mergeStoreIds: number[];
   operator?: string;
+  /** Stage 7.1.6：执行闭环所必需的预览快照（来自 previewStoreMerge） */
+  snapshot?: MergePreviewSnapshot;
 }): Promise<MergeResult> {
   const { mainStoreId } = opts;
   const operator = opts.operator ?? DEFAULT_OPERATOR;
   const mergeIds = Array.from(new Set(opts.mergeStoreIds)).filter((id) => id !== mainStoreId);
   if (!mergeIds.length) throw new Error("请至少选择一家要合并进来的门店");
+
+  // ---- Stage 7.1.6：服务层最终防线（任何写入之前，绝不静默绕过）----
+  // 与 API 路由层调用的是同一个 assertMergeRequestFresh（不重复实现校验逻辑）：
+  // ① snapshot 存在 ② mainStoreId 一致 ③ mergeStoreIds 集合一致 ④ dbVersion
+  // ⑤ 主店人数 ⑥ 逐店人数 ⑦ ACTIVE ⑧ 同一当前候选簇 —— 任一不满足即抛错、零写入。
+  await assertMergeRequestFresh({
+    mainStoreId,
+    mergeStoreIds: mergeIds,
+    snapshot: opts.snapshot,
+  });
 
   // ---- 执行前服务端业务校验（不信任客户端，全部重查数据库）----
   const main = await prisma.store.findUnique({ where: { id: mainStoreId } });

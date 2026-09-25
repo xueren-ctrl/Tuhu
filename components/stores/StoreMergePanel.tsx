@@ -3,11 +3,39 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Alert, Badge, Button, Card } from "@/components/ui";
-import type { MergeCluster, MergeResult } from "@/lib/store-merge-service";
+import type {
+  MergeCluster,
+  MergePreviewSnapshot,
+  MergeResult,
+} from "@/lib/store-merge-service";
 
 interface Props {
   clusters: MergeCluster[];
 }
+
+/**
+ * Stage 7.1.6：GET /api/stores/merge 的响应结构。
+ *
+ * `preview` 由**服务器直接读库计算**，是「执行前确认」的唯一权威数据来源；
+ * 页面上的 clusters 只是加载时的候选快照，可能已过期。
+ * 用显式类型约束确认框读取的字段，避免 `any` / `unknown` 掩盖口径漂移。
+ */
+type MergePreviewResponse = {
+  snapshot: MergePreviewSnapshot;
+  preview: {
+    mainStore: { id: number; name: string; total: number };
+    mergedStores: {
+      id: number;
+      name: string;
+      total: number;
+      active: number;
+      status: string;
+    }[];
+    aliasesToCreate: string[];
+    moveCount: number;
+    mainTotalAfter: number;
+  };
+};
 
 /**
  * 门店合并面板
@@ -57,7 +85,13 @@ export default function StoreMergePanel({ clusters }: Props) {
     });
   }
 
-  /** 预览口径：合并后主门店人数 + 将建立的别名（只提示，不自动执行） */
+  /**
+   * 页面**静态展示**用的本地估算（勾选变化时实时算，仅供参考）。
+   *
+   * Stage 7.1.6：⚠️ 这里的数据来自页面加载时的 clusters 快照，**可能已过期**，
+   * 绝不可用于「执行前的确认弹窗」——确认弹窗与 POST 的 snapshot 一律以
+   * 服务器 GET /api/stores/merge 返回的 preview 为准（见 merge()）。
+   */
   function previewOf(clusterIdx: number) {
     const c = clusters[clusterIdx];
     const main = mainId[clusterIdx] ?? c.suggestedMainId;
@@ -84,10 +118,12 @@ export default function StoreMergePanel({ clusters }: Props) {
       return;
     }
 
-    // ① 先走服务端预览（校验 ACTIVE / 同名 / 实时人数，取快照）
+    // ① Stage 7.1.6：先走服务端预览（校验 ACTIVE / 同名 / 实时人数，取快照 + 实时 preview）
+    //    服务器返回的 preview 是「执行前确认」的唯一权威数据来源：
+    //    页面 clusters 只是加载时的候选快照，可能已过期（人数/别名/合并结果都可能变）。
     setBusyIdx(clusterIdx);
     setMsg(null);
-    let snapshot: unknown = null;
+    let serverPreview: MergePreviewResponse;
     try {
       const pvRes = await fetch(
         `/api/stores/merge?mainStoreId=${main}&mergeStoreIds=${ids.join(",")}`,
@@ -95,21 +131,25 @@ export default function StoreMergePanel({ clusters }: Props) {
       );
       const pj = await pvRes.json();
       if (!pvRes.ok || !pj.ok) throw new Error(pj.error ?? "合并前校验未通过");
-      snapshot = pj.data?.snapshot ?? null;
+      if (!pj.data?.preview || !pj.data?.snapshot) {
+        throw new Error("服务器未返回实时预览数据，已中止（未执行任何修改）");
+      }
+      serverPreview = pj.data as MergePreviewResponse;
     } catch (e) {
       setBusyIdx(null);
       setMsg({ tone: "err", text: (e as Error).message + "（未执行任何修改，可重新勾选或刷新页面）" });
       return;
     }
 
-    const pv = previewOf(clusterIdx);
+    // ② 确认文案全部来自服务器实时 preview（不再用页面旧 clusters 的 previewOf()）
+    const sp = serverPreview.preview;
     if (
       !confirm(
-        `确认合并？\n\n主门店：${pv.mainName}\n合并进来：${pv.selected.map((s) => s.name).join("、")}\n\n` +
-          `将把 ${pv.moveCount} 名员工改挂到「${pv.mainName}」（只改门店外键），合并后主门店共 ${pv.afterTotal} 人。\n` +
-          (pv.aliasesToCreate.length
-            ? `将建立别名：${pv.aliasesToCreate.join("、")}\n`
-            : "") +
+        `确认合并？（以下数字为服务器刚刚从数据库实时计算）\n\n` +
+          `主门店：${sp.mainStore.name}（当前 ${sp.mainStore.total} 人）\n` +
+          `合并进来：${sp.mergedStores.map((s) => `${s.name}（${s.total} 人）`).join("、")}\n\n` +
+          `将把 ${sp.moveCount} 名员工改挂到「${sp.mainStore.name}」（只改门店外键），合并后主门店共 ${sp.mainTotalAfter} 人。\n` +
+          (sp.aliasesToCreate.length ? `将建立别名：${sp.aliasesToCreate.join("、")}\n` : "") +
           `员工数据不会删除；被合并的门店名会保留为别名；门店记录本身停用不删除。` +
           `\n\n本组为一个事务：中途失败会整体回滚，不会留下改了一半的数据。`
       )
@@ -122,7 +162,11 @@ export default function StoreMergePanel({ clusters }: Props) {
       const r = await fetch("/api/stores/merge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mainStoreId: main, mergeStoreIds: ids, snapshot }),
+        body: JSON.stringify({
+          mainStoreId: main,
+          mergeStoreIds: ids,
+          snapshot: serverPreview.snapshot,
+        }),
       });
       const j = await r.json();
       if (r.status === 400 && j.code === "MERGE_PREVIEW_REQUIRED") {

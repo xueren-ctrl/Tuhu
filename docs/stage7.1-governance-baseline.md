@@ -577,3 +577,87 @@ INACTIVE 源店。
 ### 9. 边界（本阶段**不做**，等下一步指令）
 16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
 Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。
+
+---
+
+## Stage 7.1.6 门店合并确认口径统一（2026-09-25）
+
+> 基线：`3cd7556`（Stage 7.1.5）。本阶段只改代码 + 副本库测试，
+> **不执行任何生产治理**（16 组门店合并 / 1902 人部门归属 / 状态冲突 /
+> 重复清理 / 无去重键补录 / Excel 导出均不做）。不进入 Stage 7.2。
+
+### 1. 发现的问题
+`components/stores/StoreMergePanel.tsx` 的确认弹窗与实际执行**口径不一致**：
+
+- 点击「执行合并」时，组件确实先调 `GET /api/stores/merge` 拿到了服务器实时
+  `preview` + `snapshot`，但**只把 `snapshot` 存了下来**（`snapshot = pj.data.snapshot`），
+  服务器返回的 `preview` 被直接丢弃。
+- 随后的 `confirm()` 仍调用页面本地的 `previewOf(clusterIdx)`，而 `previewOf`
+  是基于**页面加载时的 `clusters` 快照**做本地估算。
+
+后果：页面加载后数据库发生变化时，服务器实时预览会显示「迁移 5 人」，
+但用户看到的确认框可能仍是「迁移 3 人」——**用户确认的数字不是即将执行的数字**。
+生产治理前这是必须修复的口径缺陷。
+此外 `let snapshot: unknown = null` 让 TypeScript 完全无法约束确认框读取的字段。
+
+### 2. 修复方式
+- **服务器 preview 成为唯一确认数据来源**：组件保存整个 `pj.data`（含 `preview` +
+  `snapshot`），`confirm()` 文案全部改读 `sp = serverPreview.preview`：
+  - 主门店 → `sp.mainStore.name`（并显示 `sp.mainStore.total`）
+  - 合并门店 → `sp.mergedStores[].name`（逐家带人数）
+  - 迁移员工 → `sp.moveCount`
+  - 合并后人数 → `sp.mainTotalAfter`
+  - 将建立别名 → `sp.aliasesToCreate`
+  - 确认框标题明确标注「以下数字为服务器刚刚从数据库实时计算」。
+- **POST 携带同一份 snapshot**：`body.snapshot = serverPreview.snapshot`，
+  确认看到的数字与执行复核的快照严格同源。
+- **页面展示与执行确认分离**：`previewOf()` 保留，但仅用于**页面静态展示**
+  （勾选变化时的即时估算），并加注释明确「⚠️ 绝不可用于执行前确认弹窗」。
+- **类型增强**：新增显式 `MergePreviewResponse` 类型（`snapshot: MergePreviewSnapshot`
+  + `preview: { mainStore / mergedStores / aliasesToCreate / moveCount / mainTotalAfter }`），
+  取代 `snapshot: unknown`；`snapshot` 类型直接复用服务端 `MergePreviewSnapshot`，
+  TypeScript 对确认框读取的每个字段都有约束。
+- **页面候选 → 服务器实时预览 → 用户确认服务器预览 → snapshot 执行** 的闭环成立：
+  页面 clusters 只用于「有哪些候选、勾选谁」，所有数字以服务器为准。
+
+### 3. 服务端防御：mergeStores 服务层补 snapshot 校验
+此前 snapshot 校验只存在于 `app/api/stores/merge/route.ts`，若有代码绕过路由直接调用
+`mergeStores()`，就能跳过「预览→确认→执行」闭环。本阶段：
+
+- `mergeStores(opts)` 新增 `snapshot?: MergePreviewSnapshot` 参数，并在**事务外、任何写入之前**
+  调用 `assertMergeRequestFresh()`（与路由层**同一个函数**，不重复实现校验逻辑）：
+  snapshot 存在 / mainStoreId 一致 / mergeStoreIds 集合一致 / dbVersion /
+  主店人数 / 逐店人数 / ACTIVE / 同一当前候选簇 —— 任一不满足即抛错、零写入。
+- 缺失 snapshot → `MergePreviewRequiredError`（API 映射 400 `MERGE_PREVIEW_REQUIRED`）。
+- `app/api/stores/merge/route.ts` 把 `body.snapshot` 透传给 `mergeStores`。
+- 这是**有意的纵深防御**：API 层保留前置校验以返回精确错误码，服务层作为最后防线，
+  两次校验之间若有人改库，服务层会拦住。服务层直接调用也无法绕过闭环。
+
+### 4. G7-37：服务器实时 preview 是确认与执行的唯一口径
+`scripts/stage7-1-test.mjs` 新增 G7-37（合法候选簇「辰 / 辰店」）：
+
+- **API 漂移校验**：源店先挂 1 人（模拟「页面加载时的旧数据」）→ 再加到 2 人制造漂移 →
+  执行前 `GET /api/stores/merge`，断言 `preview.moveCount === 2`、
+  `preview.mainTotalAfter === 主店真实人数 + 2`，且 `mainStore` / `mergedStores[0]`
+  指向正确门店、返回合法 snapshot。
+- **前端静态检查**：读取 `components/stores/StoreMergePanel.tsx` 源码，断言
+  ① `confirm(...)` 块内出现 `sp.mainStore.name` / `sp.mergedStores` / `sp.moveCount` /
+  `sp.mainTotalAfter` / `sp.aliasesToCreate`；
+  ② `confirm(...)` 块内**不出现** `previewOf(`；
+  ③ 源码**不再出现** `let snapshot: unknown`；
+  ④ POST body 使用 `snapshot: serverPreview.snapshot`。
+- G7-37 的合成门店 / 员工已纳入 `removeSynthetic()` 与 G7-18 零残留校验。
+
+### 5. 全量回归
+typecheck 0 错 · build 成功 · check:auth 41/41 (100%) · stage5 18/18 ·
+stage6 25/25 · stage6:security 14/14 · tenure 22/22 · **stage7.1 39/39（G7-01~37）**。
+
+### 6. 生产数据库零污染
+员工 1920 · 门店 66（全 ACTIVE）· StoreAlias 0 · EmployeeHistory 0 ·
+AuditLog 121 · DepartmentRule 0（与 7.1.5 基线完全一致）；
+**原始 Excel SHA256 = `aac5f0ca...e19129` 不变**；所有写测试仅在副本
+`data/stage7-1-test.db` 进行，测试结束即删除。
+
+### 7. 边界（本阶段**不做**，等下一步指令）
+16 组门店实际合并、1902 人批量归属、14 状态冲突、无去重键补录、
+Excel 导出 / 招聘 / 薪资 / 社保。不进入 Stage 7.2。
