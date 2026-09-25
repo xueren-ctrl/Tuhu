@@ -48,6 +48,7 @@ import {
   closeSync,
 } from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawn, execSync } from "node:child_process";
 import ExcelJS from "exceljs";
 
@@ -57,8 +58,9 @@ const NODE = process.execPath;
 
 // 测试专用密码（Stage 6.1 起 seed-users 不再有固定生产默认密码；
 // 测试环境在此显式提供测试密码，仅作用于副本库，不影响正式生产）
-const TEST_ADMIN_PWD = "Stage6#Admin@Test2026";
-const TEST_HR_PWD = "Stage6#Hr@Test2026";
+// Stage 7.2C：测试密码运行时随机生成，绝不硬编码进仓库（仅作用于一次性副本库）
+const TEST_ADMIN_PWD = `Stage6#Admin_${crypto.randomBytes(12).toString("hex")}`;
+const TEST_HR_PWD = `Stage6#Hr_${crypto.randomBytes(12).toString("hex")}`;
 
 let pass = 0;
 let fail = 0;
@@ -126,16 +128,23 @@ async function main() {
   // 副本上保证 Session/AppUser 表结构与账号（幂等）。
   // Stage 6.1：seed-users 已无固定默认密码，测试显式注入测试密码并传 --reset-password
   // （测试账号在副本里可能已存在，需重置密码才能登录）。
+  // Stage 7.2C：--reset-password 必须显式指定 --only（防止误改另一个账号），
+  // 这里分别重置 admin 与 hr 两个测试账号。
   execSync(`"${NODE}" node_modules/prisma/build/index.js db push --skip-generate`, {
     cwd: ROOT,
     env: env(),
     stdio: "inherit",
   });
-  execSync(`"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts -- --reset-password`, {
-    cwd: ROOT,
-    env: env(),
-    stdio: "inherit",
-  });
+  for (const only of ["admin", "hr"]) {
+    execSync(
+      `"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts -- --reset-password --only=${only}`,
+      {
+        cwd: ROOT,
+        env: env(),
+        stdio: "inherit",
+      }
+    );
+  }
 
   // 在副本里建合成员工（测试前清理 + 重建，保证可复现）
   const prisma = (await import("../lib/prisma.ts")).prisma; // 此刻连的是副本

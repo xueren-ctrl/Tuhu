@@ -25,6 +25,10 @@ next-env.d.ts
 /data/export/
 /templates/*.xlsx
 
+# ===== 生产库治理前备份（含全部员工个人数据，绝对禁止入库 / 上传 GitHub）=====
+/backup/
+*.db.bak
+
 # ===== 导入报告含真实员工姓名，属个人数据，默认不进 Git =====
 # 需要公开报告时：设置 REPORT_MASK_NAMES=true 重新生成后再提交
 /docs/import-report.md

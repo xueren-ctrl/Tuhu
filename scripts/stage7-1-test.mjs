@@ -9,7 +9,7 @@
  *
  * 安全模型（与 stage6 / stage6.1 一致）：
  *   - data/hr.db 复制为 data/stage7-1-test.db（副本）；
- *   - 副本上 db:push + seed-users（SEED_*_PASSWORD 环境变量 + --reset-password）；
+ *   - 副本上 db:push + seed-users（SEED_*_PASSWORD 环境变量 + --reset-password --only=<账号>）；
  *   - DATABASE_URL 指副本，next start -p 3199，全部治理写操作走副本；
  *   - 结束后杀服务器、删副本，生产库员工数量零变化。
  *
@@ -59,6 +59,7 @@
  */
 import { copyFileSync, existsSync, unlinkSync, readFileSync } from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawn, execSync } from "node:child_process";
 import ExcelJS from "exceljs";
 
@@ -70,8 +71,9 @@ const PORT = 3199;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // 测试专用密码（仅存在于测试环境内存/副本库，绝不作为生产默认值）
-const TEST_ADMIN_PWD = "Stage7-1#Admin@2026";
-const TEST_HR_PWD = "Stage7-1#Hr@2026";
+// Stage 7.2C：测试密码运行时随机生成，绝不硬编码进仓库（仅作用于一次性副本库）
+const TEST_ADMIN_PWD = `Stage7-1#Admin_${crypto.randomBytes(12).toString("hex")}`;
+const TEST_HR_PWD = `Stage7-1#Hr_${crypto.randomBytes(12).toString("hex")}`;
 
 // 合成数据标记（绝不与生产数据冲突）
 const SYN_DEPT = "阶段7治理测试部门";
@@ -184,11 +186,17 @@ async function main() {
     env: env(),
     stdio: "inherit",
   });
-  execSync(`"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts -- --reset-password`, {
-    cwd: ROOT,
-    env: env(),
-    stdio: "inherit",
-  });
+  // Stage 7.2C：--reset-password 必须显式指定 --only（防止误改另一个账号）
+  for (const only of ["admin", "hr"]) {
+    execSync(
+      `"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts -- --reset-password --only=${only}`,
+      {
+        cwd: ROOT,
+        env: env(),
+        stdio: "inherit",
+      }
+    );
+  }
 
   const prisma = (await import("../lib/prisma.ts")).prisma; // 此刻连的是副本
 

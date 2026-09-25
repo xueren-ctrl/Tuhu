@@ -9,7 +9,7 @@
  *
  * 安全模型（与 stage6 测试一致）：
  *   - data/hr.db 复制为 data/stage6-security-test.db（副本）；
- *   - 副本上 db:push + seed-users（SEED_*_PASSWORD 环境变量 + --reset-password）；
+ *   - 副本上 db:push + seed-users（SEED_*_PASSWORD 环境变量 + --reset-password --only=<账号>）；
  *   - DATABASE_URL 指副本，next start -p 3198，全部走真实 HTTP；
  *   - 结束后杀服务器、删副本，生产库 1920 人数据零污染。
  *
@@ -31,6 +31,7 @@
  */
 import { copyFileSync, existsSync, unlinkSync } from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawn, execSync } from "node:child_process";
 
 const ROOT = process.cwd();
@@ -40,8 +41,9 @@ const PORT = 3198;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // 测试专用密码（仅存在于测试环境内存/副本库，绝不作为生产默认值）
-const TEST_ADMIN_PWD = "Stage6-1#Admin@2026";
-const TEST_HR_PWD = "Stage6-1#Hr@2026";
+// Stage 7.2C：测试密码运行时随机生成，绝不硬编码进仓库（仅作用于一次性副本库）
+const TEST_ADMIN_PWD = `Stage6-1#Admin_${crypto.randomBytes(12).toString("hex")}`;
+const TEST_HR_PWD = `Stage6-1#Hr_${crypto.randomBytes(12).toString("hex")}`;
 
 let pass = 0;
 let fail = 0;
@@ -90,16 +92,22 @@ async function main() {
   });
 
   // 副本上保证表结构（Session/AppUser）+ 账号（测试密码；账号已存在故需 --reset-password）
+  // Stage 7.2C：--reset-password 必须显式指定 --only（防止误改另一个账号）
   execSync(`"${NODE}" node_modules/prisma/build/index.js db push --skip-generate`, {
     cwd: ROOT,
     env: env(),
     stdio: "inherit",
   });
-  execSync(`"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts -- --reset-password`, {
-    cwd: ROOT,
-    env: env(),
-    stdio: "inherit",
-  });
+  for (const only of ["admin", "hr"]) {
+    execSync(
+      `"${NODE}" node_modules/tsx/dist/cli.mjs scripts/seed-users.ts -- --reset-password --only=${only}`,
+      {
+        cwd: ROOT,
+        env: env(),
+        stdio: "inherit",
+      }
+    );
+  }
 
   const prisma = (await import("../lib/prisma.ts")).prisma; // 此刻连的是副本
 
