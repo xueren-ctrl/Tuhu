@@ -14,6 +14,32 @@ const nullableText = z
   .union([z.string(), z.number(), z.null(), z.undefined()])
   .transform((v) => toNullableText(v));
 
+/**
+ * Stage 7.3：7 个「是否」字段的写库校验。
+ * 规则：新写入只允许 `是` / `否` / 空。
+ *  - `×` 与 `/` 是 Excel 里的「否」写法，**禁止再写入**（在职侧已于 Stage 7.3 全部归一化）
+ *  - 历史第三态（在职 / 外宿 / 新增人员 / 实习 / 做不了 等）**原样放行**，
+ *    避免详情页保存时把老值误清掉
+ */
+const yesNoField = z
+  .union([z.string(), z.null(), z.undefined()])
+  .transform((v, ctx) => {
+    const s = toNullableText(v);
+    if (s === null) return null;
+    const t = s.trim();
+    if (t === "" ) return null;
+    if (t === "是" || t === "否") return t;
+    if (t === "×" || t === "/") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `「${t}」是旧的不规范写法，请改用「是」或「否」`,
+      });
+      return z.NEVER;
+    }
+    // 历史第三态：原样保留
+    return s;
+  });
+
 /** 可空日期：接受 yyyy-MM-dd / ISO / 空串，统一转为 UTC 零点的「纯日期」 */
 const nullableDate = z
   .union([z.string(), z.null(), z.undefined()])
@@ -86,18 +112,18 @@ export const employeeCreateSchema = z.object({
   emergencyContact2: nullableText.optional(),
   emergencyPhone2: nullableText.optional(),
   certificateLevel: nullableText.optional(),
-  dormitory: nullableText.optional(),
+  dormitory: yesNoField.optional(),
   mentorName: nullableText.optional(),
-  onboardingMedical: nullableText.optional(),
-  socialInsurancePurchased: nullableText.optional(),
+  onboardingMedical: yesNoField.optional(),
+  socialInsurancePurchased: yesNoField.optional(),
   salaryTerms: nullableText.optional(),
   firstMonthGuarantee: nullableText.optional(),
   bankBranch: nullableText.optional(),
   bankAccountNo: bankField.optional(),
-  laborContract: nullableText.optional(),
-  socialInsuranceAgreement: nullableText.optional(),
-  fireSafetyCommitment: nullableText.optional(),
-  dormitoryWaiver: nullableText.optional(),
+  laborContract: yesNoField.optional(),
+  socialInsuranceAgreement: yesNoField.optional(),
+  fireSafetyCommitment: yesNoField.optional(),
+  dormitoryWaiver: yesNoField.optional(),
   docResume: nullableText.optional(),
   docInterviewEvaluation: nullableText.optional(),
   docOnboardingForm: nullableText.optional(),

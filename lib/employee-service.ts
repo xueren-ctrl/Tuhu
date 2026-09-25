@@ -38,6 +38,14 @@ export interface EmployeeListRow {
   remark: string | null;
   sourceRowNo: number | null;
   dataFlags: string | null;
+  /** Stage 7.3：7 个「是否」类字段（在职侧只允许 是 / 否 / 空） */
+  dormitory: string | null;
+  socialInsurancePurchased: string | null;
+  laborContract: string | null;
+  socialInsuranceAgreement: string | null;
+  fireSafetyCommitment: string | null;
+  dormitoryWaiver: string | null;
+  onboardingMedical: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -61,6 +69,14 @@ const listSelect = {
   remark: true,
   sourceRowNo: true,
   dataFlags: true,
+  // Stage 7.3：人员列表要直接展示/编辑 7 个「是否」字段
+  dormitory: true,
+  socialInsurancePurchased: true,
+  laborContract: true,
+  socialInsuranceAgreement: true,
+  fireSafetyCommitment: true,
+  dormitoryWaiver: true,
+  onboardingMedical: true,
   createdAt: true,
   updatedAt: true,
   deletedAt: true,
@@ -93,6 +109,13 @@ function shapeListRow(r: RawListRow): EmployeeListRow {
     remark: r.remark ?? null,
     sourceRowNo: r.sourceRowNo ?? null,
     dataFlags: r.dataFlags ?? null,
+    dormitory: r.dormitory ?? null,
+    socialInsurancePurchased: r.socialInsurancePurchased ?? null,
+    laborContract: r.laborContract ?? null,
+    socialInsuranceAgreement: r.socialInsuranceAgreement ?? null,
+    fireSafetyCommitment: r.fireSafetyCommitment ?? null,
+    dormitoryWaiver: r.dormitoryWaiver ?? null,
+    onboardingMedical: r.onboardingMedical ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,

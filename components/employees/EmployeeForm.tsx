@@ -41,7 +41,14 @@ function toFormValue(v: unknown): string {
   return s;
 }
 
-const TEXT_FIELDS: { key: string; label: string; excel: string; hint?: string }[] = [
+const TEXT_FIELDS: {
+  key: string;
+  label: string;
+  excel: string;
+  hint?: string;
+  /** Stage 7.3：yesno = 该字段只允许 是 / 否 / 空，用下拉而不是自由文本 */
+  type?: "yesno";
+}[] = [
   { key: "emergencyContact1", label: "紧急联系人1", excel: "L" },
   { key: "emergencyPhone1", label: "紧急联系人1电话", excel: "M" },
   { key: "emergencyContact2", label: "紧急联系人2", excel: "N" },
@@ -49,18 +56,18 @@ const TEXT_FIELDS: { key: string; label: string; excel: string; hint?: string }[
   { key: "currentAddress", label: "现居住地址", excel: "X" },
   { key: "certificateLevel", label: "证书级别", excel: "AP" },
   { key: "positionNote", label: "职位备注", excel: "I" },
-  { key: "dormitory", label: "是否住宿舍", excel: "J", hint: "Excel 原值：是 / ×" },
+  { key: "dormitory", label: "是否住宿舍", excel: "J", type: "yesno" },
   { key: "mentorName", label: "带教人", excel: "AM" },
-  { key: "onboardingMedical", label: "入职体检", excel: "T" },
-  { key: "socialInsurancePurchased", label: "社保购买", excel: "K", hint: "Excel 原值：是 / ×" },
+  { key: "onboardingMedical", label: "入职体检", excel: "T", type: "yesno" },
+  { key: "socialInsurancePurchased", label: "社保购买", excel: "K", type: "yesno" },
   { key: "salaryTerms", label: "薪资待遇", excel: "W" },
   { key: "firstMonthGuarantee", label: "首月保障", excel: "AK" },
   { key: "bankBranch", label: "工资卡开户银行支行", excel: "U" },
   { key: "bankAccountNo", label: "银行卡账号", excel: "V", hint: "按字符串存储，支持前导零，不会转成科学计数法" },
-  { key: "laborContract", label: "劳动合同", excel: "P" },
-  { key: "socialInsuranceAgreement", label: "社保协议", excel: "Q" },
-  { key: "fireSafetyCommitment", label: "消防承诺书", excel: "R" },
-  { key: "dormitoryWaiver", label: "宿舍免责协议", excel: "S" },
+  { key: "laborContract", label: "劳动合同", excel: "P", type: "yesno" },
+  { key: "socialInsuranceAgreement", label: "社保协议", excel: "Q", type: "yesno" },
+  { key: "fireSafetyCommitment", label: "消防承诺书", excel: "R", type: "yesno" },
+  { key: "dormitoryWaiver", label: "宿舍免责协议", excel: "S", type: "yesno" },
   { key: "docResume", label: "简历表", excel: "AH" },
   { key: "docInterviewEvaluation", label: "面试评估表", excel: "AI" },
   { key: "docOnboardingForm", label: "入职表", excel: "AN" },
@@ -462,9 +469,35 @@ export default function EmployeeForm({
                       key={m.key}
                       label={m.label}
                       excelColumn={m.excel}
-                      hint={m.hint}
+                      hint={
+                        m.type === "yesno"
+                          ? "只允许 是 / 否 / 留空"
+                          : m.hint
+                      }
                     >
-                      {m.key === "salaryTerms" ? (
+                      {m.type === "yesno" ? (
+                        // Stage 7.3：7 个「是否」字段改下拉。
+                        // 历史第三态（如 在职 / 外宿 / 新增人员 / 实习 / 做不了）保留为额外选项，原样不丢。
+                        <Select
+                          value={
+                            form[m.key] === "是" || form[m.key] === "否"
+                              ? form[m.key]
+                              : ""
+                          }
+                          onChange={(e) => set(m.key)(e.target.value)}
+                        >
+                          <option value="">（未填）</option>
+                          <option value="是">是</option>
+                          <option value="否">否</option>
+                          {form[m.key] &&
+                          form[m.key] !== "是" &&
+                          form[m.key] !== "否" ? (
+                            <option value={form[m.key]}>
+                              历史值：{form[m.key]}（保持不变）
+                            </option>
+                          ) : null}
+                        </Select>
+                      ) : m.key === "salaryTerms" ? (
                         <Textarea
                           value={form[m.key]}
                           onChange={(e) => set(m.key)(e.target.value)}

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
 import { Badge, StatusBadge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
+import YesNoCell from "@/components/employees/YesNoCell";
 import type { EmployeeListRow } from "@/lib/employee-service";
 
 /**
@@ -26,7 +27,28 @@ export type ViewColumnKey =
   | "status"
   | "resignDate"
   | "resignReason"
-  | "remark";
+  | "remark"
+  // Stage 7.3：7 个「是否」字段（在职页直接展示 + 行内下拉编辑）
+  | "dormitory"
+  | "socialInsurancePurchased"
+  | "laborContract"
+  | "socialInsuranceAgreement"
+  | "fireSafetyCommitment"
+  | "dormitoryWaiver"
+  | "onboardingMedical";
+
+/** Stage 7.3：可在列表里直接下拉编辑的「是否」字段 */
+export const YES_NO_FIELDS = [
+  "dormitory",
+  "socialInsurancePurchased",
+  "laborContract",
+  "socialInsuranceAgreement",
+  "fireSafetyCommitment",
+  "dormitoryWaiver",
+  "onboardingMedical",
+] as const;
+
+export type YesNoField = (typeof YES_NO_FIELDS)[number];
 
 interface ColumnDef {
   key: ViewColumnKey;
@@ -52,6 +74,14 @@ const COLUMNS: Record<ViewColumnKey, ColumnDef> = {
   resignDate: { key: "resignDate", label: "离职日期", className: "w-[104px]", sortable: true, sortKey: "resignDate" },
   resignReason: { key: "resignReason", label: "离职原因", className: "min-w-[110px]" },
   remark: { key: "remark", label: "备注", className: "min-w-[130px]" },
+  // Stage 7.3
+  dormitory: { key: "dormitory", label: "是否住宿舍", className: "w-[104px]" },
+  socialInsurancePurchased: { key: "socialInsurancePurchased", label: "社保购买", className: "w-[92px]" },
+  laborContract: { key: "laborContract", label: "劳动合同", className: "w-[92px]" },
+  socialInsuranceAgreement: { key: "socialInsuranceAgreement", label: "社保协议", className: "w-[92px]" },
+  fireSafetyCommitment: { key: "fireSafetyCommitment", label: "消防承诺书", className: "w-[104px]" },
+  dormitoryWaiver: { key: "dormitoryWaiver", label: "宿舍免责协议", className: "w-[116px]" },
+  onboardingMedical: { key: "onboardingMedical", label: "入职体检", className: "w-[92px]" },
 };
 
 export default function EmployeeViewTable({
@@ -156,6 +186,21 @@ export default function EmployeeViewTable({
           <span className="text-slate-500">{r.remark}</span>
         ) : (
           <span className="text-slate-300">—</span>
+        );
+      // Stage 7.3：7 个「是否」字段支持行内下拉直接改
+      case "dormitory":
+      case "socialInsurancePurchased":
+      case "laborContract":
+      case "socialInsuranceAgreement":
+      case "fireSafetyCommitment":
+      case "dormitoryWaiver":
+      case "onboardingMedical":
+        return (
+          <YesNoCell
+            employeeId={r.id}
+            field={key}
+            value={(r as unknown as Record<string, string | null>)[key]}
+          />
         );
       default:
         return "—";

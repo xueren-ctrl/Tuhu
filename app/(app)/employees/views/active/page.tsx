@@ -5,8 +5,12 @@ import { Card, StatCard } from "@/components/ui";
 export const dynamic = "force-dynamic";
 
 /**
- * /employees/views/active —— 在职人员
+ * /employees/views/active —— 在职人员（Stage 7.3 主视图）
+ *
  * 替代 Excel「在职」Sheet。规则：status = ACTIVE（在 URL 中锁定，不可被覆盖）。
+ * 表中 7 个「是否」字段（是否住宿舍 / 社保购买 / 劳动合同 / 社保协议 /
+ * 消防承诺书 / 宿舍免责协议 / 入职体检）可直接在下拉里改成 是 / 否 / 留空，
+ * 无需进入详情页。
  */
 export default async function ActiveEmployeesPage({
   searchParams,
@@ -21,41 +25,81 @@ export default async function ActiveEmployeesPage({
       basePath="/employees/views/active"
       searchParams={sp}
       locked={{ status: "ACTIVE" }}
-      title="在职人员"
-      hint="替代 Excel「在职」Sheet —— 固定筛选 status = ACTIVE。员工状态改为离职后会自动从此列表消失。"
+      title="在职员工"
+      hint="对应 Excel「在职」Sheet —— 固定 status = ACTIVE。表中的「是否」字段可直接用下拉改成 是 / 否 / 留空。"
       advanced
+      deletable
       emptyText="当前没有在职人员"
       labelOverrides={{ resignReason: "离职原因" }}
       columns={[
-        "employeeId",
         "name",
-        "gender",
-        "age",
         "store",
         "department",
         "position",
         "hireDate",
         "phone",
+        "dormitory",
+        "socialInsurancePurchased",
+        "laborContract",
+        "socialInsuranceAgreement",
+        "fireSafetyCommitment",
+        "dormitoryWaiver",
+        "onboardingMedical",
         "status",
       ]}
       header={
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard label="在职人数" value={stats.active} sub={`占全员 ${stats.activeRate}%`} tone="green" />
-          <StatCard label="全部门店" value={stats.storeCount} sub="在职员工分布的门店数" tone="blue" />
-          <StatCard label="部门数量" value={stats.departmentCount} sub="已建立的部门" tone="amber" />
-          <StatCard label="岗位数量" value={stats.positionCount} sub="已建立的岗位" tone="slate" />
+          <StatCard
+            label="在职人数"
+            value={stats.active}
+            sub={`占全员 ${stats.activeRate}%`}
+            tone="green"
+          />
+          <StatCard
+            label="全部门店"
+            value={stats.storeCount}
+            sub="在职员工分布的门店数"
+            tone="blue"
+          />
+          <StatCard
+            label="部门数量"
+            value={stats.departmentCount}
+            sub="已建立的部门"
+            tone="amber"
+          />
+          <StatCard
+            label="岗位数量"
+            value={stats.positionCount}
+            sub="已建立的岗位"
+            tone="slate"
+          />
         </div>
       }
       footer={
-        <Card title="导出接口（预留）">
-          <p className="text-[12.5px] leading-relaxed text-slate-500">
-            本页数据可通过接口导出：{" "}
-            <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[11.5px]">
-              GET /api/employees?status=ACTIVE&amp;pageSize=200
-            </code>
-            。第一阶段的 Excel 导出模板（<code>templates/</code>）已预留，
-            正式导出功能按需求书安排在后续阶段实现。
-          </p>
+        <Card title="怎么用这一页">
+          <ul className="list-disc space-y-1 pl-5 text-[12.5px] leading-relaxed text-slate-600">
+            <li>
+              <strong>改「是否」字段</strong>：直接在表格里的下拉选
+              <code className="rounded bg-slate-100 px-1 text-[11px]">是 / 否 /（空）</code>
+              ，保存后自动刷新，不用进详情页。
+            </li>
+            <li>
+              <strong>历史第三态</strong>：像「在职」「外宿」「新增人员」「实习」
+              这类旧值会以黄色「历史：xxx」显示，原样保留，可随时改成 是/否/空。
+            </li>
+            <li>
+              <strong>改其他资料</strong>：点员工姓名进详情页，或用右上角
+              <code className="rounded bg-slate-100 px-1 text-[11px]">＋ 新增员工</code>{" "}
+              新建。
+            </li>
+            <li>
+              <strong>离职</strong>：把状态改成离职，员工会从本页消失并出现在
+              <a className="underline" href="/employees/views/resigned">
+                离职人员
+              </a>{" "}
+              页。
+            </li>
+          </ul>
         </Card>
       }
     />

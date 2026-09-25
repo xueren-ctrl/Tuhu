@@ -24,29 +24,29 @@ const NAV: NavGroup[] = [
     items: [{ href: "/", label: "首页看板", icon: "▤", ready: true }],
   },
   {
+    // Stage 7.3：按 Excel 的表分栏，点进去就能直接增删改查
+    title: "员工表（对应 Excel 各 Sheet）",
+    items: [
+      { href: "/employees/views/active", label: "在职员工", icon: "✓", ready: true },
+      { href: "/employees/views/resigned", label: "离职员工", icon: "✗", ready: true },
+      { href: "/employees/views/nc3", label: "南昌3店", icon: "③", ready: true },
+      { href: "/employees/views/dept-staff", label: "运营部", icon: "▣", ready: true },
+      { href: "/employees/views/other", label: "其他员工", icon: "◇", ready: true },
+      { href: "/employees/views/candidates", label: "候选人（只面试）", icon: "◷", ready: true },
+    ],
+  },
+  {
     title: "人事档案",
     items: [
-      { href: "/employees", label: "员工档案", icon: "▦", ready: true },
+      { href: "/employees", label: "全部员工档案", icon: "▦", ready: true },
       { href: "/employees/new", label: "新增员工", icon: "＋", ready: true },
       { href: "/employees/batch", label: "批量编辑", icon: "⇉", ready: true },
     ],
   },
   {
-    title: "数据治理（第三、四阶段）",
-    items: [
-      { href: "/stores", label: "门店管理", icon: "⌂", ready: true },
-      { href: "/stores/merge", label: "门店合并", icon: "⊕", ready: true },
-      { href: "/data-quality", label: "数据质量中心", icon: "◎", ready: true },
-      { href: "/employees/department-auto", label: "部门自动归属", icon: "⇄", ready: true },
-      { href: "/import", label: "Excel 导入预览", icon: "⇧", ready: true },
-    ],
-  },
-  {
-    title: "人员视图（第二阶段）",
+    title: "统计与查询",
     items: [
       { href: "/employees/views", label: "视图总览", icon: "◱", ready: true },
-      { href: "/employees/views/active", label: "在职人员", icon: "✓", ready: true },
-      { href: "/employees/views/resigned", label: "离职人员", icon: "✗", ready: true },
       { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂", ready: true },
       { href: "/employees/views/departments", label: "部门人员查询", icon: "▣", ready: true },
       { href: "/employees/views/distribution", label: "人员分布统计", icon: "◔", ready: true },
@@ -62,9 +62,17 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    title: "数据治理（工具）",
+    items: [
+      { href: "/stores/merge", label: "门店合并", icon: "⊕", ready: true },
+      { href: "/data-quality", label: "数据质量中心", icon: "◎", ready: true },
+      { href: "/employees/department-auto", label: "部门自动归属", icon: "⇄", ready: true },
+      { href: "/import", label: "Excel 导入预览", icon: "⇧", ready: true },
+    ],
+  },
+  {
     title: "后续阶段（未开发）",
     items: [
-      { href: "#", label: "招聘管理", icon: "◷", ready: false },
       { href: "#", label: "社保管理", icon: "◈", ready: false },
       { href: "#", label: "薪资管理", icon: "¥", ready: false },
       { href: "#", label: "Excel 导出", icon: "⇩", ready: false },
