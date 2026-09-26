@@ -60,3 +60,6 @@ scripts/_diag*.ts
 npm-debug.log*
 .DS_Store
 Thumbs.db
+
+# 临时 git 提交信息文件
+.git_commit_msg.txt
