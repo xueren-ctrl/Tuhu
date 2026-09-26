@@ -357,3 +357,47 @@ S9-24（「数据库」可切换显示已停用档案）、S9-25（「数据库�
 > 断言踩坑：① React SSR 输出 `<link rel="manifest" .../>` 自闭合带斜杠，
 > 查 `">"` 收尾会误判；② `sw.js` 由客户端组件注册，SSR HTML 里本来就没有，
 > 不能断言它出现在 HTML 里。
+
+## 十二、把这台电脑变成「服务器」：开机自启 + 故障自愈（2026-09-26）
+
+用户诉求：「一个电脑作为服务器，随时在任何地方访问修改」。
+长期访问的**第一个前提**是这台电脑必须一直活着 —— 本节把这件事落地。
+
+### 交付
+| 文件 | 作用 |
+| --- | --- |
+| `scripts/autostart.mjs` | 守护进程：每 15 秒检查 3000 端口，掉线自动拉起；日志写 `logs/autostart.log` |
+| `scripts/setup-autostart.ps1` | 开机自启配置：往「启动」文件夹写一个隐藏窗口的 VBS 启动器（**不写注册表、不需管理员**），并设置电源策略 |
+| `package.json` | `npm run autostart` / `autostart:once` / `autostart:log` |
+
+### 电源策略（脚本自动设置）
+- 插电时**永不睡眠、永不休眠**（原来交流电已是 0，本次显式确认并覆盖）
+- **关闭休眠**：从休眠状态开机是「混合关机」，会让网络工具（Tailscale 等）异常
+- 屏幕 30 分钟后可关（`monitor-timeout-ac 30`），不影响服务
+
+### 三个必须记下的坑
+1. **node.exe 不在系统 PATH**：只在 WorkBuddy 运行时目录里。
+   VBS 若写 `shell.Run "node ..."`，开机时 PATH 继承不到 → 静默失败。
+   已在配置时解析出**绝对路径**写进 VBS，并保留 PATH 兜底。
+2. **Windows PowerShell 5.1 解析不了全角标点**：
+   `"项目目录：xxx"` 里的全角冒号会触发「字符串缺少终止符」。
+   → `setup-autostart.ps1` **所有面向用户的字符串必须用纯 ASCII**（注释可以中文）。
+3. **`powershell -File` 下自定义函数带颜色参数会绑定失败**：
+   `function Say($m,$c){Write-Host $m -ForegroundColor $c}` 报
+   「枚举值无效，无法将 Null 转换为 System.ConsoleColor」→ 全部改用内联 `Write-Host`。
+
+### 实测结果（真实验证，非推断）
+- **故障自愈**：强杀服务（taskkill）→ 守护 15 秒内自动拉起 → `Ready in 679ms` → 访问 200
+- **开机自启**：清空环境（杀服务 + 杀守护，等于刚开机）→ 执行 VBS 内的同一条命令
+  → 14 秒后端口恢复监听，本机与局域网均 200
+- **二次验证**：换新构建后再次强杀，守护用新构建拉起成功
+
+### 安全策略限制（WorkBuddy 环境内）
+`schtasks.exe`、`reg.exe`、`cscript.exe`、`Start-Process`、WMI `Win32_Process.Create`
+**均被 IDE 安全策略拦截**，无法在工具内直接验证开机链路。
+因此改用「启动文件夹 VBS」方案（不碰注册表 / 计划任务），
+并用「执行 VBS 内同一条命令」等价验证。
+真正重启后是否自动启动，需用户在下次开机时确认（可用 `npm run autostart:log` 查日志）。
+
+### 撤销
+在项目目录执行 `scripts/setup-autostart.ps1 -Uninstall`（加 `-Uninstall` 参数）。

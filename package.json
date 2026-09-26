@@ -39,7 +39,10 @@
     "migrate:statuses": "node scripts/migrate-statuses.mjs",
     "test:stage9": "node scripts/stage9-test.mjs",
     "status:candidate": "node scripts/set-candidate-status.mjs",
-    "link:sheet-rows": "node scripts/link-sheet-rows.mjs"
+    "link:sheet-rows": "node scripts/link-sheet-rows.mjs",
+    "autostart": "node scripts/autostart.mjs",
+    "autostart:once": "node scripts/autostart.mjs --once",
+    "autostart:log": "node -e \"console.log(require('fs').readFileSync('logs/autostart.log','utf8').split('\\n').slice(-40).join('\\n'))\""
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

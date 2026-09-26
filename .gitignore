@@ -42,7 +42,10 @@ next-env.d.ts
 # ===== 本地 Agent 工作记忆（可能累积员工相关细节，不进 Git）=====
 .workbuddy/
 
-# ===== 临时文件 =====
+# # 守护进程日志与 pid（每次运行都在变）
+logs/
+
+===== 临时文件 =====
 scripts/_analyze*.py
 scripts/_out*.txt
 scripts/_diag*.ts

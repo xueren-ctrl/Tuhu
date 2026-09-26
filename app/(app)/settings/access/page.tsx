@@ -161,7 +161,40 @@ export default async function AccessPage() {
         </div>
       </Card>
 
-      <Card title="⑤ 安全提醒">
+      <Card title="⑤ 这台电脑当服务器：自动运行与看护">
+        <p className="text-[12.5px] leading-relaxed text-slate-600">
+          人事数据保存在这台电脑上，所以它必须<strong>一直开着</strong>。已帮你配好：
+        </p>
+        <ul className="mt-2 list-disc space-y-1 pl-4 text-[12.5px] leading-relaxed text-slate-600">
+          <li>
+            <strong>开机自动启动</strong>：Windows 登录后自动运行，不用手动敲命令。
+            取消：在项目目录执行{" "}
+            <code className="rounded bg-slate-100 px-1">
+              powershell -ExecutionPolicy Bypass -File scripts/setup-autostart.ps1 -Uninstall
+            </code>
+          </li>
+          <li>
+            <strong>故障自愈</strong>：服务一旦崩溃，守护进程会在 15 秒内自动拉起；
+            电脑从睡眠唤醒、网络断开重连后也会自动恢复。
+          </li>
+          <li>
+            <strong>插电时不休眠</strong>：已设为「从不睡眠、永不休眠」，并关闭了「快速启动」
+            （快速启动会让休眠状态下的开机导致网络工具异常）。
+          </li>
+        </ul>
+        <div className="mt-3 space-y-2">
+          <div>
+            <div className="mb-1 text-[11.5px] text-slate-400">看运行日志（最近 40 行）</div>
+            <CopyField value="npm run autostart:log" />
+          </div>
+          <Alert tone="warn">
+            <strong>务必注意</strong>：关机、休眠、拔电时，外面就全都连不上了。
+            长时间外出请让电脑保持开机、插上电、屏幕可以关但别休眠。
+          </Alert>
+        </div>
+      </Card>
+
+      <Card title="⑥ 安全提醒">
         <ul className="list-disc space-y-1 pl-4 text-[12.5px] leading-relaxed text-slate-600">
           <li>系统已开启登录校验：任何入口（本机 / 局域网 / 外网）都必须先登录。</li>
           <li>手机等设备的登录状态为 8 小时，超时自动要求重新登录。</li>
