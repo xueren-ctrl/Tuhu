@@ -47,7 +47,7 @@ export default async function DeptStaffPage({
     <PersonnelListView
       basePath="/employees/views/dept-staff"
       searchParams={sp}
-      locked={{ departmentId: String(dept.id) }}
+      locked={{ status: "OPS" }}
       title="运营部（公司管理层）"
       hint="对应 Excel「运营部」Sheet —— 这批人是公司的人，不属于任何门店。"
       advanced

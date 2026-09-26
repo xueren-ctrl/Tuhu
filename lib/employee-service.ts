@@ -1,7 +1,17 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { maskObject } from "./mask";
-import { EMPLOYEE_STATUS, UNASSIGNED, UNASSIGNED_LABEL } from "./constants";
+import {
+  EMPLOYEE_STATUS,
+  EMPLOYEE_STATUS_LABEL,
+  EMPLOYEE_STATUS_VALUES,
+  ON_JOB_STATUSES,
+  RESIGNED_STATUSES,
+  UNHIRED_STATUSES,
+  statusBucket,
+  UNASSIGNED,
+  UNASSIGNED_LABEL,
+} from "./constants";
 import { nextEmployeeId } from "./employee-id";
 import { genderFromIdCard } from "./format";
 import type { EmployeeQueryInput } from "./validation";
@@ -307,6 +317,14 @@ export function buildEmployeeWhere(
     }
   }
   if (q.status) and.push({ status: q.status });
+  // Stage 9：一次限定多个状态（如「在职类」= ACTIVE,NC3,OPS）
+  if (q.statuses?.trim()) {
+    const list = q.statuses
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (list.length > 0) and.push({ status: { in: list } });
+  }
 
   return and.length ? { AND: and } : {};
 }
@@ -790,13 +808,89 @@ export async function batchUpdateEmployees(
   return result;
 }
 
+/**
+ * 更改员工状态（Stage 9）—— 单个 / 批量共用
+ *
+ * 状态决定这个人出现在哪些表（lib/sheet-fields.ts 的 STATUS_SHEETS）。
+ * 逐人一个事务：员工档案 + 变更历史 + 审计同事务，任一步失败只回滚该员工，
+ * 已成功的保持生效（不整批回滚 —— 批量改状态是可断点续做的操作）。
+ */
+export async function changeEmployeeStatus(
+  ids: number[],
+  status: string,
+  operator?: string
+): Promise<{ requested: number; changed: number; skipped: number; failed: { id: number; error: string }[] }> {
+  if (!EMPLOYEE_STATUS_VALUES.includes(status)) {
+    throw new Error(`非法的员工状态：${status}`);
+  }
+  const uniqueIds = [...new Set(ids)].filter((n) => Number.isInteger(n) && n > 0);
+  const result = { requested: uniqueIds.length, changed: 0, skipped: 0, failed: [] as { id: number; error: string }[] };
+  const batchKey = `status-${Date.now()}`;
+
+  for (const id of uniqueIds) {
+    const before = await prisma.employee.findUnique({
+      where: { id },
+      select: { id: true, status: true, employeeId: true, deletedAt: true },
+    });
+    if (!before) {
+      result.failed.push({ id, error: "员工不存在" });
+      continue;
+    }
+    if (before.status === status) {
+      result.skipped++;
+      continue;
+    }
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.employee.update({ where: { id }, data: { status } });
+        await recordEmployeeHistory({
+          employeeId: id,
+          employeeCode: before.employeeId,
+          source: "UPDATE",
+          operator,
+          batchKey,
+          changes: [{ field: "status", oldValue: before.status, newValue: status }],
+          tx,
+        });
+        await tx.auditLog.create({
+          data: {
+            actor: operator ?? null,
+            action: "STATUS_CHANGE",
+            entity: "Employee",
+            entityId: String(id),
+            summary: `更改状态：${EMPLOYEE_STATUS_LABEL[before.status] ?? before.status} → ${
+              EMPLOYEE_STATUS_LABEL[status] ?? status
+            }`,
+            detail: JSON.stringify({
+              employeeCode: before.employeeId,
+              from: before.status,
+              to: status,
+              batchKey,
+              at: new Date().toISOString(),
+            }),
+          },
+        });
+      });
+      result.changed++;
+    } catch (e) {
+      result.failed.push({ id, error: (e as Error).message });
+    }
+  }
+  return result;
+}
+
 /** 首页 Dashboard 统计 —— 全部实时从数据库计算，禁止写死 */
 export async function getDashboardStats() {
   const [
     total,
     active,
+    nc3,
+    ops,
     resigned,
+    opsResigned,
+    interviewed,
     candidate,
+    other,
     storeCount,
     departmentCount,
     positionCount,
@@ -804,24 +898,39 @@ export async function getDashboardStats() {
   ] = await Promise.all([
     prisma.employee.count({ where: { deletedAt: null } }),
     prisma.employee.count({ where: { deletedAt: null, status: "ACTIVE" } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "NC3" } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "OPS" } }),
     prisma.employee.count({ where: { deletedAt: null, status: "RESIGNED" } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "OPS_RESIGNED" } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "INTERVIEWED" } }),
     prisma.employee.count({ where: { deletedAt: null, status: "CANDIDATE" } }),
+    prisma.employee.count({ where: { deletedAt: null, status: "OTHER" } }),
     prisma.store.count({ where: { status: "ACTIVE" } }),
     prisma.department.count({ where: { status: "ACTIVE" } }),
     prisma.position.count({ where: { status: "ACTIVE" } }),
     prisma.employee.count({ where: { NOT: { deletedAt: null } } }),
   ]);
 
+  // 「在职」口径 = 已入职 + 南昌3店 + 运营部（这三类都在职）
+  const onJob = active + nc3 + ops;
+
   return {
     total,
     active,
+    nc3,
+    ops,
     resigned,
+    opsResigned,
+    interviewed,
     candidate,
+    other,
+    /** 在职合计（含南昌3店 / 运营部） */
+    onJob,
     storeCount,
     departmentCount,
     positionCount,
     deleted,
-    activeRate: total > 0 ? Math.round((active / total) * 1000) / 10 : 0,
+    activeRate: total > 0 ? Math.round((onJob / total) * 1000) / 10 : 0,
   };
 }
 
@@ -879,18 +988,18 @@ export async function getStoreDistribution(): Promise<DistributionRow[]> {
     id: s.id,
     label: s.name,
     total: s.employees.length,
-    active: s.employees.filter((e) => e.status === "ACTIVE").length,
-    resigned: s.employees.filter((e) => e.status === "RESIGNED").length,
-    candidate: s.employees.filter((e) => e.status === "CANDIDATE").length,
+    active: s.employees.filter((e) => statusBucket(e.status) === "active").length,
+    resigned: s.employees.filter((e) => statusBucket(e.status) === "resigned").length,
+    candidate: s.employees.filter((e) => statusBucket(e.status) === "candidate").length,
   }));
   const unassigned = await prisma.employee.count({
     where: { storeId: null, deletedAt: null },
   });
   if (unassigned > 0) {
     const [a, r, c] = await Promise.all([
-      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: "ACTIVE" } }),
-      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: "RESIGNED" } }),
-      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: "CANDIDATE" } }),
+      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: { in: [...ON_JOB_STATUSES] } } }),
+      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: { in: [...RESIGNED_STATUSES] } } }),
+      prisma.employee.count({ where: { storeId: null, deletedAt: null, status: "INTERVIEWED" } }),
     ]);
     groups.push({ id: null, label: UNASSIGNED_LABEL, total: unassigned, active: a, resigned: r, candidate: c });
   }
@@ -910,18 +1019,18 @@ export async function getDepartmentDistribution(): Promise<DistributionRow[]> {
     id: d.id,
     label: d.name,
     total: d.employees.length,
-    active: d.employees.filter((e) => e.status === "ACTIVE").length,
-    resigned: d.employees.filter((e) => e.status === "RESIGNED").length,
-    candidate: d.employees.filter((e) => e.status === "CANDIDATE").length,
+    active: d.employees.filter((e) => statusBucket(e.status) === "active").length,
+    resigned: d.employees.filter((e) => statusBucket(e.status) === "resigned").length,
+    candidate: d.employees.filter((e) => statusBucket(e.status) === "candidate").length,
   }));
   const unassigned = await prisma.employee.count({
     where: { departmentId: null, deletedAt: null },
   });
   if (unassigned > 0) {
     const [a, r, c] = await Promise.all([
-      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: "ACTIVE" } }),
-      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: "RESIGNED" } }),
-      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: "CANDIDATE" } }),
+      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: { in: [...ON_JOB_STATUSES] } } }),
+      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: { in: [...RESIGNED_STATUSES] } } }),
+      prisma.employee.count({ where: { departmentId: null, deletedAt: null, status: "INTERVIEWED" } }),
     ]);
     groups.push({ id: null, label: UNASSIGNED_LABEL, total: unassigned, active: a, resigned: r, candidate: c });
   }
@@ -941,18 +1050,18 @@ export async function getPositionDistribution(): Promise<DistributionRow[]> {
     id: p.id,
     label: p.name,
     total: p.employees.length,
-    active: p.employees.filter((e) => e.status === "ACTIVE").length,
-    resigned: p.employees.filter((e) => e.status === "RESIGNED").length,
-    candidate: p.employees.filter((e) => e.status === "CANDIDATE").length,
+    active: p.employees.filter((e) => statusBucket(e.status) === "active").length,
+    resigned: p.employees.filter((e) => statusBucket(e.status) === "resigned").length,
+    candidate: p.employees.filter((e) => statusBucket(e.status) === "candidate").length,
   }));
   const unassigned = await prisma.employee.count({
     where: { positionId: null, deletedAt: null },
   });
   if (unassigned > 0) {
     const [a, r, c] = await Promise.all([
-      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: "ACTIVE" } }),
-      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: "RESIGNED" } }),
-      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: "CANDIDATE" } }),
+      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: { in: [...ON_JOB_STATUSES] } } }),
+      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: { in: [...RESIGNED_STATUSES] } } }),
+      prisma.employee.count({ where: { positionId: null, deletedAt: null, status: { in: [...UNHIRED_STATUSES] } } }),
     ]);
     groups.push({ id: null, label: UNASSIGNED_LABEL, total: unassigned, active: a, resigned: r, candidate: c });
   }
@@ -967,9 +1076,9 @@ export async function getStoreSummary(storeId: number) {
   const where = { storeId, deletedAt: null } as const;
   const [total, active, resigned, candidate, byPosition] = await Promise.all([
     prisma.employee.count({ where }),
-    prisma.employee.count({ where: { ...where, status: "ACTIVE" } }),
-    prisma.employee.count({ where: { ...where, status: "RESIGNED" } }),
-    prisma.employee.count({ where: { ...where, status: "CANDIDATE" } }),
+    prisma.employee.count({ where: { ...where, status: { in: [...ON_JOB_STATUSES] } } }),
+    prisma.employee.count({ where: { ...where, status: { in: [...RESIGNED_STATUSES] } } }),
+    prisma.employee.count({ where: { ...where, status: { in: [...UNHIRED_STATUSES] } } }),
     prisma.employee.groupBy({
       by: ["positionId", "status"],
       where,
@@ -994,9 +1103,10 @@ export async function getStoreSummary(storeId: number) {
       acc.get(key) ??
       { key, id: g.positionId, label, total: 0, active: 0, resigned: 0, candidate: 0 };
     cur.total += g._count._all;
-    if (g.status === "ACTIVE") cur.active += g._count._all;
-    else if (g.status === "RESIGNED") cur.resigned += g._count._all;
-    else if (g.status === "CANDIDATE") cur.candidate += g._count._all;
+    const b = statusBucket(g.status);
+    if (b === "active") cur.active += g._count._all;
+    else if (b === "resigned") cur.resigned += g._count._all;
+    else cur.candidate += g._count._all;
     acc.set(key, cur);
   }
 
@@ -1016,9 +1126,9 @@ export async function getDepartmentSummary(departmentId: number) {
   const where = { departmentId, deletedAt: null } as const;
   const [total, active, resigned, candidate, byPosition] = await Promise.all([
     prisma.employee.count({ where }),
-    prisma.employee.count({ where: { ...where, status: "ACTIVE" } }),
-    prisma.employee.count({ where: { ...where, status: "RESIGNED" } }),
-    prisma.employee.count({ where: { ...where, status: "CANDIDATE" } }),
+    prisma.employee.count({ where: { ...where, status: { in: [...ON_JOB_STATUSES] } } }),
+    prisma.employee.count({ where: { ...where, status: { in: [...RESIGNED_STATUSES] } } }),
+    prisma.employee.count({ where: { ...where, status: { in: [...UNHIRED_STATUSES] } } }),
     prisma.employee.groupBy({
       by: ["positionId", "status"],
       where,
@@ -1043,9 +1153,10 @@ export async function getDepartmentSummary(departmentId: number) {
       acc.get(key) ??
       { key, id: g.positionId, label, total: 0, active: 0, resigned: 0, candidate: 0 };
     cur.total += g._count._all;
-    if (g.status === "ACTIVE") cur.active += g._count._all;
-    else if (g.status === "RESIGNED") cur.resigned += g._count._all;
-    else if (g.status === "CANDIDATE") cur.candidate += g._count._all;
+    const b = statusBucket(g.status);
+    if (b === "active") cur.active += g._count._all;
+    else if (b === "resigned") cur.resigned += g._count._all;
+    else cur.candidate += g._count._all;
     acc.set(key, cur);
   }
 

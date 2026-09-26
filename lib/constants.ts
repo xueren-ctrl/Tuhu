@@ -3,26 +3,94 @@
  */
 
 // ---------- 员工状态（SQLite 无 enum，用常量约束）----------
+/**
+ * 状态决定这个人出现在哪些「表」里（映射规则见 lib/sheet-fields.ts 的 STATUS_SHEETS）。
+ * 状态与表的对应关系（用户 2026-09-26 确认，不可自行改动）：
+ *   候选中      → 不出现在任何表
+ *   已面试      → 招聘面试登记表
+ *   已入职      → 在职 / 招聘面试登记表 / 薪资表
+ *   离职        → 离职 / 招聘面试登记表 / 薪资表
+ *   南昌3店     → 南昌3店 / 招聘面试登记表 / 薪资表
+ *   运营部      → 运营部 / 招聘面试登记表 / 薪资表
+ *   运营部离职  → 运营部离职 / 招聘面试登记表 / 薪资表
+ *   其他        → 其他
+ * 「数据库」表包含全部员工，不受状态限制。
+ */
 export const EMPLOYEE_STATUS = {
-  ACTIVE: "ACTIVE",
-  RESIGNED: "RESIGNED",
+  /** 候选中：还没面试，不出现在任何表 */
   CANDIDATE: "CANDIDATE",
+  /** 已面试：出现在「招聘面试登记表」 */
+  INTERVIEWED: "INTERVIEWED",
+  /** 已入职：在职 + 招聘面试登记表 + 薪资表 */
+  ACTIVE: "ACTIVE",
+  /** 离职：离职 + 招聘面试登记表 + 薪资表 */
+  RESIGNED: "RESIGNED",
+  /** 南昌3店：南昌3店 + 招聘面试登记表 + 薪资表 */
+  NC3: "NC3",
+  /** 运营部：运营部 + 招聘面试登记表 + 薪资表 */
+  OPS: "OPS",
+  /** 运营部离职：运营部离职 + 招聘面试登记表 + 薪资表 */
+  OPS_RESIGNED: "OPS_RESIGNED",
+  /** 其他：只出现在「其他」表 */
+  OTHER: "OTHER",
 } as const;
 
 export type EmployeeStatus =
   (typeof EMPLOYEE_STATUS)[keyof typeof EMPLOYEE_STATUS];
 
 export const EMPLOYEE_STATUS_LABEL: Record<string, string> = {
-  ACTIVE: "在职",
+  CANDIDATE: "候选中",
+  INTERVIEWED: "已面试",
+  ACTIVE: "已入职",
   RESIGNED: "离职",
-  CANDIDATE: "候选人",
+  NC3: "南昌3店",
+  OPS: "运营部",
+  OPS_RESIGNED: "运营部离职",
+  OTHER: "其他",
 };
 
 export const EMPLOYEE_STATUS_OPTIONS = [
-  { value: "ACTIVE", label: "在职" },
-  { value: "RESIGNED", label: "离职" },
-  { value: "CANDIDATE", label: "候选人" },
+  { value: "CANDIDATE", label: "候选中", hint: "不出现在任何表" },
+  { value: "INTERVIEWED", label: "已面试", hint: "招聘面试登记表" },
+  { value: "ACTIVE", label: "已入职", hint: "在职 · 招聘面试登记表 · 薪资表" },
+  { value: "RESIGNED", label: "离职", hint: "离职 · 招聘面试登记表 · 薪资表" },
+  { value: "NC3", label: "南昌3店", hint: "南昌3店 · 招聘面试登记表 · 薪资表" },
+  { value: "OPS", label: "运营部", hint: "运营部 · 招聘面试登记表 · 薪资表" },
+  { value: "OPS_RESIGNED", label: "运营部离职", hint: "运营部离职 · 招聘面试登记表 · 薪资表" },
+  { value: "OTHER", label: "其他", hint: "只出现在「其他」表" },
 ];
+
+/** 状态取值白名单（写库校验用） */
+export const EMPLOYEE_STATUS_VALUES = EMPLOYEE_STATUS_OPTIONS.map((o) => o.value);
+
+/** 在职类状态（统计口径：「在职」= 这三类之和） */
+export const ON_JOB_STATUSES = ["ACTIVE", "NC3", "OPS"] as const;
+/** 离职类状态 */
+export const RESIGNED_STATUSES = ["RESIGNED", "OPS_RESIGNED"] as const;
+/** 未入职类状态（已面试 · 候选中 · 其他）—— 统计口径里的第三类 */
+export const UNHIRED_STATUSES = ["INTERVIEWED", "CANDIDATE", "OTHER"] as const;
+
+/**
+ * 状态归并（仅供统计口径使用）：
+ * 在职类 / 离职类 / 未入职类（已面试 · 候选中 · 其他）。
+ */
+export function statusBucket(status: string): "active" | "resigned" | "candidate" {
+  if ((ON_JOB_STATUSES as readonly string[]).includes(status)) return "active";
+  if ((RESIGNED_STATUSES as readonly string[]).includes(status)) return "resigned";
+  return "candidate";
+}
+
+/** 状态徽标配色（列表 / 详情页共用） */
+export const EMPLOYEE_STATUS_TONE: Record<string, "green" | "red" | "amber" | "blue" | "gray" | "slate"> = {
+  CANDIDATE: "gray",
+  INTERVIEWED: "amber",
+  ACTIVE: "green",
+  RESIGNED: "red",
+  NC3: "blue",
+  OPS: "blue",
+  OPS_RESIGNED: "slate",
+  OTHER: "slate",
+};
 
 // ---------- 通用启用状态 ----------
 export const RECORD_STATUS = { ACTIVE: "ACTIVE", INACTIVE: "INACTIVE" } as const;
@@ -121,7 +189,9 @@ export const EMPLOYEE_FIELDS: FieldMeta[] = [
 
   // ② 联系方式
   { key: "phone", label: "联系电话", group: "contact", sensitive: true, control: "text", excelColumn: "G 联系电话" },
+  { key: "workPhone", label: "工作电话", group: "contact", sensitive: true, control: "text", excelColumn: "（「运营部」Sheet）" },
   { key: "currentAddress", label: "现居住地址", group: "contact", sensitive: true, control: "text", excelColumn: "X 现居住地址" },
+  { key: "householdAddress", label: "户籍地址", group: "contact", sensitive: true, control: "text", excelColumn: "（「运营部」Sheet）" },
   { key: "emergencyContact1", label: "紧急联系人1", group: "contact", control: "text", excelColumn: "L 紧急联系人1" },
   { key: "emergencyPhone1", label: "紧急联系人1电话", group: "contact", sensitive: true, control: "text", excelColumn: "M 联系人电话" },
   { key: "emergencyContact2", label: "紧急联系人2", group: "contact", control: "text", excelColumn: "N 紧急联系人2" },

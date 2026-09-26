@@ -38,6 +38,8 @@ export default function SheetDataTable({
   pageSize,
   totalPages,
   query,
+  rowLinkBase,
+  toolbarExtra,
 }: {
   sheet: string;
   columns: SheetColumn[];
@@ -50,6 +52,10 @@ export default function SheetDataTable({
   pageSize: number;
   totalPages: number;
   query: Query;
+  /** 传了就表示「每行对应一条员工记录」，详情抽屉里给出打开档案的链接 */
+  rowLinkBase?: string;
+  /** 工具栏右侧的自定义按钮区（新增员工 / 批量改状态 等） */
+  toolbarExtra?: React.ReactNode;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -201,6 +207,7 @@ export default function SheetDataTable({
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            {toolbarExtra}
             {hasSensitiveColumns ? (
               <label className="flex cursor-pointer select-none items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/60 px-2 py-1.5 text-[11.5px] text-slate-600">
                 <input
@@ -506,6 +513,17 @@ export default function SheetDataTable({
                 ✕
               </button>
             </header>
+
+            {rowLinkBase ? (
+              <div className="border-b border-slate-100 px-4 py-2">
+                <a
+                  href={`${rowLinkBase}/${currentRow.rowNo}`}
+                  className="text-[12.5px] font-medium text-brand-600 hover:underline"
+                >
+                  打开该员工的完整档案 / 修改资料 ›
+                </a>
+              </div>
+            ) : null}
 
             <div className="flex-1 overflow-y-auto px-4 py-3">
               <dl className="divide-y divide-slate-100">

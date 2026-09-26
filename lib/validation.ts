@@ -95,7 +95,19 @@ export const employeeCreateSchema = z.object({
   positionNote: nullableText.optional(),
 
   hireDate: nullableDate.optional(),
-  status: z.enum(["ACTIVE", "RESIGNED", "CANDIDATE"]).default("ACTIVE"),
+  // 状态取值与 lib/constants.ts 的 EMPLOYEE_STATUS 保持一致（决定出现在哪些表）
+  status: z
+    .enum([
+      "CANDIDATE",
+      "INTERVIEWED",
+      "ACTIVE",
+      "RESIGNED",
+      "NC3",
+      "OPS",
+      "OPS_RESIGNED",
+      "OTHER",
+    ])
+    .default("ACTIVE"),
   resignDate: nullableDate.optional(),
   resignDateRaw: nullableText.optional(),
   resignReason: nullableText.optional(),
@@ -107,6 +119,8 @@ export const employeeCreateSchema = z.object({
   ageRaw: nullableText.optional(),
   minorNote: nullableText.optional(),
   currentAddress: nullableText.optional(),
+  workPhone: phoneField.optional().nullable(),
+  householdAddress: nullableText.optional(),
   emergencyContact1: nullableText.optional(),
   emergencyPhone1: nullableText.optional(),
   emergencyContact2: nullableText.optional(),
@@ -212,7 +226,21 @@ export const employeeQuerySchema = z.object({
   excludeStoreIds: z.string().optional(),
   departmentId: z.string().optional(),
   positionId: z.string().optional(),
-  status: z.enum(["ACTIVE", "RESIGNED", "CANDIDATE", ""]).optional(),
+  status: z
+    .enum([
+      "CANDIDATE",
+      "INTERVIEWED",
+      "ACTIVE",
+      "RESIGNED",
+      "NC3",
+      "OPS",
+      "OPS_RESIGNED",
+      "OTHER",
+      "",
+    ])
+    .optional(),
+  /** Stage 9：一次限定多个状态（逗号分隔），如「在职类」= ACTIVE,NC3,OPS */
+  statuses: z.string().optional(),
   includeDeleted: z
     .union([z.string(), z.boolean()])
     .optional()

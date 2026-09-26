@@ -35,7 +35,9 @@
     "check:auth": "node scripts/check-auth-coverage.mjs",
     "test:cleanup": "tsx scripts/cleanup-test-data.ts",
     "backup": "tsx scripts/backup-db.ts",
-    "import:sheets": "tsx scripts/import-sheets.mjs"
+    "import:sheets": "tsx scripts/import-sheets.mjs",
+    "migrate:statuses": "node scripts/migrate-statuses.mjs",
+    "test:stage9": "node scripts/stage9-test.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

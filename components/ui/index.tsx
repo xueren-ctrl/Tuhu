@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_TONE } from "@/lib/constants";
 
 /* ============================================================
  * 统一基础组件（保证全站表单/表格/弹窗外观一致）
@@ -190,12 +191,10 @@ export function Badge({
   );
 }
 
-/** 状态徽标：在职 / 离职 / 候选人 */
+/** 状态徽标：8 个员工状态（取值见 lib/constants.ts 的 EMPLOYEE_STATUS） */
 export function StatusBadge({ status }: { status: string }) {
-  if (status === "ACTIVE") return <Badge tone="green">在职</Badge>;
-  if (status === "RESIGNED") return <Badge tone="red">离职</Badge>;
-  if (status === "CANDIDATE") return <Badge tone="amber">候选人</Badge>;
-  return <Badge>{status}</Badge>;
+  const tone = EMPLOYEE_STATUS_TONE[status] ?? "gray";
+  return <Badge tone={tone}>{EMPLOYEE_STATUS_LABEL[status] ?? status}</Badge>;
 }
 
 export function StatCard({

@@ -152,7 +152,9 @@ model Employee {
 
   // ---- ② 联系方式 --------------------------------------------------
   phone            String? // 联系电话（Excel col7，字符串存储）
+  workPhone        String? // 工作电话（「运营部」Sheet 专有列）
   currentAddress   String? // 现居住地址（Excel col24）
+  householdAddress String? // 户籍地址（「运营部」Sheet 专有列）
   emergencyContact1 String? // 紧急联系人1（Excel col12）
   emergencyPhone1   String? // 紧急联系人1电话（Excel col13）
   emergencyContact2 String? // 紧急联系人2（Excel col14）
@@ -196,7 +198,19 @@ model Employee {
   docInterviewEvaluation2 String? // 面试评估表（Excel col41，原表重复列名）
 
   // ---- ⑧ 离职 ------------------------------------------------------
-  status        String    @default("ACTIVE") // ACTIVE | RESIGNED | CANDIDATE
+  /**
+   * 员工状态 —— 决定这个人出现在哪些「表」里（详见 lib/sheet-fields.ts 的 STATUS_SHEETS）：
+   *   CANDIDATE    候选中     → 不出现在任何表
+   *   INTERVIEWED  已面试     → 招聘面试登记表
+   *   ACTIVE       已入职     → 在职 / 招聘面试登记表 / 薪资表
+   *   RESIGNED     离职       → 离职 / 招聘面试登记表 / 薪资表
+   *   NC3          南昌3店    → 南昌3店 / 招聘面试登记表 / 薪资表
+   *   OPS          运营部     → 运营部 / 招聘面试登记表 / 薪资表
+   *   OPS_RESIGNED 运营部离职 → 运营部离职 / 招聘面试登记表 / 薪资表
+   *   OTHER        其他       → 其他
+   * 「数据库」表不受状态限制，包含全部员工。
+   */
+  status        String    @default("ACTIVE")
   resignDate    DateTime? // 离职日期（Excel col27「备注（离职日期）」中可解析的日期部分）
   resignDateRaw String? // 离职日期原文（含 "9/30已离职" 之类文本，原样保留）
   resignReason  String? // 离职原因（Excel col26）

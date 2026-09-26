@@ -3,6 +3,7 @@ import { getEmployeeById } from "@/lib/employee-service";
 import { listEmployeeHistory } from "@/lib/history-service";
 import { Alert } from "@/components/ui";
 import EmployeeDetail from "@/components/employees/EmployeeDetail";
+import StatusQuickChange from "@/components/employees/StatusQuickChange";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,10 @@ export default async function EmployeeDetailPage({
           员工已成功写入数据库，员工编号已自动生成。下方数据来自数据库实时查询。
         </Alert>
       ) : null}
+      <StatusQuickChange
+        employeeId={numId}
+        status={String((employee as unknown as Record<string, unknown>).status ?? "")}
+      />
       <EmployeeDetail
         employee={employee as unknown as Record<string, unknown>}
         history={history}

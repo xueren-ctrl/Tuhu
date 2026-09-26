@@ -164,7 +164,10 @@ export function invalidateSheetCache(sheet?: string) {
  * 在「页面源代码 / 网络请求」里能直接看到。这里在返回给浏览器之前就替换掉，
  * 用户勾选「显示完整信息」时才重新从服务端取一次完整值（?reveal=1）。
  */
-export function maskRows(rows: SheetRowData[], columns: SheetColumn[]): SheetRowData[] {
+export function maskRows(
+  rows: SheetRowData[],
+  columns: { index: number; sensitive: SensitiveKind | null }[]
+): SheetRowData[] {
   const sensitive = columns.filter((c) => c.sensitive);
   if (sensitive.length === 0) return rows;
   return rows.map((r) => {

@@ -238,7 +238,7 @@ export default function EmployeeFilterPanel({
         ) : null}
 
         {visible("status") ? (
-          <Field label="在职状态" className="w-[130px]">
+          <Field label="员工状态" className="w-[150px]">
             <Select
               value={form.status}
               onChange={(e) => {

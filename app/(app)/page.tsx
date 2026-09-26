@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getDashboardStats, countEmployeeRows, getRecentEmployees } from "@/lib/employee-service";
 import { Button, Card, StatCard, Alert, Badge, StatusBadge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
-import { EMPLOYEE_STATUS_LABEL } from "@/lib/constants";
+import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -42,14 +42,14 @@ export default async function DashboardPage() {
         />
         <StatCard
           label="在职人数"
-          value={stats.active}
-          sub={`占比 ${stats.activeRate}%`}
+          value={stats.onJob}
+          sub={`已入职 ${stats.active} · 南昌3店 ${stats.nc3} · 运营部 ${stats.ops}`}
           tone="green"
         />
         <StatCard
           label="离职人数"
-          value={stats.resigned}
-          sub="含历史离职档案"
+          value={stats.resigned + stats.opsResigned}
+          sub={`门店离职 ${stats.resigned} · 运营部离职 ${stats.opsResigned}`}
           tone="red"
         />
         <StatCard
@@ -84,11 +84,13 @@ export default async function DashboardPage() {
         </Link>
       </div>
 
-      {stats.candidate > 0 ? (
-        <Alert tone="warn">
-          另有 <strong>{stats.candidate}</strong> 名候选人（状态 CANDIDATE）。候选人状态已预留，本阶段不开发完整招聘系统。
-        </Alert>
-      ) : null}
+      <Alert tone="info">
+        状态分布：已入职 <strong>{stats.active}</strong> · 南昌3店 <strong>{stats.nc3}</strong> ·
+        运营部 <strong>{stats.ops}</strong> · 离职 <strong>{stats.resigned}</strong> ·
+        运营部离职 <strong>{stats.opsResigned}</strong> · 已面试 <strong>{stats.interviewed}</strong> ·
+        候选中 <strong>{stats.candidate}</strong> · 其他 <strong>{stats.other}</strong>。
+        状态决定一个人出现在哪些表，可在「更改员工状态」页批量调整。
+      </Alert>
 
       <div className="grid gap-4 lg:grid-cols-3">
         {/* 最近新增 */}
@@ -203,25 +205,21 @@ export default async function DashboardPage() {
         </Card>
       </div>
 
-      <Card title="状态口径说明">
-        <div className="grid gap-3 text-[12.5px] leading-relaxed text-slate-600 sm:grid-cols-3">
-          {["ACTIVE", "RESIGNED", "CANDIDATE"].map((s) => (
-            <div key={s} className="rounded-md border border-[var(--hr-border)] p-3">
+      <Card title="状态 ↔ 表 对应关系（状态决定一个人出现在哪些表）">
+        <div className="grid gap-3 text-[12.5px] leading-relaxed text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
+          {EMPLOYEE_STATUS_OPTIONS.map((o) => (
+            <div key={o.value} className="rounded-md border border-[var(--hr-border)] p-3">
               <div className="mb-1 flex items-center gap-2">
-                <StatusBadge status={s} />
-                <code className="text-[11px] text-slate-400">{s}</code>
+                <StatusBadge status={o.value} />
+                <code className="text-[11px] text-slate-400">{o.value}</code>
               </div>
-              <p className="text-[12px] text-slate-500">
-                {s === "ACTIVE" && "当前在职，员工档案默认统计口径。"}
-                {s === "RESIGNED" && "已离职，保留历史档案，包含离职日期与原因。"}
-                {s === "CANDIDATE" && "候选人状态已预留，本阶段不开发完整招聘系统。"}
-              </p>
+              <p className="text-[12px] text-slate-500">出现在：{o.hint}</p>
             </div>
           ))}
         </div>
         <p className="mt-3 text-[12px] text-slate-500">
-          状态由 Excel「备注（离职日期）」「离职原因」以及「离职」「在职」名册共同判定，
-          判定规则与冲突明细见 docs/import-report.md。
+          「数据库」表包含全部员工，不受状态限制。状态在「更改员工状态」页批量修改，
+          也可在员工详情页单个修改；修改会写入变更历史与审计。各表的行数随状态实时变化。
         </p>
       </Card>
     </div>

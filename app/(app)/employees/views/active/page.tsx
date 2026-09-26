@@ -8,14 +8,10 @@ export const dynamic = "force-dynamic";
 /**
  * /employees/views/active —— 在职人员
  *
- * **只对应 Excel「在职」Sheet**（290 人）。规则：status = ACTIVE（URL 中锁定，不可覆盖）。
+ * Stage 9 起：**status = 已入职** 就是这一页，与「在职」表完全一致（URL 中锁定，不可覆盖）。
+ * 南昌3店 / 运营部 / 其他 / 离职 各有自己的状态与页面，不会再混进来。
  * 表中 7 个「是否」字段（是否住宿舍 / 社保购买 / 劳动合同 / 社保协议 /
  * 消防承诺书 / 宿舍免责协议 / 入职体检）可直接在下拉里改成 是 / 否 / 留空。
- *
- * 本页**排除**另外两类人，各自有自己的页：
- *   - 「南昌3店」Sheet 的人 → /employees/views/nc3
- *   - 「其他」门店（归属待确认） → /employees/views/other
- * 「运营部」的人在库里 storeId 为空、挂在部门上，天然不落在本页 → /employees/views/dept-staff
  */
 export default async function ActiveEmployeesPage({
   searchParams,
@@ -25,22 +21,8 @@ export default async function ActiveEmployeesPage({
   const sp = await searchParams;
   const stats = await getDashboardStats();
 
-  // 排除：其他门店 + 南昌3店三家门店
-  const excluded = await prisma.store.findMany({
-    where: {
-      name: { in: ["其他", "南昌抚河中路店", "南昌崇仁人民大道店", "抚州乐安新二中店"] },
-    },
-    select: { id: true },
-  });
-  const excludeIds = excluded.map((s) => s.id);
-
-  // 本页真实人数 —— 条件必须与列表（buildEmployeeWhere 的 excludeStoreIds）逐字一致
   const activeCount = await prisma.employee.count({
-    where: {
-      status: "ACTIVE",
-      deletedAt: null,
-      ...(excludeIds.length ? { storeId: { notIn: excludeIds } } : {}),
-    },
+    where: { status: "ACTIVE", deletedAt: null },
   });
 
   return (
@@ -48,9 +30,8 @@ export default async function ActiveEmployeesPage({
       basePath="/employees/views/active"
       searchParams={sp}
       locked={{ status: "ACTIVE" }}
-      hiddenLocked={excludeIds.length ? { excludeStoreIds: excludeIds.join(",") } : {}}
       title="在职员工"
-      hint="对应 Excel「在职」Sheet —— 固定 status = ACTIVE，不含南昌3店与运营部（各自单独成页）。表中的「是否」字段可直接用下拉改成 是 / 否 / 留空。"
+      hint="对应「在职」表 —— 状态固定为「已入职」。南昌3店 / 运营部 / 其他各自单独成页。表中的「是否」字段可直接用下拉改成 是 / 否 / 留空。"
       advanced
       deletable
       emptyText="当前没有在职人员"

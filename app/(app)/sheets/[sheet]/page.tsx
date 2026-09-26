@@ -1,40 +1,26 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import {
-  filterRows,
-  loadSheet,
-  maskRows,
-  paginate,
-  sortRows,
-  type FilterOp,
-} from "@/lib/sheet-service";
-import { SHEET_MAP } from "@/lib/sheet-meta";
-import { prisma } from "@/lib/prisma";
+import { loadEmployeeSheet, type SheetRowData } from "@/lib/employee-sheet-service";
+import { parseSheetQuery, prepareSheetRows } from "@/lib/sheet-page-helpers";
+import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
+import { SHEET_COLUMNS, SHEET_LABEL, statusesForSheet } from "@/lib/sheet-fields";
 import SheetDataTable from "@/components/sheets/SheetDataTable";
 import { Alert } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
 /**
- * /sheets/[sheet] —— Excel 某张 Sheet 的数据在软件里的「数据表」视图
+ * /sheets/[sheet] —— 员工表（由员工数据实时生成，可增删改）
  *
- * 数据来源与 Excel 该 Sheet 完全一致（导入时原样抓取），
- * 但展示方式是标准业务系统：搜索 / 按列筛选 / 排序 / 分页 / 行详情 / 手机卡片。
- * 页面本身只读，不修改任何数据。
+ * 这张表里显示谁，完全由**员工状态**决定（lib/sheet-fields.ts 的 STATUS_SHEETS）：
+ *   已入职 → 在职 / 招聘面试登记表 / 薪资表；离职 → 离职 / 招聘面试登记表 / 薪资表；
+ *   南昌3店、运营部、运营部离职 各自成表 + 招聘面试登记表 + 薪资表；
+ *   已面试 → 只进招聘面试登记表；候选中 → 哪都不出现；「数据库」= 全部员工。
+ *
+ * 因此：新增员工会立刻出现在对应表里；改状态会让他「搬家」；删除（停用）会立刻消失。
  */
 
-const PAGE_SIZES = [20, 50, 100, 200];
-const DEFAULT_SIZE = 50;
-
-const FILTER_OPS: FilterOp[] = ["contains", "equals", "neq", "empty", "notEmpty"];
-
-function pick(sp: Record<string, string | string[] | undefined>, key: string): string {
-  const v = sp[key];
-  const s = Array.isArray(v) ? v[0] : v;
-  return (s ?? "").toString();
-}
-
-export default async function SheetPage({
+export default async function EmployeeSheetPage({
   params,
   searchParams,
 }: {
@@ -43,67 +29,53 @@ export default async function SheetPage({
 }) {
   const { sheet: rawSheet } = await params;
   const sheet = decodeURIComponent(rawSheet);
-  const meta = SHEET_MAP[sheet];
-  if (!meta) notFound();
+  if (!SHEET_COLUMNS[sheet as keyof typeof SHEET_COLUMNS]) notFound();
 
   const sp = await searchParams;
-  const loaded = await loadSheet(sheet);
+  const loaded = await loadEmployeeSheet(sheet);
   if (!loaded) notFound();
 
-  const keyword = pick(sp, "q").trim();
-  const colRaw = pick(sp, "col").trim();
-  const col = colRaw === "" ? null : Number(colRaw);
-  const opRaw = pick(sp, "op").trim() as FilterOp;
-  const op: FilterOp = FILTER_OPS.includes(opRaw) ? opRaw : "contains";
-  const val = pick(sp, "val");
-  const sortRaw = pick(sp, "sort").trim();
-  const sort = sortRaw === "" ? null : Number(sortRaw);
-  const dir = pick(sp, "dir") === "desc" ? "desc" : "asc";
-  const sizeRaw = Number(pick(sp, "size"));
-  const size = PAGE_SIZES.includes(sizeRaw) ? sizeRaw : DEFAULT_SIZE;
-  const page = Math.max(1, Number(pick(sp, "page")) || 1);
+  const label = SHEET_LABEL[sheet] ?? sheet;
+  const statuses = statusesForSheet(sheet);
 
-  const { columns, rows } = loaded;
-  const safeCol = col !== null && Number.isFinite(col) && col >= 0 && col < columns.length ? col : null;
-  const safeSort = sort !== null && Number.isFinite(sort) && sort >= 0 && sort < columns.length ? sort : null;
-
-  const matched = sortRows(
-    filterRows(rows, { q: keyword, col: safeCol, op, val }),
-    safeSort,
-    dir
-  );
-  const pager = paginate(matched, page, size);
-
-  // 敏感列默认在**服务端**打码后再下发（勾选「显示完整信息」时 ?reveal=1 才取完整值）
-  const reveal = pick(sp, "reveal") === "1";
-  const displayRows = reveal ? pager.slice : maskRows(pager.slice, columns);
-
-  const lastImport = await prisma.sheetRow.findFirst({
-    where: { sheet },
-    orderBy: { importedAt: "desc" },
-    select: { importedAt: true },
-  });
+  const q = parseSheetQuery(sp, loaded.columns.length);
+  const prepared = prepareSheetRows(loaded.rows as SheetRowData[], loaded.columns, q);
 
   return (
     <div className="mx-auto max-w-[1700px] space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-[18px] font-semibold text-slate-800">{meta.label}</h1>
+          <h1 className="text-[18px] font-semibold text-slate-800">{label}</h1>
           <p className="mt-0.5 text-[12.5px] text-slate-500">
-            {meta.desc} · {columns.length} 个字段 · {rows.length} 行
-            {lastImport ? (
+            {loaded.columns.length} 个字段 · {loaded.rows.length} 人
+            {statuses === null ? (
+              <span className="ml-2 text-slate-400">（全部员工，不受状态限制）</span>
+            ) : (
               <span className="ml-2 text-slate-400">
-                数据更新时间 {lastImport.importedAt.toLocaleString("zh-CN", { hour12: false })}
+                （包含状态：
+                {statuses.map((s) => EMPLOYEE_STATUS_LABEL[s] ?? s).join(" / ")}）
               </span>
-            ) : null}
+            )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link
-            href="/employees/database"
-            className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-600 hover:bg-slate-50"
+            href="/employees/new"
+            className="h-8 rounded-md bg-brand-600 px-3 text-[12.5px] leading-8 text-white hover:bg-brand-700"
           >
-            在员工档案里改数据
+            ＋ 新增员工
+          </Link>
+          <Link
+            href="/employees/status"
+            className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-700 hover:bg-slate-50"
+          >
+            更改员工状态
+          </Link>
+          <Link
+            href={`/excel/${encodeURIComponent(sheet)}`}
+            className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-500 hover:bg-slate-50"
+          >
+            Excel 原始留档
           </Link>
           <Link
             href={`/sheets/${encodeURIComponent(sheet)}`}
@@ -115,24 +87,49 @@ export default async function SheetPage({
       </div>
 
       <SheetDataTable
-        sheet={sheet}
-        columns={columns}
-        rows={displayRows}
-        reveal={reveal}
-        hasSensitiveColumns={columns.some((c) => c.sensitive)}
-        totalRows={rows.length}
-        filtered={matched.length}
-        page={pager.page}
-        pageSize={pager.pageSize}
-        totalPages={pager.totalPages}
-        query={{ q: keyword, col: colRaw, op, val, sort: sortRaw, dir }}
+        sheet={`emp:${sheet}`}
+        columns={loaded.columns}
+        rows={prepared.rows}
+        reveal={q.reveal}
+        hasSensitiveColumns={loaded.columns.some((c) => c.sensitive)}
+        totalRows={loaded.rows.length}
+        filtered={prepared.matchedCount}
+        page={prepared.page}
+        pageSize={prepared.pageSize}
+        totalPages={prepared.totalPages}
+        query={{
+          q: q.keyword,
+          col: q.colRaw,
+          op: q.op,
+          val: q.val,
+          sort: q.sortRaw,
+          dir: q.dir,
+        }}
+        rowLinkBase="/employees"
       />
 
       <Alert tone="info">
-        这里的每一行都来自 Excel「{meta.label}」Sheet 的原始数据（含历史脏值，不做任何自动修改）。
-        敏感信息（身份证 / 银行卡 / 电话 / 地址 / 薪资）<strong>在服务端就已打码</strong>，页面源码里也拿不到完整值；
-        需要查看时勾选右上角「显示完整信息」。
-        要新增 / 修改员工，请到左侧「数据管理」里的员工档案页操作。
+        <div className="space-y-1">
+          <div>
+            这张表由<strong>员工数据实时生成</strong>：点任意一行可看全部字段，并可从抽屉里打开该员工的完整档案修改资料。
+            状态决定一个人出现在哪些表 —— 当前包含：{" "}
+            <strong>
+              {statuses === null
+                ? "全部员工（含候选中）"
+                : statuses.map((s) => EMPLOYEE_STATUS_LABEL[s] ?? s).join(" / ")}
+            </strong>
+            。
+          </div>
+          <div className="text-slate-600">
+            状态与表的对应关系：
+            {EMPLOYEE_STATUS_OPTIONS.map((o) => `${o.label} → ${o.hint}`).join("；")}。
+            「状态」列是系统加的（Excel 里没有），不需要时可在右上角「列」里把它隐藏。
+          </div>
+          <div className="text-slate-600">
+            敏感信息（身份证 / 银行卡 / 电话 / 地址 / 薪资）在<strong>服务端就已打码</strong>；
+            要看完整值请勾选右上角「显示完整信息」。
+          </div>
+        </div>
       </Alert>
     </div>
   );

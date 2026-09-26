@@ -5,66 +5,51 @@ import { prisma } from "@/lib/prisma";
 export const dynamic = "force-dynamic";
 
 /**
- * /employees/views/candidates —— 候选人（只面试未入职）
- * 对应 Excel「招聘面试登记表」中「是否入职 = 否」的人。
+ * /employees/views/candidates —— 已面试（还没入职）
  *
- * 这些人在 Stage 7.3 之前被误导入为在职员工，现已改回 status = CANDIDATE。
- * 若其中有人后来入职，直接把状态改成 ACTIVE 并补齐门店/入职日期即可。
+ * Stage 9：状态改为 INTERVIEWED，对应 Excel「招聘面试登记表」中「是否入职 = 否」的人。
+ * 这类人只出现在「招聘面试登记表」这一张表里。
+ * 入职后到「更改员工状态」把状态改成 已入职 / 南昌3店 / 运营部，即可进入对应表。
  */
-export default async function CandidatesPage({
+export default async function InterviewedPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const sp = await searchParams;
   const count = await prisma.employee.count({
-    where: { status: "CANDIDATE", deletedAt: null },
+    where: { status: "INTERVIEWED", deletedAt: null },
   });
 
   return (
     <PersonnelListView
       basePath="/employees/views/candidates"
       searchParams={sp}
-      locked={{ status: "CANDIDATE" }}
-      title="候选人（只面试未入职）"
-      hint="对应 Excel「招聘面试登记表」中「是否入职 = 否」的人 —— 固定 status = CANDIDATE。"
+      locked={{ status: "INTERVIEWED" }}
+      title="已面试（未入职）"
+      hint="对应「招聘面试登记表」中还没入职的人 —— 状态固定为「已面试」，只出现在招聘面试登记表。"
       advanced
       deletable
-      emptyText="当前没有候选人"
-      columns={[
-        "name",
-        "phone",
-        "position",
-        "store",
-        "hireDate",
-        "remark",
-        "status",
-      ]}
+      emptyText="当前没有已面试未入职的人"
+      columns={["name", "phone", "position", "store", "hireDate", "remark", "status"]}
       header={
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard label="候选人" value={count} sub="只面试、未入职" tone="amber" />
+          <StatCard label="已面试" value={count} sub="面试过、还没入职" tone="amber" />
           <StatCard
-            label="说明"
-            value="—"
-            sub="入职后把状态改成在职"
+            label="出现在"
+            value="招聘面试登记表"
+            sub="改状态后会自动进入在职 / 离职等表"
             tone="slate"
           />
         </div>
       }
       footer={
-        <Card title="关于候选人">
+        <Card title="关于「已面试」">
           <p className="text-[12.5px] leading-relaxed text-slate-600">
-            这些人在 2026-09-19 首次导入时被误当成了在职员工（因为「招聘面试登记表」
-            里也有一列姓名，导入脚本没有区分「是否入职」）。
-            Stage 7.3 已按「是否入职 = 否」把 {count} 人改回候选人状态。
-            <br />
-            <br />
-            <strong>如果某位候选人后来入职了</strong>：点进详情页把状态改成「在职」，
-            再补上门店和入职日期，他就会出现在
-            <a className="underline" href="/employees/views/active">
-              在职员工
-            </a>{" "}
-            页。
+            这批人来自「招聘面试登记表」，面试过但还没有入职记录。
+            他们只出现在<strong>招聘面试登记表</strong>，不会进入在职 / 薪资等表。
+            一旦确认入职，到「更改员工状态」把状态改成
+            <strong>已入职 / 南昌3店 / 运营部</strong>，补齐门店与入职日期后即进入对应表。
           </p>
         </Card>
       }

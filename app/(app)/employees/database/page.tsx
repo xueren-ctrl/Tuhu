@@ -2,6 +2,7 @@ import PersonnelListView from "@/components/employees/PersonnelListView";
 import type { ViewColumnKey } from "@/components/employees/EmployeeViewTable";
 import { Card, StatCard } from "@/components/ui";
 import { prisma } from "@/lib/prisma";
+import { ON_JOB_STATUSES, RESIGNED_STATUSES, UNHIRED_STATUSES } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -59,11 +60,11 @@ export default async function DatabasePage({
 }) {
   const sp = await searchParams;
 
-  const [total, active, resigned, candidate, deleted] = await Promise.all([
+  const [total, onJob, resigned, unpicked, deleted] = await Promise.all([
     prisma.employee.count({ where: { deletedAt: null } }),
-    prisma.employee.count({ where: { status: "ACTIVE", deletedAt: null } }),
-    prisma.employee.count({ where: { status: "RESIGNED", deletedAt: null } }),
-    prisma.employee.count({ where: { status: "CANDIDATE", deletedAt: null } }),
+    prisma.employee.count({ where: { status: { in: [...ON_JOB_STATUSES] }, deletedAt: null } }),
+    prisma.employee.count({ where: { status: { in: [...RESIGNED_STATUSES] }, deletedAt: null } }),
+    prisma.employee.count({ where: { status: { in: [...UNHIRED_STATUSES] }, deletedAt: null } }),
     prisma.employee.count({ where: { deletedAt: { not: null } } }),
   ]);
 
@@ -79,9 +80,9 @@ export default async function DatabasePage({
       header={
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatCard label="全部记录" value={total} sub="一行一条任职记录" />
-          <StatCard label="在职" value={active} />
+          <StatCard label="在职类" value={onJob} sub="已入职+南昌3店+运营部" />
           <StatCard label="离职" value={resigned} />
-          <StatCard label="候选人" value={candidate} sub="只面试未入职" />
+          <StatCard label="未入职类" value={unpicked} sub="已面试+候选中+其他" />
           <StatCard label="已软删" value={deleted} sub="不在权威表内" />
         </div>
       }

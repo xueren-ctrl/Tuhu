@@ -14,7 +14,8 @@ const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
   { match: /^\/employees\/views\/stores$/, title: "门店人员查询", sub: "按 Store 表动态生成" },
   { match: /^\/employees\/views\/departments$/, title: "部门人员查询", sub: "按 Department 查询" },
   { match: /^\/employees\/views\/distribution$/, title: "人员分布统计", sub: "数据库实时聚合" },
-  { match: /^\/employees\/new$/, title: "新增员工", sub: "保存后自动生成员工编号" },
+  { match: /^\/employees\/new$/, title: "新增员工", sub: "先选类型（门店 / 运营部），字段按对应表合并去重" },
+  { match: /^\/employees\/status$/, title: "更改员工状态", sub: "状态决定这个人出现在哪些表" },
   { match: /^\/employees\/\d+\/edit$/, title: "编辑员工", sub: "员工编号与创建时间不可修改" },
   { match: /^\/employees\/\d+$/, title: "员工详情", sub: "按分组展示全部档案字段" },
   { match: /^\/employees$/, title: "员工档案", sub: "搜索 · 筛选 · 分页 · 排序" },
@@ -43,13 +44,17 @@ export default function Topbar({ onMenu }: { onMenu?: () => void }) {
   const [me, setMe] = useState<MeUser | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
 
-  // /sheets/<中文表名> —— 从路径里取出表名，显示该表的名称与说明
+  // /sheets/<中文表名> 与 /excel/<中文表名> —— 从路径里取出表名
   const sheetHit = (() => {
-    const m = /^\/sheets\/([^/]+)$/.exec(pathname);
+    const m = /^\/(sheets|excel)\/([^/]+)$/.exec(pathname);
     if (!m) return null;
-    const key = decodeURIComponent(m[1]);
+    const isArchive = m[1] === "excel";
+    const key = decodeURIComponent(m[2]);
     const meta = SHEET_MAP[key];
-    return meta ? { title: meta.label, sub: meta.desc } : { title: key, sub: "Excel 导入的数据表" };
+    return {
+      title: (meta?.label ?? key) + (isArchive ? "（Excel 原始留档）" : ""),
+      sub: isArchive ? "只读：导入时的原样数据，用于对照" : (meta?.desc ?? "由员工数据实时生成"),
+    };
   })();
 
   const hit = sheetHit ?? TITLE_MAP.find((t) => t.match.test(pathname));
