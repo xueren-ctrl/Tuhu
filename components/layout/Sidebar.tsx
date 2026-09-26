@@ -31,8 +31,6 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/employees/new", label: "新增员工", icon: "＋" },
       { href: "/employees/status", label: "更改员工状态", icon: "⇄" },
-      { href: "/employees/views/active", label: "在职员工（列表）", icon: "✓" },
-      { href: "/employees/views/resigned", label: "离职员工（列表）", icon: "✗" },
       { href: "/employees/database", label: "全部员工（数据库）", icon: "▥" },
       { href: "/employees/batch", label: "批量编辑", icon: "⇉" },
     ],
@@ -45,14 +43,6 @@ const NAV: NavGroup[] = [
       { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂" },
       { href: "/employees/views/distribution", label: "人员分布统计", icon: "◔" },
     ],
-  },
-  {
-    title: "Excel 原始留档（只读）",
-    items: SHEET_LIST.map((s) => ({
-      href: `/excel/${encodeURIComponent(s.key)}`,
-      label: s.label,
-      icon: "▤",
-    })),
   },
   {
     title: "基础设置",

@@ -312,15 +312,36 @@ async function main() {
       check("S9-04e", "把一个已有员工改成离职：薪资表原始行状态跟着变", false, "未找到合适的样本员工");
     }
 
-    // ---------- 文件：Excel 原始留档不受影响 ----------
-    const excel = await req(`/excel/${encodeURIComponent("在职")}`);
-    const excelHtml = (await excel.text()).replace(/<!--[\s\S]*?-->/g, "");
-    const excelRows = await prisma.sheetRow.count({ where: { sheet: "在职" } });
+    // ---------- 「Excel 原始留档」页面已按要求删除，但底座数据必须完好 ----------
+    const removedPage = await req(`/excel/${encodeURIComponent("在职")}`);
+    const excelRows = await prisma.sheetRow.count();
+    const recruit = await sheetCount("招聘面试登记表");
+    const salary = await sheetCount("薪资表");
     check(
       "S9-11",
-      "Excel 原始留档页仍显示导入时的原始行数（不受状态影响）",
-      excel.status === 200 && excelHtml.includes(`${excelRows} 行`),
-      `原始 ${excelRows} 行`
+      "Excel 留档页已删除（404），但底座数据完好、两张名单表人数不变",
+      removedPage.status === 404 &&
+        excelRows === 4443 &&
+        recruit.count === 478 &&
+        salary.count === 290,
+      `留档页=${removedPage.status} · SheetRow=${excelRows} 行 · 招聘=${recruit.count} · 薪资=${salary.count}`
+    );
+
+    // ---------- 已删除的两个列表页 ----------
+    const gone1 = await req("/employees/views/active");
+    const gone2 = await req("/employees/views/resigned");
+    check(
+      "S9-21",
+      "「在职员工（列表）」「离职员工（列表）」已删除（404），导航改用员工表",
+      gone1.status === 404 && gone2.status === 404,
+      `active=${gone1.status} resigned=${gone2.status}`
+    );
+    const navHtml = (await (await req("/employees/views")).text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-22",
+      "视图总览的在职/离职入口已指向「员工表」",
+      navHtml.includes("/sheets/在职") && navHtml.includes("/sheets/离职"),
+      ""
     );
 
     // ---------- 运营部新增（自动挂运营部） ----------

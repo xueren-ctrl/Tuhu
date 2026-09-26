@@ -78,12 +78,6 @@ export default async function EmployeeSheetPage({
             更改员工状态
           </Link>
           <Link
-            href={`/excel/${encodeURIComponent(sheet)}`}
-            className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-500 hover:bg-slate-50"
-          >
-            Excel 原始留档
-          </Link>
-          <Link
             href={`/sheets/${encodeURIComponent(sheet)}`}
             className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-600 hover:bg-slate-50"
           >

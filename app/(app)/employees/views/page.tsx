@@ -23,27 +23,27 @@ export default async function ViewsOverviewPage() {
 
   const VIEWS = [
     {
-      href: "/employees/views/active",
+      href: "/sheets/在职",
       title: "在职人员",
       replaces: "Excel「在职」Sheet",
-      value: stats.active,
+      value: stats.onJob,
       unit: "人",
       tone: "green" as const,
-      desc: "status = ACTIVE 的全部员工，支持搜索与筛选。",
+      desc: "已入职 + 南昌3店 + 运营部，点击行可看全部字段并进入员工档案。",
     },
     {
-      href: "/employees/views/resigned",
+      href: "/sheets/离职",
       title: "离职人员",
       replaces: "Excel「离职」Sheet",
-      value: stats.resigned,
+      value: stats.resigned + stats.opsResigned,
       unit: "人",
       tone: "red" as const,
-      desc: "status = RESIGNED，含离职日期与离职原因。",
+      desc: "含门店离职与运营部离职，含离职日期与离职原因。",
     },
     {
       href: "/employees/views/stores",
       title: "门店人员查询",
-      replaces: "Excel 各门店 Sheet（南昌3店 等）",
+      replaces: "按门店查人",
       value: stats.storeCount,
       unit: "家门店",
       tone: "blue" as const,
@@ -61,7 +61,7 @@ export default async function ViewsOverviewPage() {
     {
       href: "/employees/views/distribution",
       title: "人员分布统计",
-      replaces: "Excel「人员分布明细」「人员流失率」Sheet",
+      replaces: "Excel「人员分布明细」Sheet",
       value: stats.total,
       unit: "人",
       tone: "slate" as const,
@@ -75,12 +75,13 @@ export default async function ViewsOverviewPage() {
         本模块把原 Excel 的<b>分表视图</b>软件化。所有页面都直接查询 <code>Employee</code> 表
         ——<b>不复制员工数据、不生成新的员工表、不使用 mock 数据</b>。
         员工状态、门店、部门的任何改动会立刻反映到全部视图中。
+        在职 / 离职请直接用左侧「员工表」里的对应表（与这里的人数一致）。
       </Alert>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <StatCard label="员工总数" value={stats.total} sub="实时来自数据库" tone="blue" />
-        <StatCard label="在职人数" value={stats.active} sub={`占比 ${stats.activeRate}%`} tone="green" />
-        <StatCard label="离职人数" value={stats.resigned} sub="含历史离职档案" tone="red" />
+        <StatCard label="在职人数" value={stats.onJob} sub={`已入职 ${stats.active} · 南昌3店 ${stats.nc3} · 运营部 ${stats.ops}`} tone="green" />
+        <StatCard label="离职人数" value={stats.resigned + stats.opsResigned} sub={`门店离职 ${stats.resigned} · 运营部离职 ${stats.opsResigned}`} tone="red" />
         <StatCard label="门店数量" value={stats.storeCount} sub="启用中的门店" tone="slate" />
         <StatCard label="部门 / 岗位" value={`${stats.departmentCount} / ${stats.positionCount}`} sub="部门数 / 岗位数" tone="amber" />
       </div>

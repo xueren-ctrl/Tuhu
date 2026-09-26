@@ -9,8 +9,6 @@ import { SHEET_MAP } from "@/lib/sheet-meta";
 const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
   { match: /^\/$/, title: "首页看板", sub: "员工 / 门店 / 部门 / 职位 实时统计" },
   { match: /^\/employees\/views$/, title: "人员视图总览", sub: "按在职 / 离职 / 门店 / 部门查看人员" },
-  { match: /^\/employees\/views\/active$/, title: "在职人员", sub: "status = ACTIVE" },
-  { match: /^\/employees\/views\/resigned$/, title: "离职人员", sub: "status = RESIGNED" },
   { match: /^\/employees\/views\/stores$/, title: "门店人员查询", sub: "按 Store 表动态生成" },
   { match: /^\/employees\/views\/departments$/, title: "部门人员查询", sub: "按 Department 查询" },
   { match: /^\/employees\/views\/distribution$/, title: "人员分布统计", sub: "数据库实时聚合" },
@@ -44,16 +42,15 @@ export default function Topbar({ onMenu }: { onMenu?: () => void }) {
   const [me, setMe] = useState<MeUser | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
 
-  // /sheets/<中文表名> 与 /excel/<中文表名> —— 从路径里取出表名
+  // /sheets/<中文表名> —— 从路径里取出表名，显示该表的名称与说明
   const sheetHit = (() => {
-    const m = /^\/(sheets|excel)\/([^/]+)$/.exec(pathname);
+    const m = /^\/sheets\/([^/]+)$/.exec(pathname);
     if (!m) return null;
-    const isArchive = m[1] === "excel";
-    const key = decodeURIComponent(m[2]);
+    const key = decodeURIComponent(m[1]);
     const meta = SHEET_MAP[key];
     return {
-      title: (meta?.label ?? key) + (isArchive ? "（Excel 原始留档）" : ""),
-      sub: isArchive ? "只读：导入时的原样数据，用于对照" : (meta?.desc ?? "由员工数据实时生成"),
+      title: meta?.label ?? key,
+      sub: meta?.desc ?? "由员工数据实时生成",
     };
   })();
 
