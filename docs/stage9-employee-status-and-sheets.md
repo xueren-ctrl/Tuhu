@@ -197,7 +197,7 @@ Employee 表（唯一数据源）
 
 ---
 
-## 七、验收（`npm run test:stage9` 53/53）
+## 七、验收（`npm run test:stage9` 57/57）
 
 ```
 S9-01 临时账号登录成功                              ✓

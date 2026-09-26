@@ -789,11 +789,12 @@ async function main() {
       const tds = [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) =>
         m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
       );
-      // 列序：0序号 1门店 2调整 3店长 4技术店长 5副店长 6客服经理 7机修 8美容 9后勤 10当前合计
-      const pageSvc = tds[6] === "—" ? 0 : Number(tds[6]);
-      const pageMech = tds[7] === "—" ? 0 : Number(tds[7]);
-      const pageBeauty = tds[8] === "—" ? 0 : Number(tds[8]);
-      const pageTotal = Number(tds[10]);
+      // 列序（22 列，与 Excel 一致）：0序号 1门店 2店长 3技术店长 4副店长 5客服经理
+      //                               6机修现有 7美容现有 8后勤 9当前合计人数
+      const pageSvc = tds[5] === "—" ? 0 : Number(tds[5]);
+      const pageMech = tds[6] === "—" ? 0 : Number(tds[6]);
+      const pageBeauty = tds[7] === "—" ? 0 : Number(tds[7]);
+      const pageTotal = Number(tds[9]);
       const good = pageSvc === t.svc && pageMech === t.mech && pageBeauty === t.beauty && pageTotal === t.total;
       if (good) reconOk++;
       else
@@ -866,6 +867,110 @@ async function main() {
       "侧边栏有「门店人员编制」入口",
       hcNavHtml.includes("/headcount") && hcNavHtml.includes("门店人员编制"),
       ""
+    );
+
+    // ---------- 编制表：表头与表体必须逐列对齐（S9-50，Stage 9.14.1 修） ----------
+    // 曾经的 bug：React 把 colSpan/rowSpan 输出成**大写属性**，浏览器不认 → 表头只还原出
+    // 18 列而表体有 22 个 td → 整表错位（「客服经理」列下面显示「具体缺编明细」）。
+    // 这里按 colspan/rowspan 还原表头，断言与表体列数一致且字段名逐列正确。
+    const hcTableHtml = hcHtml.slice(hcHtml.indexOf("<table"), hcHtml.indexOf("</table>"));
+    const hcHeadHtml = hcTableHtml.slice(hcTableHtml.indexOf("<thead"), hcTableHtml.indexOf("</thead>"));
+    const grid = [];
+    for (const [ri, rm] of [...hcHeadHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].entries()) {
+      grid[ri] = grid[ri] ?? [];
+      let col = 0;
+      for (const cm of rm[1].matchAll(/<th([^>]*)>([\s\S]*?)<\/th>/g)) {
+        while (grid[ri][col]) col++;
+        const cs = Number(/colspan="(\d+)"/i.exec(cm[1])?.[1] ?? 1);
+        const rs = Number(/rowspan="(\d+)"/i.exec(cm[1])?.[1] ?? 1);
+        const t = cm[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        for (let dr = 0; dr < rs; dr++)
+          for (let dc = 0; dc < cs; dc++) {
+            grid[ri + dr] = grid[ri + dr] ?? [];
+            grid[ri + dr][col + dc] = t;
+          }
+        col += cs;
+      }
+    }
+    const hcBodyHtml = hcTableHtml.slice(hcTableHtml.indexOf("<tbody"));
+    const hcFirstTr = hcBodyHtml.slice(hcBodyHtml.indexOf("<tr"), hcBodyHtml.indexOf("</tr>"));
+    const hcTdCount = [...hcFirstTr.matchAll(/<td[\s>]/g)].length;
+    const hcHeadWidth = Math.max(...grid.map((r) => (r ? r.length : 0)));
+    check(
+      "S9-50",
+      "编制表表头与表体列数一致（colspan/rowspan 必须被浏览器识别）",
+      hcHeadWidth === hcTdCount,
+      `表头 ${hcHeadWidth} 列 / 表体 ${hcTdCount} 列`
+    );
+
+    // 逐列断言字段名（与 Excel 第 3 行一致）
+    // 注意：第 2 行还原后的数组里，前 2 格是第 1 行 rowspan=2 的「序号/名称」补过来的，
+    // 所以实际有 22 项（前 2 + 18 个字段 + 缺编 + 具体缺编）。
+    const EXPECT_ROW2 = [
+      "序号",
+      "名称",
+      "店长",
+      "技术店长",
+      "副店长",
+      "客服经理",
+      "机修现有",
+      "美容现有",
+      "后勤",
+      "当前合计人数",
+      "客服经理满编",
+      "机修满编",
+      "美容满编",
+      "美容师傅满编",
+      "美容中小工满编",
+      "现有美容师傅",
+      "现有美容中小工",
+      "缺编",
+      "机修",
+      "美容",
+      "客服经理",
+      "具体缺编明细",
+    ];
+    const row2 = (grid[1] ?? []).filter(Boolean);
+    check(
+      "S9-51",
+      "编制表逐列字段名与 Excel 完全一致（客服经理 / 具体缺编明细 不再错位）",
+      row2.length === EXPECT_ROW2.length && EXPECT_ROW2.every((f, i) => row2[i] === f),
+      `实际：${row2.join(" / ")}`
+    );
+    // 「客服经理」必须落在第 6 列（序号1 门店1 店长1 技术1 副店1 → 客服经理是第 6 个）
+    check(
+      "S9-52",
+      "「客服经理」列位置正确（表头与表体都在第 6 列）",
+      (grid[1] ?? [])[5] === "客服经理" && (grid[1] ?? [])[20] === "客服经理",
+      `第6列=${(grid[1] ?? [])[5]}；第21列=${(grid[1] ?? [])[20]}`
+    );
+
+    // 逐列核对数据：表体第 6 列（客服经理）必须等于库里该店在职客服经理人数
+    const hcFirstStore = (() => {
+      const tds = [...hcFirstTr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) =>
+        m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+      );
+      return { name: tds[1], svc: tds[5], mech: tds[6], beauty: tds[7], total: tds[9] };
+    })();
+    const hcStore = await prisma.store.findFirst({ where: { name: hcFirstStore.name }, select: { id: true } });
+    const hcEmps = await prisma.employee.findMany({
+      where: { deletedAt: null, status: "ACTIVE", storeId: hcStore?.id },
+      select: { jobGradeRaw: true, position: { select: { name: true } } },
+    });
+    const cnt = (pred) => hcEmps.filter((e) => pred(String(e.jobGradeRaw ?? "").trim(), String(e.position?.name ?? "").trim())).length;
+    const expSvc = cnt((g) => g === "客服经理");
+    const expMech = cnt((g) => g === "机修");
+    const expBeauty = cnt((g) => g === "美容");
+    const dash = (v) => (v === 0 ? "—" : String(v));
+    check(
+      "S9-53",
+      "编制表数据列与表头对应正确（客服经理/机修现有/美容现有/当前合计）",
+      hcFirstStore.svc === dash(expSvc) &&
+        hcFirstStore.mech === dash(expMech) &&
+        hcFirstStore.beauty === dash(expBeauty) &&
+        hcFirstStore.total === String(hcEmps.length),
+      `${hcFirstStore.name}：客服 ${hcFirstStore.svc}/${dash(expSvc)} 机修 ${hcFirstStore.mech}/${dash(expMech)} ` +
+        `美容 ${hcFirstStore.beauty}/${dash(expBeauty)} 合计 ${hcFirstStore.total}/${hcEmps.length}`
     );
 
     // ---------- 新增员工页 ----------
