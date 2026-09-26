@@ -253,6 +253,65 @@ async function main() {
       `7 张表全部回到基线=${allBase}，数据库 ${base["数据库"]}→${now["数据库"]}`
     );
 
+    // ---------- 原始名单行是否已挂上员工档案（状态列不再是空的） ----------
+    const linkCount = await prisma.sheetRowEmployeeLink.count();
+    const sheetPage = await req(`/sheets/${encodeURIComponent("薪资表")}`);
+    const sheetHtml = (await sheetPage.text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-04c",
+      "招聘/薪资表的原始行已挂上员工档案，状态列显示真实状态",
+      linkCount === 744 && sheetHtml.includes("286 人已挂上员工档案"),
+      `关联 ${linkCount} 条`
+    );
+    const orphanRows = await prisma.$queryRawUnsafe(
+      "SELECT COUNT(*) AS c FROM SheetRowEmployeeLink l LEFT JOIN Employee e ON e.id = l.employeeId WHERE e.id IS NULL"
+    );
+    check("S9-04d", "无孤儿关联（每条关联都指向真实存在的员工）", Number(orphanRows?.[0]?.c ?? 0) === 0, `孤儿 ${orphanRows?.[0]?.c ?? "?"} 条`);
+
+    // ===== 关键场景：之前的员工要离职 =====
+    // 挑一个「已建档 + 在薪资表原始名单里 + 当前已入职」的真实员工，验证改状态后
+    // 薪资表里那一行的状态列跟着变，同时在职表人数 −1 / 离职表 +1
+    const cand = await prisma.sheetRowEmployeeLink.findFirst({
+      where: { sheet: "薪资表", employee: { status: "ACTIVE", deletedAt: null } },
+      orderBy: { rowNo: "asc" },
+      select: { employee: { select: { id: true, name: true } } },
+    });
+    if (cand) {
+      const nm = cand.employee.name;
+      const statusCellOfRow = async () => {
+        const r = await req(
+          `/sheets/${encodeURIComponent("薪资表")}?col=3&op=equals&val=${encodeURIComponent(nm)}&size=20`
+        );
+        const h = (await r.text()).replace(/<!--[\s\S]*?-->/g, "");
+        const body = h.split("<tbody>")[1] ?? "";
+        const tr = body.split("<tr")[1] ?? "";
+        const tds = [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) =>
+          m[1].replace(/<[^>]+>/g, "").trim()
+        );
+        return tds.length ? tds[tds.length - 1] : null;
+      };
+      const beforeCell = await statusCellOfRow();
+      const stRes = await changeStatus([cand.employee.id], "RESIGNED");
+      const afterCell = await statusCellOfRow();
+      const onJob = await sheetCount("在职");
+      const resigned = await sheetCount("离职");
+      check(
+        "S9-04e",
+        "把一个已有员工改成离职：薪资表原始行状态跟着变，且在职表 −1 / 离职表 +1",
+        stRes.status === 200 &&
+          stRes.data.changed === 1 &&
+          beforeCell === "已入职" &&
+          afterCell === "离职" &&
+          onJob.count === 289 &&
+          resigned.count === 1402,
+        `状态列：${beforeCell} → ${afterCell}；在职 ${onJob.count} 离职 ${resigned.count}`
+      );
+      // 复原
+      await changeStatus([cand.employee.id], "ACTIVE");
+    } else {
+      check("S9-04e", "把一个已有员工改成离职：薪资表原始行状态跟着变", false, "未找到合适的样本员工");
+    }
+
     // ---------- 文件：Excel 原始留档不受影响 ----------
     const excel = await req(`/excel/${encodeURIComponent("在职")}`);
     const excelHtml = (await excel.text()).replace(/<!--[\s\S]*?-->/g, "");
@@ -306,8 +365,8 @@ async function main() {
     );
 
     // ---------- 敏感列在员工驱动的表里同样服务端打码 ----------
-    const sheetHtml = await (await req(`/sheets/${encodeURIComponent("在职")}`)).text();
-    const longNums = sheetHtml.match(/\d{17}[\dXx]/g) ?? [];
+    const activeSheetHtml = await (await req(`/sheets/${encodeURIComponent("在职")}`)).text();
+    const longNums = activeSheetHtml.match(/\d{17}[\dXx]/g) ?? [];
     check("S9-16", "员工表里的敏感列在服务端就打码（无 17 位以上长号）", longNums.length === 0, `命中 ${longNums.length}`);
 
     // ---------- 新增员工页 ----------

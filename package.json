@@ -38,7 +38,8 @@
     "import:sheets": "tsx scripts/import-sheets.mjs",
     "migrate:statuses": "node scripts/migrate-statuses.mjs",
     "test:stage9": "node scripts/stage9-test.mjs",
-    "status:candidate": "node scripts/set-candidate-status.mjs"
+    "status:candidate": "node scripts/set-candidate-status.mjs",
+    "link:sheet-rows": "node scripts/link-sheet-rows.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

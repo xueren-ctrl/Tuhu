@@ -255,6 +255,9 @@ model Employee {
   /** 该员工的数据质量工单（第四阶段新增） */
   qualityIssues QualityIssue[]
 
+  /** 该员工被哪些 Excel 原始行关联到（招聘面试登记表 / 薪资表 的原始名单行） */
+  sheetRowLinks SheetRowEmployeeLink[]
+
   @@index([name])
   @@index([phone])
   @@index([idCardNo])
@@ -584,4 +587,30 @@ model SheetRow {
 
   @@unique([sheet, rowNo])
   @@index([sheet])
+}
+
+/**
+ * Excel 原始行 → 员工档案 的关联（Stage 9.2）
+ *
+ * 「招聘面试登记表」「薪资表」以 Excel 原始名单为准（人数与原来完全一致），
+ * 但原始行本身没有状态 —— 需要靠这张表把行挂到员工档案上，
+ * 才能显示「这个人现在是离职了还是在职」，并从表里直接跳进档案去改。
+ *
+ * 只在**唯一命中**时才建立关联（有歧义宁可留空，绝不猜）。
+ * method 记录命中方式，便于事后核对与追溯。
+ */
+model SheetRowEmployeeLink {
+  id         Int      @id @default(autoincrement())
+  sheet      String
+  rowNo      Int
+  employeeId Int
+  /// 命中方式：pair=姓名+电话 / phone=电话唯一 / nameHire=姓名+入职日期 / name=姓名唯一
+  method     String
+  createdAt  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([sheet, rowNo])
+  @@index([sheet])
+  @@index([employeeId])
 }

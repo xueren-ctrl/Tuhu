@@ -51,7 +51,8 @@ export default async function EmployeeSheetPage({
             {loaded.columns.length} 个字段 · {loaded.rows.length} 人
             {base === "excel" ? (
               <span className="ml-2 text-slate-400">
-                （Excel 原始名单 {loaded.origin.excel} 人 + 软件新增 {loaded.origin.employee} 人）
+                （Excel 原始名单 {loaded.origin.excel} 人，其中 {loaded.origin.linked} 人已挂上员工档案 ·
+                软件新增 {loaded.origin.employee} 人）
               </span>
             ) : statuses === null ? (
               <span className="ml-2 text-slate-400">（全部员工，不受状态限制）</span>
@@ -121,6 +122,13 @@ export default async function EmployeeSheetPage({
                 这张表<strong>以导入时的 Excel 原始名单为准</strong>（{loaded.origin.excel} 人，与你原来的表人数一致），
                 后面追加的是<strong>在软件里新增的员工</strong>（当前 {loaded.origin.employee} 人）——
                 历史上缺失的面试 / 薪资数据<strong>不做回补</strong>。
+              </div>
+              <div className="text-slate-600">
+                原始名单里有 <strong>{loaded.origin.linked} 人</strong>已挂上员工档案，
+                「状态」列显示的是他们<strong>现在</strong>的状态（已入职 / 离职 / 运营部 …），
+                点开那一行可以直接打开档案改状态；
+                其余 {loaded.origin.excel - loaded.origin.linked} 人系统在库中没有对应档案
+                （多见于只来面试没入职的），状态显示「未建档」。
               </div>
               <div className="text-slate-600">
                 新增员工按状态进入本表：当前状态

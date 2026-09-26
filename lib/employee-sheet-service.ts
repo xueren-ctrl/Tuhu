@@ -46,8 +46,15 @@ export interface SheetColumn {
 }
 
 export interface SheetRowData {
+  /** 行内唯一标识（Excel 底座的表：原始行用 Excel 行号，已建档的行用员工 id；员工底座：员工 id） */
   rowNo: number;
+  /** 员工业务编号（THHR…），Excel 原始行未建档时为空 */
   employeeId: string;
+  /**
+   * 对应的员工档案 id —— 用来在行详情里跳转「打开员工档案」。
+   * null = 这一行只是 Excel 原始名单，系统里没有对应档案（如只来面试没入职的人）。
+   */
+  employeeRef: number | null;
   cells: string[];
 }
 
@@ -55,8 +62,8 @@ export interface LoadedEmployeeSheet {
   sheet: string;
   columns: SheetColumn[];
   rows: SheetRowData[];
-  /** 行数来源拆分：Excel 原始名单 vs 在软件里新增的员工（页面用来解释人数构成） */
-  origin: { excel: number; employee: number };
+  /** 行数来源拆分：Excel 原始名单 vs 在软件里新增的员工；linked = 原始行里已挂上员工档案的条数 */
+  origin: { excel: number; employee: number; linked: number };
 }
 
 function excelLetter(n: number): string {
@@ -215,22 +222,46 @@ export async function loadEmployeeSheet(sheet: string): Promise<LoadedEmployeeSh
     return {
       rowNo: emp.id,
       employeeId: emp.employeeId,
+      employeeRef: emp.id,
       cells: specs.map((c) => cellValue(emp, c.source, now)),
     };
   };
 
   let rows: SheetRowData[];
-  const origin = { excel: 0, employee: 0 };
+  const origin = { excel: 0, employee: 0, linked: 0 };
 
   if (base === "excel") {
     // 以导入时的 Excel 原始名单为准（人数与原来完全一致），再追加软件新增的人
     const mirror = await loadSheet(sheet);
     const dataCols = specs.length - 1; // 最后一列是系统加的「状态」，原始行没有
-    const mirrorRows: SheetRowData[] = (mirror?.rows ?? []).map((r) => ({
-      rowNo: r.rowNo,
-      employeeId: "",
-      cells: [...r.cells.slice(0, dataCols), ...new Array(Math.max(0, specs.length - r.cells.length)).fill(""), ""],
-    }));
+    const statusIndex = specs.findIndex((c) => c.source === COMPUTED.STATUS);
+
+    // 原始行 → 员工档案 的关联（唯一命中才建，见 scripts/link-sheet-rows.mjs）
+    const links = await prisma.sheetRowEmployeeLink.findMany({
+      where: { sheet },
+      select: { rowNo: true, employeeId: true, employee: { select: { employeeId: true, status: true } } },
+    });
+    const linkBy = new Map(links.map((l) => [l.rowNo, l]));
+
+    const mirrorRows: SheetRowData[] = (mirror?.rows ?? []).map((r) => {
+      const link = linkBy.get(r.rowNo);
+      const status = link
+        ? (EMPLOYEE_STATUS_LABEL[link.employee.status] ?? link.employee.status)
+        : "未建档";
+      const cells = [
+        ...r.cells.slice(0, dataCols),
+        ...new Array(Math.max(0, dataCols - r.cells.length)).fill(""),
+      ];
+      if (statusIndex >= 0) cells[statusIndex] = status;
+      if (link) origin.linked++;
+      return {
+        rowNo: link ? link.employeeId : r.rowNo, // 已建档的行用员工 id 当行标识，便于跳转档案
+        employeeId: link ? link.employee.employeeId : "",
+        employeeRef: link ? link.employeeId : null,
+        cells,
+      };
+    });
+
     // 只追加「在软件里新建的员工」：状态符合规则才进表，历史数据不补
     const added = await loadEmployees({
       sourceSheet: null,

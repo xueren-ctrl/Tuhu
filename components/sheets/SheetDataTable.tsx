@@ -514,14 +514,20 @@ export default function SheetDataTable({
               </button>
             </header>
 
-            {rowLinkBase ? (
+            {rowLinkBase && currentRow.employeeRef ? (
               <div className="border-b border-slate-100 px-4 py-2">
                 <a
-                  href={`${rowLinkBase}/${currentRow.rowNo}`}
+                  href={`${rowLinkBase}/${currentRow.employeeRef}`}
                   className="text-[12.5px] font-medium text-brand-600 hover:underline"
                 >
                   打开该员工的完整档案 / 修改资料 ›
                 </a>
+              </div>
+            ) : null}
+            {rowLinkBase && !currentRow.employeeRef ? (
+              <div className="border-b border-slate-100 bg-amber-50/60 px-4 py-2 text-[12px] text-amber-800">
+                这一行来自 Excel 原始名单，系统里<strong>没有对应的员工档案</strong>
+                （常见于只来面试没有入职、或历史数据没录入的人），所以无法打开档案。
               </div>
             ) : null}
 

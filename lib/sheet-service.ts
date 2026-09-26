@@ -84,7 +84,12 @@ export interface SheetColumn {
 }
 
 export interface SheetRowData {
+  /** 行内唯一标识 */
   rowNo: number;
+  /** 员工业务编号（THHR…）—— 纯 Excel 镜像行没有 */
+  employeeId?: string;
+  /** 对应员工档案 id；null / 缺省 = 这一行在系统里没有对应档案 */
+  employeeRef?: number | null;
   cells: string[];
 }
 
