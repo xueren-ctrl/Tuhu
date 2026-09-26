@@ -197,7 +197,7 @@ Employee 表（唯一数据源）
 
 ---
 
-## 七、验收（`npm run test:stage9` 32/32）
+## 七、验收（`npm run test:stage9` 39/39）
 
 ```
 S9-01 临时账号登录成功                              ✓
@@ -308,3 +308,52 @@ S9-24（「数据库」可切换显示已停用档案）、S9-25（「数据库�
 
 现已补上 PATCH（PUT 与 PATCH 共用实现，各自显式鉴权），
 并新增 S9-26 / S9-27 / S9-28 三项验收**真跑一次写入并验证跨表同步**。
+
+## 十一、PWA：装到手机主屏幕当 App 用（2026-09-26）
+
+用户要求「不想在浏览器访问，想把网站做成 App；电脑作为服务器，随时随地访问修改」。
+
+### 选型：PWA 而不是打包 APK/IPA
+- 不用应用商店、不用证书、不用审核；改完刷新即生效
+- iPhone 与 Android 都能装（iOS 用 Safari「添加到主屏幕」）
+- 装完是独立窗口，无地址栏，观感与原生 App 一致
+
+### 交付内容
+| 文件 | 作用 |
+| --- | --- |
+| `app/manifest.ts` | App 清单：`display: standalone`、图标 4 个（192/512/512-maskable/SVG）、主题色、4 个桌面快捷方式（数据库 / 在职 / 新增 / 改状态） |
+| `public/icons/icon.svg` + `scripts/gen-icons.mjs` | 图标源文件与 PNG 生成脚本（用项目自带 sharp，无新增依赖） |
+| `public/sw.js` | Service Worker |
+| `app/offline/page.tsx` | 断网兜底页（放**根级**，不套 `(app)` 外壳，否则断网时连错误页都打不开） |
+| `components/layout/ServiceWorkerRegistrar.tsx` | 注册 SW + 「装到主屏幕」按钮（iOS 走图文引导，Android 走原生 prompt） |
+| `app/layout.tsx` | 补 `manifest`、`appleWebApp`、多尺寸 iOS 图标、`viewportFit: "cover"` |
+
+### Service Worker 策略（刻意保守）
+- **业务页面一律「网络优先」**，断网才回退到离线页 —— 人事数据（薪资/身份证）
+  宁可让用户看到「连不上」，也绝不能给他看三天前的旧数据。
+- 静态资源（带哈希的 JS、图标）走「缓存优先」，离线也能显示。
+- **敏感信息本就在服务端打码**，即便进缓存也已是打码后的内容。
+
+### ⚠️ 踩坑：登录守卫把 PWA 资源全拦了
+`middleware.ts` 的 matcher 原为
+`["/((?!_next/static|_next/image|favicon.ico|.*\\.svg$).*)"]` —— **只排除了 `.svg`**。
+结果未登录时 `manifest.webmanifest` / `sw.js` / `icon-192.png` / `apple-touch-icon.png`
+**全部 307 跳登录页**。后果：手机上「添加到主屏幕」根本不出现、Service Worker 注册失败。
+（`icon.svg` 因为在排除列表里，反而是唯一能取到的 —— 极具迷惑性。）
+
+修法：matcher 增加 `.*\.png$`、`.*\.ico$`、`manifest\.webmanifest`、`sw\.js`、`offline`。
+这些路径只有图标与缓存规则，不含业务数据，放行安全；
+**并新增 S9-35 专门盯住「放行了 PWA 但业务页面仍必须 307」**，防止守卫被削弱。
+
+### 验收（新增 S9-29 ~ S9-35，共 39 项）
+- S9-29 manifest 未登录可取，Content-Type 正确，display=standalone
+- S9-30 图标齐备（含 maskable）+ 快捷方式 ≥3
+- S9-31 sw.js 可取，且业务页面走网络优先
+- S9-32 三种 PNG 图标未登录可下载
+- S9-33 断网兜底页可显示
+- S9-34 根布局声明 manifest / iOS 图标 / 移动端视口
+- S9-35 **业务页面仍受登录守卫保护**（未登录 → 307）
+
+> 断言踩坑：① React SSR 输出 `<link rel="manifest" .../>` 自闭合带斜杠，
+> 查 `">"` 收尾会误判；② `sw.js` 由客户端组件注册，SSR HTML 里本来就没有，
+> 不能断言它出现在 HTML 里。

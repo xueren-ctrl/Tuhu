@@ -512,6 +512,92 @@ async function main() {
     const longNums = activeSheetHtml.match(/\d{17}[\dXx]/g) ?? [];
     check("S9-16", "员工表里的敏感列在服务端就打码（无 17 位以上长号）", longNums.length === 0, `命中 ${longNums.length}`);
 
+    // ---------- PWA：能「装到手机主屏幕当 App 用」 ----------
+    // 必须在【未登录】状态下验证 —— 手机首次访问时还没登录，
+    // 曾因 middleware 拦了 manifest / sw.js / PNG 图标而全部 307，装不上 App。
+    const anon = (path) =>
+      fetch(`${HOST}${path}`, { redirect: "manual", signal: AbortSignal.timeout(20_000) });
+
+    const mf = await anon("/manifest.webmanifest");
+    const mfText = mf.status === 200 ? await mf.text() : "";
+    let mfJson = null;
+    try { mfJson = JSON.parse(mfText); } catch { /* 解析失败即视为不合格 */ }
+    check(
+      "S9-29",
+      "PWA manifest 未登录也能取到（曾被登录守卫 307，导致装不了 App）",
+      mf.status === 200 &&
+        (mf.headers.get("content-type") ?? "").includes("manifest+json") &&
+        mfJson?.display === "standalone" &&
+        mfJson?.start_url === "/",
+      `http=${mf.status} type=${mf.headers.get("content-type") ?? "-"} display=${mfJson?.display ?? "-"}`
+    );
+    check(
+      "S9-30",
+      "manifest 图标齐备（含 192/512 与 maskable）与桌面快捷方式",
+      Array.isArray(mfJson?.icons) &&
+        mfJson.icons.some((i) => i.sizes === "192x192") &&
+        mfJson.icons.some((i) => i.sizes === "512x512") &&
+        mfJson.icons.some((i) => String(i.purpose).includes("maskable")) &&
+        (mfJson.shortcuts ?? []).length >= 3,
+      `图标 ${mfJson?.icons?.length ?? 0} 个 / 快捷方式 ${(mfJson?.shortcuts ?? []).map((s) => s.short_name).join("、") ?? "无"}`
+    );
+
+    const sw = await anon("/sw.js");
+    const swText = sw.status === 200 ? await sw.text() : "";
+    check(
+      "S9-31",
+      "Service Worker 未登录可注册，且业务页面走「网络优先」不缓存过期人事数据",
+      sw.status === 200 && swText.includes("addEventListener(\"fetch\"") && swText.includes('req.mode === "navigate"'),
+      `http=${sw.status} 大小 ${swText.length}B`
+    );
+
+    const iconChecks = await Promise.all(
+      ["/icons/icon-192.png", "/icons/icon-512.png", "/icons/apple-touch-icon.png"].map(async (p) => {
+        const r = await anon(p);
+        return { p, status: r.status, type: r.headers.get("content-type") ?? "" };
+      })
+    );
+    check(
+      "S9-32",
+      "手机图标 PNG 未登录可直接下载（曾被 307 拦截）",
+      iconChecks.every((c) => c.status === 200 && c.type.includes("png")),
+      iconChecks.map((c) => `${c.p.replace("/icons/", "")}=${c.status}`).join(" ")
+    );
+
+    const off = await anon("/offline");
+    const offText = off.status === 200 ? await off.text() : "";
+    check(
+      "S9-33",
+      "断网兜底页可显示（不受登录校验影响）",
+      off.status === 200 && offText.includes("连不上这台电脑"),
+      `http=${off.status}`
+    );
+
+    // 根布局必须声明 manifest / apple 图标 / 移动端视口，否则 iPhone 装不出图标
+    // 注意：React SSR 会渲染成 `<link rel="manifest" href="..."/>`（自闭合带斜杠），
+    // 所以只查属性片段，不要查完整的 `>` 收尾。
+    // sw.js 不在这里查 —— 它由客户端组件 ServiceWorkerRegistrar 注册，
+    // SSR 的 HTML 里本来就没有；是否可注册由 S9-31 单独验证。
+    const homeHtml = (await (await req("/")).text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-34",
+      "根布局已声明 manifest、iOS 主屏图标与移动端视口",
+      homeHtml.includes('rel="manifest"') &&
+        homeHtml.includes("/manifest.webmanifest") &&
+        homeHtml.includes("apple-touch-icon") &&
+        homeHtml.includes("viewport-fit=cover"),
+      `manifest=${homeHtml.includes("/manifest.webmanifest")} apple图标=${homeHtml.includes("apple-touch-icon")} 视口=${homeHtml.includes("viewport-fit=cover")}`
+    );
+
+    // 登录守卫本身不能被削弱：业务页面仍必须 307
+    const guard = await anon("/sheets/" + encodeURIComponent("数据库"));
+    check(
+      "S9-35",
+      "放行 PWA 资源的同时，业务页面仍受登录守卫保护",
+      guard.status === 307,
+      `未登录访问业务表 → ${guard.status}`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();

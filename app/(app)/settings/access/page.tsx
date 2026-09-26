@@ -48,7 +48,41 @@ export default async function AccessPage() {
         <AccessSelfCheck />
       </Card>
 
-      <Card title="② 手机 / 其他电脑（连同一个 WiFi）">
+      <Card title="② 装到手机主屏幕，像 App 一样用">
+        <p className="text-[12.5px] leading-relaxed text-slate-600">
+          装好后桌面会出现一个图标，点开是<strong>独立窗口、没有浏览器地址栏</strong>，
+          和原生 App 一样。数据仍然来自这台电脑，不会存到手机上。
+        </p>
+        <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <div className="text-[12px] font-medium text-slate-700">iPhone（用 Safari）</div>
+            <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-[12px] leading-relaxed text-slate-500">
+              <li>用 <strong>Safari</strong> 打开本系统（微信里打不开，要先点右上角「在浏览器中打开」）</li>
+              <li>点底部中间的<strong>分享</strong>按钮（方框里一个向上箭头）</li>
+              <li>向下滑，选<strong>「添加到主屏幕」</strong></li>
+              <li>右上角点「添加」</li>
+            </ol>
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <div className="text-[12px] font-medium text-slate-700">安卓（Chrome / Edge）</div>
+            <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-[12px] leading-relaxed text-slate-500">
+              <li>用 Chrome 打开本系统并登录</li>
+              <li>点右下角「⋮」菜单</li>
+              <li>选<strong>「安装应用」</strong>或<strong>「添加到主屏幕」</strong></li>
+              <li>确认后桌面就出现图标了</li>
+            </ol>
+            <p className="mt-1.5 text-[11.5px] text-slate-400">
+              页面右下角也会浮出「装到手机主屏幕」按钮，点它更快。
+            </p>
+          </div>
+        </div>
+        <Alert tone="info" className="mt-2.5">
+          装好后<strong>断网时会看到「当前连不上这台电脑」</strong>的提示，而不是旧数据 ——
+          人事数据（薪资、身份证）永远只从这台电脑实时取，不会给你看过期的内容。
+        </Alert>
+      </Card>
+
+      <Card title="③ 手机 / 其他电脑（连同一个 WiFi）">
         {lan.length === 0 ? (
           <Alert tone="warn">没有检测到可用的局域网地址，请确认这台电脑已连接到 WiFi 或网线。</Alert>
         ) : (
@@ -78,7 +112,7 @@ export default async function AccessPage() {
         </div>
       </Card>
 
-      <Card title="③ 手机在外面、用 4G 也要能打开（外网）">
+      <Card title="④ 手机在外面、用 4G 也要能打开（外网）">
         <p className="text-[12.5px] leading-relaxed text-slate-600">
           外网访问靠一条临时隧道把本机服务暴露成一个公网网址。在项目目录另开一个命令行窗口执行：
         </p>
@@ -127,7 +161,7 @@ export default async function AccessPage() {
         </div>
       </Card>
 
-      <Card title="④ 安全提醒">
+      <Card title="⑤ 安全提醒">
         <ul className="list-disc space-y-1 pl-4 text-[12.5px] leading-relaxed text-slate-600">
           <li>系统已开启登录校验：任何入口（本机 / 局域网 / 外网）都必须先登录。</li>
           <li>手机等设备的登录状态为 8 小时，超时自动要求重新登录。</li>

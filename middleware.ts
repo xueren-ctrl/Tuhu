@@ -55,6 +55,16 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // 排除静态资源与图片，其余全部过中间件
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.svg$).*)"],
+  /**
+   * 排除「不需要登录、且登录了反而会坏事」的路径。
+   *
+   * ⚠️ PWA 相关文件（manifest / sw.js / PNG 图标）**必须排除**，否则：
+   *   · 手机装 App 时浏览器在未登录状态请求这些文件 → 被 307 到登录页
+   *   · manifest 拿不到 → 「添加到主屏幕」根本不出现
+   *   · Service Worker 注册失败 → 离线与 App 模式全废
+   * 这些文件不含任何业务数据（只是图标和缓存规则），放行是安全的。
+   */
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.svg$|.*\\.png$|.*\\.ico$|manifest\\.webmanifest|sw\\.js|offline).*)",
+  ],
 };
