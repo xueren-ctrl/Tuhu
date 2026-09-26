@@ -35,6 +35,13 @@ const NAV: NavGroup[] = [
     ],
   },
   {
+    // 编制表一行代表一家门店（不是一个人），所以不放进「员工表」分组
+    title: "门店编制",
+    items: [
+      { href: "/headcount", label: "门店人员编制", icon: "▥" },
+    ],
+  },
+  {
     title: "统计与查询",
     items: [
       { href: "/", label: "首页看板", icon: "▦" },

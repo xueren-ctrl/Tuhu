@@ -13,6 +13,7 @@ const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
   { match: /^\/employees\/views\/departments$/, title: "部门人员查询", sub: "按 Department 查询" },
   { match: /^\/employees\/views\/distribution$/, title: "人员分布统计", sub: "数据库实时聚合" },
   { match: /^\/employees\/new$/, title: "新增员工", sub: "先选类型（门店 / 运营部），字段按对应表合并去重" },
+  { match: /^\/headcount$/, title: "门店人员编制", sub: "现有人数实时统计自「在职」表，满编目标可人工调整" },
   { match: /^\/employees\/status$/, title: "更改员工状态", sub: "状态决定这个人出现在哪些表" },
   { match: /^\/employees\/\d+\/edit$/, title: "编辑员工", sub: "员工编号与创建时间不可修改" },
   { match: /^\/employees\/\d+$/, title: "员工详情", sub: "按分组展示全部档案字段" },

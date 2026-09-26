@@ -42,8 +42,44 @@ model Store {
   employees Employee[]
   aliases   StoreAlias[]
   rules     DepartmentRule[]
+  headcount StoreHeadcount? // 该门店的满编目标（Stage 9.14）
 
   @@index([status])
+}
+
+// ------------------------------------------------------------
+// 门店人员编制（Stage 9.14）
+// 复刻 Excel「门店人员编制」Sheet：每家门店按工种拆分的「满编」人数目标。
+//
+// 为什么要单独建表而不是塞进 Store：
+//   Excel 里「满编」不是一个总数，而是按工种分成 5 个数
+//   （客服经理满编 / 机修满编 / 美容满编 / 美容师傅满编 / 美容中小工满编），
+//   塞进 Store 需要 5 个可空字段，与 Store「一家门店一行」的主键结构不匹配。
+//
+// 「现有」人数不落库 —— 它是「在职」表按 门店 + 工种 实时 COUNTIFS 出来的，
+// 员工一改状态，这里立刻变，不存在两份数据打架的问题。
+// 只把「人工定的目标」落库，因为 Excel 里那几列本来就是手填常量、会随经营调整。
+// ------------------------------------------------------------
+model StoreHeadcount {
+  id     Int  @id @default(autoincrement())
+  storeId Int
+  store   Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  /// 满编目标（人工维护，可随时改；null = 未设 = 不参与缺编计算）
+  serviceManagerFull Int? // 客服经理满编
+  mechanicFull       Int? // 机修满编
+  beautyFull         Int? // 美容满编（= 美容师傅满编 + 美容中小工满编）
+  beautyMasterFull   Int? // 美容师傅满编
+  beautyJuniorFull   Int? // 美容中小工满编
+
+  /// 该门店的展示顺序（沿用 Excel 里的序号）
+  sortOrder Int    @default(0)
+  remark    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeId])
+  @@index([sortOrder])
 }
 
 // ------------------------------------------------------------

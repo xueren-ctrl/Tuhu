@@ -735,6 +735,139 @@ async function main() {
       `两次结果${ten1 === ten2 ? "一致" : "不一致"}：${ten1.slice(0, 50)}`
     );
 
+    // ---------- 门店人员编制（Stage 9.14） ----------
+    const hcPage = await req("/headcount");
+    const hcHtml = (await hcPage.text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-43",
+      "门店人员编制页可访问，且复刻 Excel 的分组表头",
+      hcPage.status === 200 &&
+        ["各门店现有总人数", "满编配制人数", "美容配制人数", "美容现有人数", "各职位缺编明细/人数", "具体缺编明细"].every((k) =>
+          hcHtml.includes(k)
+        ),
+      `http=${hcPage.status} 大小 ${hcHtml.length}B`
+    );
+
+    // 门店数量：与 StoreHeadcount 条数一致（每家门店一行）
+    const plans = await prisma.storeHeadcount.findMany({
+      orderBy: { sortOrder: "asc" },
+      include: { store: { select: { name: true } } },
+    });
+    const shownStoreNames = plans.filter((h) => hcHtml.includes(">" + h.store.name + "<"));
+    check(
+      "S9-44",
+      "编制表覆盖全部有满编目标的门店（每店一行）",
+      plans.length === 36 && shownStoreNames.length === plans.length,
+      `编制记录 ${plans.length} 条，页面显示 ${shownStoreNames.length} 家`
+    );
+
+    // 「现有」必须与「在职」表实时统计一致 —— 逐店对账前 8 家
+    const activeEmps = await prisma.employee.findMany({
+      where: { deletedAt: null, status: "ACTIVE" },
+      select: { storeId: true, jobGradeRaw: true, position: { select: { name: true } } },
+    });
+    const tally = new Map();
+    for (const e of activeEmps) {
+      if (e.storeId === null) continue;
+      const g = String(e.jobGradeRaw ?? "").trim();
+      const pos = String(e.position?.name ?? "").trim();
+      if (!tally.has(e.storeId)) tally.set(e.storeId, { svc: 0, mech: 0, beauty: 0, total: 0 });
+      const t = tally.get(e.storeId);
+      // 当前合计人数 = 全部工种（与 Excel 一致）
+      t.total += 1;
+      if (g === "客服经理") t.svc += 1;
+      else if (g === "机修") t.mech += 1;
+      else if (g === "美容") t.beauty += 1;
+    }
+
+    let reconOk = 0;
+    const reconDetail = [];
+    for (const h of plans.slice(0, 8)) {
+      const t = tally.get(h.storeId) ?? { svc: 0, mech: 0, beauty: 0, total: 0 };
+      const idx = hcHtml.indexOf(">" + h.store.name + "<");
+      const tr = hcHtml.slice(hcHtml.lastIndexOf("<tr", idx), hcHtml.indexOf("</tr>", idx));
+      const tds = [...tr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) =>
+        m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+      );
+      // 列序：0序号 1门店 2调整 3店长 4技术店长 5副店长 6客服经理 7机修 8美容 9后勤 10当前合计
+      const pageSvc = tds[6] === "—" ? 0 : Number(tds[6]);
+      const pageMech = tds[7] === "—" ? 0 : Number(tds[7]);
+      const pageBeauty = tds[8] === "—" ? 0 : Number(tds[8]);
+      const pageTotal = Number(tds[10]);
+      const good = pageSvc === t.svc && pageMech === t.mech && pageBeauty === t.beauty && pageTotal === t.total;
+      if (good) reconOk++;
+      else
+        reconDetail.push(
+          `${h.store.name} 页面[客服${pageSvc} 机修${pageMech} 美容${pageBeauty} 合计${pageTotal}] vs 库[${t.svc}/${t.mech}/${t.beauty}/${t.total}]`
+        );
+    }
+    check(
+      "S9-45",
+      "编制表「现有」人数与在职表实时统计逐店一致（客服/机修/美容/合计）",
+      reconOk === 8,
+      `${reconOk}/8 一致${reconDetail.length ? "；" + reconDetail.slice(0, 2).join("；") : ""}`
+    );
+
+    // 满编目标可改，且改后缺编重算 + 写审计
+    const target = plans[0];
+    const oldFull = target.mechanicFull;
+    const newFull = (oldFull ?? 3) + 1;
+    const put = await req(`/api/headcount/${target.storeId}`, {
+      method: "PUT",
+      body: JSON.stringify({ mechanicFull: newFull }),
+    });
+    const afterPut = await prisma.storeHeadcount.findUnique({
+      where: { storeId: target.storeId },
+      select: { mechanicFull: true },
+    });
+    const auditHit = await prisma.auditLog.findFirst({
+      where: { entity: "StoreHeadcount", entityId: String(target.storeId) },
+      orderBy: { id: "desc" },
+    });
+    // 复原
+    await req(`/api/headcount/${target.storeId}`, {
+      method: "PUT",
+      body: JSON.stringify({ mechanicFull: oldFull }),
+    });
+    const restored = await prisma.storeHeadcount.findUnique({
+      where: { storeId: target.storeId },
+      select: { mechanicFull: true },
+    });
+    check(
+      "S9-46",
+      "满编目标可人工调整，写库 + 审计留痕 + 测后复原",
+      put.status === 200 && afterPut?.mechanicFull === newFull && Boolean(auditHit) && restored?.mechanicFull === oldFull,
+      `${target.store.name} 机修满编 ${oldFull} → ${newFull}（HTTP ${put.status}）→ 复原 ${restored?.mechanicFull}`
+    );
+
+    // 负数 / 非数字必须被拒
+    const bad1 = await req(`/api/headcount/${target.storeId}`, { method: "PUT", body: JSON.stringify({ mechanicFull: -1 }) });
+    const bad2 = await req(`/api/headcount/${target.storeId}`, { method: "PUT", body: JSON.stringify({ mechanicFull: "abc" }) });
+    check(
+      "S9-47",
+      "满编输入非法值被拒绝（负数 / 非数字）",
+      bad1.status === 400 && bad2.status === 400,
+      `负数=${bad1.status} 非数字=${bad2.status}`
+    );
+
+    // 未登录不能改
+    const anonPut = await fetch(`${HOST}/api/headcount/${target.storeId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mechanicFull: 9 }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    check("S9-48", "未登录不能修改满编目标", anonPut.status === 401, `HTTP ${anonPut.status}`);
+
+    // 导航里有这个入口，且在「员工表」分组之外（它一行是门店不是人）
+    const hcNavHtml = (await (await req("/")).text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-49",
+      "侧边栏有「门店人员编制」入口",
+      hcNavHtml.includes("/headcount") && hcNavHtml.includes("门店人员编制"),
+      ""
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();
