@@ -386,6 +386,8 @@ export default function SheetDataTable({
                 rows.map((r, i) => (
                   <tr
                     key={r.rowNo}
+                    data-employee-ref={r.employeeRef ?? undefined}
+                    data-row-no={r.rowNo}
                     onClick={() => setOpenRow(r.rowNo)}
                     className={`cursor-pointer ${i % 2 ? "bg-slate-50/50" : "bg-white"} hover:bg-brand-50/60`}
                   >

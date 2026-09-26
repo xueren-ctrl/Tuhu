@@ -378,9 +378,92 @@ async function main() {
     const selectCount = (dbPageHtml.match(/<select/g) ?? []).length;
     check(
       "S9-25",
-      "「数据库」表 7 个「是否」字段支持行内下拉直接改",
+      "「数据库」表 7 个「是否」字段渲染出行内下拉",
       selectCount > 20 && dbPageHtml.includes("<option value=\"是\">是</option>"),
       `首屏 20 行共 ${selectCount} 个下拉（工具栏 3 个 + 行内是否字段）`
+    );
+
+    // ---------- 行内下拉真的能存：PATCH 必须被支持，且改动同步到所有含该员工的表 ----------
+    // ⚠️ S9-25 只验证了「下拉渲染出来了」，没验证「点下去能保存」——
+    //    曾经因为路由只实现 PUT、缺 PATCH，导致下拉可见但一点就 405。必须真跑一次写入。
+    const syncEmp = await prisma.employee.findFirst({
+      where: { deletedAt: null, status: "ACTIVE", employeeId: { startsWith: "THHR2026" } },
+      orderBy: { employeeId: "asc" },
+      select: { id: true, name: true, employeeId: true, dormitory: true },
+    });
+    // 该员工按状态应出现的表（员工驱动型；excel 底座的表不含「是否」列）
+    const SYNC_SHEETS = ["在职", "离职", "南昌3店", "运营部", "运营部离职", "数据库"];
+    const selectedOf = (html) => {
+      const m1 = /<option value="([^"]*)"\s+selected=""/.exec(html);
+      if (m1) return m1[1] === "" ? "(空)" : m1[1];
+      const m2 = /<option selected="" value="([^"]*)"/.exec(html);
+      if (m2) return m2[1] === "" ? "(空)" : m2[1];
+      return "(?)";
+    };
+    // 按 data-employee-ref 精确定位到「这个员工」的那一行（同名不同人必须区分开）
+    const readYesNo = async (sheet, refId) => {
+      const h = (
+        await (
+          await req(`/sheets/${encodeURIComponent(sheet)}?size=200`)
+        ).text()
+      ).replace(/<!--[\s\S]*?-->/g, "");
+      const trs = (h.split("<tbody>")[1] ?? "").split("<tr").slice(1);
+      const hit = trs.filter((t) => t.includes(`data-employee-ref="${refId}"`));
+      if (!hit.length) return null; // 该表里没有这个人（状态不匹配）
+      const sels = [...hit[0].matchAll(/<select[^>]*>[\s\S]*?<\/select>/g)];
+      return { n: sels.length, first: sels.length ? selectedOf(sels[0][0]) : null };
+    };
+
+    const patchRes = await req(`/api/employees/${syncEmp.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ dormitory: syncEmp.dormitory === "是" ? "否" : "是" }),
+    });
+    const patchedVal =
+      (await prisma.employee.findUnique({ where: { id: syncEmp.id }, select: { dormitory: true } }))?.dormitory ??
+      null;
+    check(
+      "S9-26",
+      "行内下拉写入生效：PATCH /api/employees/:id 被支持（曾因只实现 PUT 而 405）",
+      patchRes.status === 200 && patchedVal !== syncEmp.dormitory,
+      `HTTP ${patchRes.status}，${JSON.stringify(syncEmp.dormitory)} → ${JSON.stringify(patchedVal)}`
+    );
+
+    // 同步：同一时刻读所有含该员工的表
+    const syncDetail = [];
+    let syncOk = true;
+    let tablesWithHim = 0;
+    for (const s of SYNC_SHEETS) {
+      const r = await readYesNo(s, syncEmp.id);
+      if (!r) {
+        syncDetail.push(`${s}=无此人`);
+        continue;
+      }
+      tablesWithHim++;
+      const same = r.first === patchedVal;
+      if (!same) syncOk = false;
+      syncDetail.push(`${s}=${r.first}${same ? "✓" : "✗"}`);
+    }
+    check(
+      "S9-27",
+      "改一个字段后，该员工出现的所有表同步更新",
+      syncOk && tablesWithHim >= 2,
+      `${syncEmp.name}：${syncDetail.join(" / ")}（共 ${tablesWithHim} 张表含他）`
+    );
+
+    // 复原
+    await req(`/api/employees/${syncEmp.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ dormitory: syncEmp.dormitory }),
+    });
+    const restoredVal = (await prisma.employee.findUnique({
+      where: { id: syncEmp.id },
+      select: { dormitory: true },
+    }))?.dormitory;
+    check(
+      "S9-28",
+      "测试后已复原该员工字段（零污染）",
+      restoredVal === syncEmp.dormitory,
+      `复原为 ${JSON.stringify(restoredVal)}`
     );
 
     // ---------- 运营部新增（自动挂运营部） ----------
