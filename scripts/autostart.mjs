@@ -96,14 +96,53 @@ async function ensure() {
 const WANT_TUNNEL = process.env.TUHU_TUNNEL !== "0";
 const TUNNEL_URL_FILE = join(ROOT, "logs", "tunnel-url.txt");
 let tunnelChild = null;
+/** 上次探测结果 + 连续失败次数，避免抖动导致地址反复变 */
+let lastTunnelProbe = { ok: false, at: 0, fails: 0 };
+const PROBE_MIN_INTERVAL = 120_000; // 2 分钟最多探一次
+const FAILS_BEFORE_REBUILD = 2;      // 连续失败 2 次才重建（一次可能是网络抖动）
 
-function tunnelAlive() {
-  if (tunnelChild) return true;
-  // cloudflared 进程是否已经在跑（可能是用户手动开的）
+/**
+ * 隧道是否真的可用 —— **发一个真实请求**去探，不能只看进程在不在。
+ *
+ * 踩过的坑：cloudflared 进程活着、但到 Cloudflare 的连接已断（网络抖动、切换 WiFi、
+ * 电脑睡眠唤醒后），此时用户看到的是 `Error 1033 Cloudflare Tunnel error`，
+ * 而守护只查「进程是否存在」→ 永远发现不了，隧道就这么僵在那儿一天。
+ * 判据：HTTP 请求能拿到 200/307/401/403 都算通（说明 Cloudflare 已经把流量转到我们这儿），
+ * 只有连接失败 / 5xx（尤其是 Cloudflare 返回的 1033）才算断。
+ */
+async function probeTunnel(url) {
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 12_000);
+    const res = await fetch(`${url}/login`, { method: "GET", signal: ctl.signal, redirect: "manual" });
+    clearTimeout(timer);
+    // 2xx/3xx/401 都算通；Cloudflare 自己的 1033 是 530，也算断
+    return res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+function killStrayCloudflared() {
+  // 结束所有还活着的 cloudflared（含僵死的），再由我们重新拉起
+  try {
+    const out = execFileSync("taskkill", ["/IM", "cloudflared.exe", "/F"], {
+      encoding: "utf8",
+      timeout: 8000,
+      windowsHide: true,
+    });
+    const n = (out.match(/PID:?\s*(\d+)/gi) ?? []).length;
+    log(`已结束 ${n} 个旧隧道进程，正在重建…`);
+  } catch {
+    // 没有进程可杀是正常情况
+  }
+}
+
+function tunnelProcessRunning() {
   try {
     const out = execFileSync("tasklist", ["/FI", "IMAGENAME eq cloudflared.exe", "/NH"], {
       encoding: "utf8",
-      timeout: 4000,
+      timeout: 5000,
       windowsHide: true,
     });
     return /cloudflared\.exe/i.test(out);
@@ -112,14 +151,15 @@ function tunnelAlive() {
   }
 }
 
-function startTunnel() {
+function startTunnel(reason = "") {
   const urlFile = join(ROOT, "logs", "tunnel-url.txt");
   try {
     if (existsSync(urlFile)) unlinkSync(urlFile);
   } catch {
     /* 忽略 */
   }
-  log("启动外网隧道（手机在外地也能打开）…");
+  lastTunnelProbe = { ok: false, at: Date.now(), fails: 0 };
+  log(`启动外网隧道（手机在外地也能打开）…${reason}`);
   tunnelChild = spawn(process.execPath, [join(ROOT, "scripts", "tunnel.mjs")], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"],
@@ -142,10 +182,58 @@ function startTunnel() {
   }, 2000);
 }
 
-function ensureTunnel() {
+/**
+ * 守护隧道：
+ *   1. 进程没了 → 重新拉起
+ *   2. 进程在但**探不通**（Error 1033 那类假活）→ 杀掉僵死进程并重建
+ */
+async function ensureTunnel() {
   if (!WANT_TUNNEL) return;
-  if (tunnelChild || tunnelAlive()) return;
-  startTunnel();
+
+  const running = Boolean(tunnelChild) || tunnelProcessRunning();
+  const url = readTunnelUrl();
+
+  if (!running) {
+    startTunnel("（进程不存在）");
+    return;
+  }
+  // 刚拉起来还没拿到地址，先给它时间
+  if (!url) return;
+  // 90 秒内已探过且是通的，不必重复探测
+  if (lastTunnelProbe.ok && Date.now() - lastTunnelProbe.at < PROBE_MIN_INTERVAL) return;
+  // 刚重建不到一个节流窗口，给它建立连接的时间
+  if (Date.now() - lastTunnelProbe.at < PROBE_MIN_INTERVAL) return;
+
+  const ok = await probeTunnel(url);
+  lastTunnelProbe = {
+    ok,
+    at: Date.now(),
+    fails: ok ? 0 : lastTunnelProbe.fails + 1,
+  };
+
+  if (ok) {
+    if (lastTunnelProbe.fails === 0) logThrottled(`✓ 外网地址正常（已探测确认）`);
+    return;
+  }
+
+  // 一次失败可能是网络抖动，连续 2 次才认定为真断
+  if (lastTunnelProbe.fails < FAILS_BEFORE_REBUILD) {
+    log(`· 外网地址暂时探不通（${lastTunnelProbe.fails}/${FAILS_BEFORE_REBUILD}），下轮再确认…`);
+    return;
+  }
+
+  log(`✗ 外网地址连续探不通（用户会看到 Error 1033），正在重建隧道…`);
+  if (tunnelChild) {
+    try {
+      tunnelChild.kill();
+    } catch {
+      /* 忽略 */
+    }
+    tunnelChild = null;
+  }
+  killStrayCloudflared();
+  // 立刻重建，不等下一轮
+  startTunnel("（重建）");
 }
 
 function readTunnelUrl() {
@@ -183,15 +271,11 @@ log(`电脑从睡眠唤醒或网络恢复后会自动重连，无需手动操作
 await ensure();
 
 // 服务起来之后再拉隧道（隧道要连本机 3000，服务没就绪会白跑一次）
-setTimeout(() => ensureTunnel(), 3000);
+setTimeout(() => ensureTunnel().catch(() => undefined), 3000);
 
 const timer = setInterval(() => {
   ensure().catch((e) => log(`检查失败：${e.message}`));
-  try {
-    ensureTunnel();
-  } catch (e) {
-    log(`隧道检查失败：${e.message}`);
-  }
+  ensureTunnel().catch((e) => log(`隧道检查失败：${e.message}`));
 }, CHECK_EVERY_MS);
 
 function shutdown(sig) {

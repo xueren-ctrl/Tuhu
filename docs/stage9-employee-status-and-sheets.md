@@ -515,3 +515,61 @@ Tailscale 地址 100.87.147.116 → 000（已彻底停用）✓
 公网地址每次重启会变。如需永久固定地址，可选：
 - 买域名（约 60~80 元/年）+ Cloudflare 命名隧道
 - 其他组网工具（多数也有 iOS 端账号绑定的限制，需先确认可用性）
+
+## 十五、隧道「假活」导致 Error 1033（Stage 9.12）
+
+### 用户报的现象
+`Error 1033 — Cloudflare Tunnel error ... Cloudflare is currently unable to resolve it`
+（时间 08:55:37 UTC）
+
+用户描述「进入员工档案编辑再按返回详情就出现」——
+**与"编辑/返回"这个操作无关**。员工详情页只是普通页面，
+报错发生在**网络层**：Cloudflare 那边根本连不到本机的隧道。
+
+### 根因：cloudflared 进程活着，但连接已断
+```
+任务管理器：cloudflared.exe (PID 22616) 存在 ✓
+netstat  ：该 PID 只有一条 127.0.0.1:20241 LISTENING
+           —— 与 Cloudflare 的连接一条都没有 ✗
+公网请求  ：http=http_code 000（连都连不上）
+本机服务  ：http=200（Next.js 好好地在跑）
+```
+
+**这是"假活"（zombie）**：`cloudflared` 进程不会自己退出，
+但它到 Cloudflare 的连接可能因网络抖动、切换 WiFi、
+电脑睡眠唤醒、运营商重连而断掉。进程还在，隧道其实已经废了。
+
+而当时的守护逻辑只检查「`cloudflared.exe` 进程在不在」
+→ 永远返回"正常" → 隧道僵在那里，用户看一整天 Error 1033 都没人管。
+
+### 修复：探测"真的能不能通"，而不是"进程在不在"
+`scripts/autostart.mjs` 新增：
+
+| 函数 | 作用 |
+| --- | --- |
+| `probeTunnel(url)` | 用 `fetch` 真实请求 `<url>/login`；**2xx/3xx/401 算通**，5xx（尤其 Cloudflare 的 530/1033）算断 |
+| `killStrayCloudflared()` | 结束所有僵死的 cloudflared，再重建 |
+| `ensureTunnel()` 改造 | 进程没了 → 拉起；**进程在但探不通 → 连续失败 2 次后杀掉重建** |
+
+防抖参数（避免网络抖动导致地址反复变）：
+- `PROBE_MIN_INTERVAL = 120_000`（2 分钟最多探一次）
+- `FAILS_BEFORE_REBUILD = 2`（连续失败 2 次才重建）
+- 探测成功 → `logThrottled('✓ 外网地址正常（已探测确认）')`
+
+### 实测
+1. **复现**：杀掉 cloudflared → 新守护自动重建 → 4 秒拿到地址 → 公网 200
+2. **模拟僵死**：把探测目标改成不存在的隧道域名（进程照旧活着）
+   → 守护探测失败 → 日志出现
+   `✗ 外网地址连续探不通（用户会看到 Error 1033），正在重建隧道…`
+   → 隧道被重建，拿到新地址，公网恢复 200 ✓
+3. 回归：test:stage9 39/39 · test:stage8 18/18 · check:auth 43/43 · typecheck 通过
+
+### 以后的自动恢复
+- 隧道断（任何原因）→ **2~5 分钟内自动重建**
+- 地址会换 → 打开「基础设置 → 访问入口」能看到当前地址
+- 守护日志（`npm run autostart:log`）会明确记录探测结果与重建动作
+
+### 顺带说明
+Error 1033 与"编辑后返回"无关，任何页面都会一样报错。
+真要立刻恢复而不等守护：打开「访问入口」页看当前地址，
+或执行 `npm run tunnel` 手动重开隧道。
