@@ -313,28 +313,35 @@ async function main() {
     }
 
     // ---------- 「Excel 原始留档」页面已按要求删除，但底座数据必须完好 ----------
-    const removedPage = await req(`/excel/${encodeURIComponent("在职")}`);
+    const removedPage = await req(`/excel/${encodeURIComponent("不存在")}`);
     const excelRows = await prisma.sheetRow.count();
     const recruit = await sheetCount("招聘面试登记表");
     const salary = await sheetCount("薪资表");
     check(
       "S9-11",
-      "Excel 留档页已删除（404），但底座数据完好、两张名单表人数不变",
-      removedPage.status === 404 &&
+      "Excel 留档页已下线，但底座数据完好、两张名单表人数不变",
+      removedPage.status === 307 &&
         excelRows === 4443 &&
         recruit.count === 478 &&
         salary.count === 290,
       `留档页=${removedPage.status} · SheetRow=${excelRows} 行 · 招聘=${recruit.count} · 薪资=${salary.count}`
     );
 
-    // ---------- 已删除的两个列表页 ----------
+    // ---------- 已删除的两个列表页：改为自动跳转，不 404 ----------
     const gone1 = await req("/employees/views/active");
     const gone2 = await req("/employees/views/resigned");
+    const gone3 = await req(`/excel/${encodeURIComponent("薪资表")}`);
+    const loc = (r) => decodeURIComponent(r.headers.get("location") ?? "");
     check(
       "S9-21",
-      "「在职员工（列表）」「离职员工（列表）」已删除（404），导航改用员工表",
-      gone1.status === 404 && gone2.status === 404,
-      `active=${gone1.status} resigned=${gone2.status}`
+      "旧网址（在职/离职列表、Excel 留档）自动跳转到对应员工表，不再 404",
+      gone1.status === 307 &&
+        loc(gone1).includes("/sheets/在职") &&
+        gone2.status === 307 &&
+        loc(gone2).includes("/sheets/离职") &&
+        gone3.status === 307 &&
+        loc(gone3).includes("/sheets/薪资表"),
+      `active→${loc(gone1)} · resigned→${loc(gone2)} · excel/薪资表→${loc(gone3)}`
     );
     const navHtml = (await (await req("/employees/views")).text()).replace(/<!--[\s\S]*?-->/g, "");
     check(
