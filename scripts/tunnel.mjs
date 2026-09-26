@@ -16,7 +16,7 @@
  *  - 地址是临时的：窗口关掉就失效，下次启动换新地址（数据始终留在本机，不上云）。
  */
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
@@ -200,6 +200,18 @@ function startTunnel(env, timeoutMs = 30_000, extraArgs = []) {
       if (m && !announced) {
         announced = true;
         clearTimeout(timer);
+        // 把当前公网地址落盘，软件内的「访问入口」页据此显示，
+        // 用户不必再去命令行窗口里翻地址。
+        try {
+          mkdirSync(path.join(ROOT, "logs"), { recursive: true });
+          writeFileSync(
+            path.join(ROOT, "logs", "tunnel-url.txt"),
+            `${new Date().toISOString()}\n${m[0]}\n`,
+            "utf8"
+          );
+        } catch {
+          /* 写不进去也不影响隧道本身 */
+        }
         resolve({ url: m[0], child });
       }
     };

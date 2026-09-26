@@ -43,10 +43,8 @@
     "autostart": "node scripts/autostart.mjs",
     "autostart:once": "node scripts/autostart.mjs --once",
     "autostart:log": "node -e \"console.log(require('fs').readFileSync('logs/autostart.log','utf8').split('\\n').slice(-40).join('\\n'))\"",
-    "ts:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-tailscale.ps1",
-    "ts:status": "\"C:\\Program Files\\Tailscale\\tailscale.exe\" status",
-    "ts:up": "\"C:\\Program Files\\Tailscale\\tailscale.exe\" up",
-    "ts:ip": "\"C:\\Program Files\\Tailscale\\tailscale.exe\" ip -4"
+    "autostart:off": "powershell -ExecutionPolicy Bypass -File scripts/setup-autostart.ps1 -Uninstall",
+    "tunnel:status": "node -e \"try{const l=require('fs').readFileSync('logs/tunnel-url.txt','utf8').split('\\n');console.log('当前外网地址:',l.find(x=>x.startsWith('https://'))||'(隧道未运行)')}catch(e){console.log('当前外网地址: (隧道未运行)');}\""
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

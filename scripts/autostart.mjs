@@ -10,8 +10,8 @@
  * 停止：结束进程 autostart.mjs 即可
  */
 
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, appendFileSync, writeFileSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, appendFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
@@ -86,6 +86,79 @@ async function ensure() {
   startServer("端口未监听");
 }
 
+// ------------------------------------------------------------
+// 外网隧道（Stage 9.11）
+//
+// 用户不用 Tailscale（iOS 版只能走 Apple ID，与 Google/GitHub 账号不互通），
+// 回到 Cloudflare 临时隧道。既然「电脑当服务器」，隧道也必须开机自动起，
+// 否则每次开机都要手动开一个命令行窗口，用户还得自己从窗口里翻地址。
+// ------------------------------------------------------------
+const WANT_TUNNEL = process.env.TUHU_TUNNEL !== "0";
+const TUNNEL_URL_FILE = join(ROOT, "logs", "tunnel-url.txt");
+let tunnelChild = null;
+
+function tunnelAlive() {
+  if (tunnelChild) return true;
+  // cloudflared 进程是否已经在跑（可能是用户手动开的）
+  try {
+    const out = execFileSync("tasklist", ["/FI", "IMAGENAME eq cloudflared.exe", "/NH"], {
+      encoding: "utf8",
+      timeout: 4000,
+      windowsHide: true,
+    });
+    return /cloudflared\.exe/i.test(out);
+  } catch {
+    return false;
+  }
+}
+
+function startTunnel() {
+  const urlFile = join(ROOT, "logs", "tunnel-url.txt");
+  try {
+    if (existsSync(urlFile)) unlinkSync(urlFile);
+  } catch {
+    /* 忽略 */
+  }
+  log("启动外网隧道（手机在外地也能打开）…");
+  tunnelChild = spawn(process.execPath, [join(ROOT, "scripts", "tunnel.mjs")], {
+    cwd: ROOT,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env },
+    windowsHide: true,
+  });
+  const prefix = (s) => `  [隧道] ${s}`;
+  tunnelChild.stdout.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => log(prefix(l))));
+  tunnelChild.stderr.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => log(prefix(l))));
+  tunnelChild.on("exit", (code) => {
+    log(`隧道已退出（code=${code}），${CHECK_EVERY_MS / 1000} 秒后重试`);
+    tunnelChild = null;
+  });
+  // 拿到地址后明确记一行，方便用户直接看日志
+  const watcher = setInterval(() => {
+    if (!existsSync(TUNNEL_URL_FILE)) return;
+    clearInterval(watcher);
+    const url = readTunnelUrl();
+    if (url) log(`★ 外网地址已就绪：${url}  （手机直接用浏览器打开，或「添加到主屏幕」装成 App）`);
+  }, 2000);
+}
+
+function ensureTunnel() {
+  if (!WANT_TUNNEL) return;
+  if (tunnelChild || tunnelAlive()) return;
+  startTunnel();
+}
+
+function readTunnelUrl() {
+  try {
+    if (!existsSync(TUNNEL_URL_FILE)) return "";
+    const lines = readFileSync(TUNNEL_URL_FILE, "utf8").split("\n");
+    const url = lines.map((l) => l.trim()).find((l) => l.startsWith("https://"));
+    return url ?? "";
+  } catch {
+    return "";
+  }
+}
+
 const ONCE = process.argv.includes("--once");
 
 if (ONCE) {
@@ -109,8 +182,16 @@ log(`电脑从睡眠唤醒或网络恢复后会自动重连，无需手动操作
 
 await ensure();
 
+// 服务起来之后再拉隧道（隧道要连本机 3000，服务没就绪会白跑一次）
+setTimeout(() => ensureTunnel(), 3000);
+
 const timer = setInterval(() => {
   ensure().catch((e) => log(`检查失败：${e.message}`));
+  try {
+    ensureTunnel();
+  } catch (e) {
+    log(`隧道检查失败：${e.message}`);
+  }
 }, CHECK_EVERY_MS);
 
 function shutdown(sig) {
@@ -118,6 +199,9 @@ function shutdown(sig) {
   clearInterval(timer);
   if (child && !child.killed) {
     child.kill();
+  }
+  if (tunnelChild && !tunnelChild.killed) {
+    tunnelChild.kill();
   }
   try {
     if (existsSync(PID_FILE)) writeFileSync(PID_FILE, "");
