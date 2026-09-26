@@ -72,3 +72,4 @@ scripts/_tmp*.ts
 
 # Tailscale 安装包（已不用，随手忽略）
 tools/tailscale-setup.exe
+.gitmsg2.txt
