@@ -63,3 +63,9 @@ Thumbs.db
 
 # 临时 git 提交信息文件
 .git_commit_msg.txt
+
+# 临时 git 提交信息文件与临时探测脚本
+.gitmsg.txt
+scripts/_tmp*.cjs
+scripts/_tmp*.mjs
+scripts/_tmp*.ts
