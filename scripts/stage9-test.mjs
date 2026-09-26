@@ -351,6 +351,38 @@ async function main() {
       ""
     );
 
+    // ---------- 「全部员工（数据库）」已并入员工表的「数据库」 ----------
+    const dbLegacy = await req("/employees/database");
+    const liveNow = await prisma.employee.count({ where: { deletedAt: null } });
+    const dbSheet = await sheetCount("数据库");
+    const deletedCount = await prisma.employee.count({ where: { deletedAt: { not: null } } });
+    const dbWithDeleted = await req(`/sheets/${encodeURIComponent("数据库")}?showDeleted=1`);
+    const dbHtml = (await dbWithDeleted.text()).replace(/<!--[\s\S]*?-->/g, "");
+    const mDel = /(\d+)\s*个字段\s*·\s*(\d+)\s*人/.exec(dbHtml);
+    check(
+      "S9-23",
+      "「全部员工（数据库）」并入员工表「数据库」，旧网址自动跳转",
+      dbLegacy.status === 307 &&
+        decodeURIComponent(dbLegacy.headers.get("location") ?? "").includes("/sheets/数据库") &&
+        dbSheet.count === liveNow,
+      `旧网址→${decodeURIComponent(dbLegacy.headers.get("location") ?? "")} · 员工表数据库 ${dbSheet.count} 人（= 全部在册 ${liveNow}）`
+    );
+    check(
+      "S9-24",
+      "「数据库」表可切换显示已停用档案（多出已停用人数）",
+      mDel && Number(mDel[2]) === liveNow + deletedCount,
+      `含已停用 ${mDel ? mDel[2] : "?"} 人（在册 ${liveNow} + 已停用 ${deletedCount}）`
+    );
+    // 行内「是否」下拉：数据库表有 7 个是否字段，首屏 20 行应渲染出大量可编辑 <select>
+    const dbPageHtml = (await (await req(`/sheets/${encodeURIComponent("数据库")}?size=20`)).text());
+    const selectCount = (dbPageHtml.match(/<select/g) ?? []).length;
+    check(
+      "S9-25",
+      "「数据库」表 7 个「是否」字段支持行内下拉直接改",
+      selectCount > 20 && dbPageHtml.includes("<option value=\"是\">是</option>"),
+      `首屏 20 行共 ${selectCount} 个下拉（工具栏 3 个 + 行内是否字段）`
+    );
+
     // ---------- 运营部新增（自动挂运营部） ----------
     const opsDept = await prisma.department.findFirst({ where: { name: "运营部" } });
     const created2 = await createEmployee({

@@ -32,7 +32,8 @@ export default async function EmployeeSheetPage({
   if (!SHEET_COLUMNS[sheet as keyof typeof SHEET_COLUMNS]) notFound();
 
   const sp = await searchParams;
-  const loaded = await loadEmployeeSheet(sheet);
+  const showDeleted = (Array.isArray(sp.showDeleted) ? sp.showDeleted[0] : sp.showDeleted) === "1";
+  const loaded = await loadEmployeeSheet(sheet, { includeDeleted: showDeleted });
   if (!loaded) notFound();
 
   const label = SHEET_LABEL[sheet] ?? sheet;
@@ -76,6 +77,12 @@ export default async function EmployeeSheetPage({
             className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-700 hover:bg-slate-50"
           >
             更改员工状态
+          </Link>
+          <Link
+            href={`/sheets/${encodeURIComponent(sheet)}${showDeleted ? "" : "?showDeleted=1"}`}
+            className="h-8 rounded-md border border-slate-300 bg-white px-3 text-[12.5px] leading-8 text-slate-600 hover:bg-slate-50"
+          >
+            {showDeleted ? "隐藏已停用档案" : "显示已停用档案"}
           </Link>
           <Link
             href={`/sheets/${encodeURIComponent(sheet)}`}
@@ -152,8 +159,14 @@ export default async function EmployeeSheetPage({
           )}
           <div className="text-slate-600">
             「状态」列是系统加的（Excel 里没有），不需要时可在右上角「列」里把它隐藏。
+            7 个「是否」字段（是否住宿舍 / 社保购买 / 劳动合同 / 社保协议 / 消防承诺书 /
+            宿舍免责协议 / 入职体检）<strong>可以直接在表格里用下拉改成 是 / 否 / 留空</strong>。
+            要停用（删除）某个人的档案，点开那一行 →「打开该员工的完整档案」→ 档案页有「停用档案」。
+          </div>
+          <div className="text-slate-600">
             敏感信息（身份证 / 银行卡 / 电话 / 地址 / 薪资）在<strong>服务端就已打码</strong>；
             要看完整值请勾选右上角「显示完整信息」。
+            {showDeleted ? "（当前<strong>包含已停用档案</strong>）" : null}
           </div>
         </div>
       </Alert>

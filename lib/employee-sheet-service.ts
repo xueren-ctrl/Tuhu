@@ -200,19 +200,26 @@ function cellValue(emp: EmployeeLite, source: string, now: Date): string {
   return s(raw);
 }
 
-/** 读取一张表（全部行，未分页）。返回 null 表示不认识的表名。 */
-export async function loadEmployeeSheet(sheet: string): Promise<LoadedEmployeeSheet | null> {
+/**
+ * 读取一张表（全部行，未分页）。返回 null 表示不认识的表名。
+ * @param includeDeleted 是否把已停用（软删除）的档案也算进来 —— 默认只看在职档案
+ */
+export async function loadEmployeeSheet(
+  sheet: string,
+  opts?: { includeDeleted?: boolean }
+): Promise<LoadedEmployeeSheet | null> {
   const specs: SheetColumnSpec[] | undefined = SHEET_COLUMNS[sheet as keyof typeof SHEET_COLUMNS];
   if (!specs) return null;
 
   const statuses = statusesForSheet(sheet);
   const now = new Date();
   const base = sheetBase(sheet);
+  const deletedFilter = opts?.includeDeleted ? {} : { deletedAt: null };
 
   // 员工驱动：按状态取人，逐格取值
   const loadEmployees = (where: Record<string, unknown>) =>
     prisma.employee.findMany({
-      where: { deletedAt: null, ...where } as never,
+      where: { ...deletedFilter, ...where } as never,
       select: EMPLOYEE_SELECT,
       orderBy: { employeeId: "asc" },
     }) as Promise<unknown[]>;

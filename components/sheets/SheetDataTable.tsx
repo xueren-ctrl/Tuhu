@@ -3,6 +3,18 @@
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FILTER_OP_LABEL, type FilterOp, type SheetColumn, type SheetRowData } from "@/lib/sheet-service";
+import YesNoCell from "@/components/employees/YesNoCell";
+
+/** 支持「行内下拉直接改」的字段（7 个「是否」字段） */
+const INLINE_EDIT_FIELDS = new Set([
+  "dormitory",
+  "socialInsurancePurchased",
+  "laborContract",
+  "socialInsuranceAgreement",
+  "fireSafetyCommitment",
+  "dormitoryWaiver",
+  "onboardingMedical",
+]);
 
 /**
  * Sheet 数据表（客户端组件）
@@ -383,10 +395,18 @@ export default function SheetDataTable({
                     {visibleCols.map((c) => {
                       const raw = r.cells[c.index] ?? "";
                       const txt = cellText(c, raw);
+                      // 7 个「是否」字段：已建档的行支持行内下拉直接改（改完即时生效）
+                      if (r.employeeRef && c.source && INLINE_EDIT_FIELDS.has(c.source)) {
+                        return (
+                          <td key={c.index} className="border-b border-slate-100 px-3 py-1.5">
+                            <YesNoCell employeeId={r.employeeRef} field={c.source} value={txt || null} />
+                          </td>
+                        );
+                      }
                       return (
                         <td key={c.index} className="border-b border-slate-100 px-3 py-1.5 text-slate-700">
                           {txt ? (
-                            <span className="block max-w-[240px] truncate" title={reveal ? raw : txt}>
+                            <span className="block max-w-[240px] truncate" title={txt}>
                               {txt}
                             </span>
                           ) : (

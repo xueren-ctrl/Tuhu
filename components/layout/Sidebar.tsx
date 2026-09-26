@@ -31,7 +31,6 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/employees/new", label: "新增员工", icon: "＋" },
       { href: "/employees/status", label: "更改员工状态", icon: "⇄" },
-      { href: "/employees/database", label: "全部员工（数据库）", icon: "▥" },
       { href: "/employees/batch", label: "批量编辑", icon: "⇉" },
     ],
   },

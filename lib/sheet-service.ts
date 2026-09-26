@@ -81,6 +81,11 @@ export interface SheetColumn {
   filled: number;
   /** 是否整列为空 */
   empty: boolean;
+  /**
+   * 该列取自哪个员工字段（只有「由员工数据生成」的表才有值）。
+   * 表格组件据此判断这一列能不能行内编辑。
+   */
+  source?: string;
 }
 
 export interface SheetRowData {
@@ -181,7 +186,8 @@ export function maskRows(
       const v = cells[c.index] ?? "";
       if (v.trim() !== "") cells[c.index] = maskValue(c.sensitive as SensitiveKind, v);
     }
-    return { rowNo: r.rowNo, cells };
+    // 用展开而不是重建：保留 employeeId / employeeRef（行内编辑与跳转档案依赖它们）
+    return { ...r, cells };
   });
 }
 
