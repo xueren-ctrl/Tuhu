@@ -43,13 +43,31 @@ export default async function EmployeeSheetPage({
   const q = parseSheetQuery(sp, loaded.columns.length);
   const prepared = prepareSheetRows(loaded.rows as SheetRowData[], loaded.columns, q);
 
+  /** 当前是否处于「已筛选」状态（有关键词，或选了某一列 + 条件） */
+  const hasFilter =
+    q.keyword.trim() !== "" ||
+    (q.colRaw !== "" && (q.op === "empty" || q.op === "notEmpty" || q.val !== ""));
+
   return (
     <div className="mx-auto max-w-[1700px] space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-[18px] font-semibold text-slate-800">{label}</h1>
           <p className="mt-0.5 text-[12.5px] text-slate-500">
-            {loaded.columns.length} 个字段 · {loaded.rows.length} 人
+            {loaded.columns.length} 个字段 ·{" "}
+            {/**
+             * 顶部人数必须是「当前筛选/搜索后的命中数」，不是全表人数。
+             * 之前固定显示 loaded.rows.length（全表 290 人），
+             * 表格虽然已经筛到 1 行，顶部却还是 290 —— 用户会以为筛选没生效。
+             */}
+            {hasFilter ? (
+              <>
+                <strong className="text-brand-700">{prepared.matchedCount}</strong>
+                <span className="text-slate-400"> / {loaded.rows.length} 人（已筛选）</span>
+              </>
+            ) : (
+              <>{loaded.rows.length} 人</>
+            )}
             {base === "excel" ? (
               <span className="ml-2 text-slate-400">
                 （Excel 原始名单 {loaded.origin.excel} 人，其中 {loaded.origin.linked} 人已挂上员工档案 ·

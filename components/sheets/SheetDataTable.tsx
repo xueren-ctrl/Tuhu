@@ -175,7 +175,8 @@ export default function SheetDataTable({
             <span className="text-[11.5px] text-slate-500">筛选</span>
             <select
               value={query.col}
-              onChange={(e) => goto({ col: e.target.value })}
+              // 换列时保留已输入的筛选值（否则先输值再换列就得重输一遍）
+              onChange={(e) => goto({ col: e.target.value, val: filterVal.trim() || null })}
               className="h-7 max-w-[130px] rounded border border-slate-300 bg-white px-1.5 text-[12px]"
             >
               <option value="">选择一列…</option>
@@ -187,7 +188,12 @@ export default function SheetDataTable({
             </select>
             <select
               value={query.op}
-              onChange={(e) => goto({ op: e.target.value === "contains" ? null : e.target.value })}
+              onChange={(e) =>
+                goto({
+                  op: e.target.value === "contains" ? null : e.target.value,
+                  val: filterVal.trim() || null,
+                })
+              }
               className="h-7 rounded border border-slate-300 bg-white px-1.5 text-[12px]"
             >
               {(Object.keys(FILTER_OP_LABEL) as FilterOp[]).map((op) => (
@@ -197,20 +203,54 @@ export default function SheetDataTable({
               ))}
             </select>
             {query.op === "empty" || query.op === "notEmpty" ? null : (
-              <input
-                value={filterVal}
-                onChange={(e) => setFilterVal(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") goto({ val: filterVal.trim() });
-                }}
-                placeholder="值"
-                className="h-7 w-[110px] rounded border border-slate-300 bg-white px-1.5 text-[12px]"
-              />
+              <>
+                <input
+                  value={filterVal}
+                  onChange={(e) => setFilterVal(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      goto({ val: filterVal.trim() });
+                    }
+                  }}
+                  /**
+                   * 失焦即生效（Stage 9.13 修复）
+                   *
+                   * 之前只有按 Enter 才提交，用户输入「陈增」后随手点别处，
+                   * 值就丢了 —— 页面显示「姓名 包含「」」、结果仍是全部人，
+                   * 看起来像筛选功能坏了。
+                   *
+                   * 用 setTimeout(0) 延后提交：点击同一行的「包含/等于…」下拉时，
+                   * blur 会先于该下拉的 onChange 触发，若不延后就会先把旧值提交一遍、
+                   * 再提交新操作，URL 被覆盖成空条件。
+                   */
+                  onBlur={() => {
+                    const next = filterVal.trim();
+                    setTimeout(() => {
+                      if (next !== (query.val ?? "")) goto({ val: next });
+                    }, 120);
+                  }}
+                  placeholder="值"
+                  className="h-7 w-[110px] rounded border border-slate-300 bg-white px-1.5 text-[12px]"
+                />
+                {query.col !== "" && filterVal.trim() !== (query.val ?? "") ? (
+                  <button
+                    type="button"
+                    onClick={() => goto({ val: filterVal.trim() })}
+                    className="h-7 rounded border border-slate-300 bg-white px-2 text-[12px] text-slate-600 hover:bg-slate-50"
+                  >
+                    筛选
+                  </button>
+                ) : null}
+              </>
             )}
             {query.col !== "" ? (
               <button
                 type="button"
-                onClick={() => goto({ col: null, op: null, val: null })}
+                onClick={() => {
+                  setFilterVal("");
+                  goto({ col: null, op: null, val: null });
+                }}
                 className="h-7 rounded border border-transparent px-1.5 text-[12px] text-slate-500 hover:bg-white"
               >
                 清除

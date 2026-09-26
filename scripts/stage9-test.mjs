@@ -598,6 +598,143 @@ async function main() {
       `未登录访问业务表 → ${guard.status}`
     );
 
+    // ---------- 按列筛选：真的筛出结果，且顶部人数同步（S9-36 ~ S9-39） ----------
+    const rowsIn = (html) => ((html.split("<tbody>")[1] ?? "").split("<tr").length - 1);
+
+    const activeSheet = "/sheets/" + encodeURIComponent("在职");
+    const emp0 = await prisma.employee.findFirst({
+      where: { deletedAt: null, status: "ACTIVE" },
+      orderBy: { employeeId: "asc" },
+      select: { name: true, employeeId: true },
+    });
+
+    // 姓名列的 index 从表头里读，不写死
+    const activeHtml0 = (await (await req(`${activeSheet}?size=1`)).text()).replace(/<!--[\s\S]*?-->/g, "");
+    const thTexts = [...(activeHtml0.split("<thead>")[1] ?? "").matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((m) =>
+      m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+    );
+    const nameIdx = thTexts.findIndex((t) => t.includes("姓名"));
+
+    const filtered = (await (await req(`${activeSheet}?col=${nameIdx}&op=contains&val=${encodeURIComponent(emp0.name)}`)).text()).replace(
+      /<!--[\s\S]*?-->/g,
+      ""
+    );
+    const baseline = (await (await req(`${activeSheet}?size=200`)).text()).replace(/<!--[\s\S]*?-->/g, "");
+    const filteredRows = rowsIn(filtered);
+    const baselineRows = rowsIn(baseline);
+    check(
+      "S9-36",
+      "按「姓名 包含」筛选真的把行筛少了（不是只改了标签）",
+      nameIdx >= 0 && filteredRows > 0 && filteredRows < baselineRows,
+      `姓名列 index=${nameIdx}；筛选后 ${filteredRows} 行 / 未筛选 ${baselineRows} 行；目标「${emp0.name}」`
+    );
+
+    // 顶部人数必须是筛选后的命中数 —— 之前固定显示全表人数，用户因此以为筛选没生效
+    // 注意 React SSR 会在文本节点之间插 `<!-- -->`，已在上方统一去掉；
+    // 但标签本身仍会把 `·` 与数字隔开，所以匹配时允许中间出现任意分隔。
+    const headArea = (filtered.match(/个字段[\s\S]{0,260}/) ?? [""])[0]
+      .replace(/<[^>]+>/g, "|")
+      .replace(/\|+/g, "|");
+    const shownMatched = Number((headArea.match(/个字段\s*·\s*\|?\s*(\d+)/) ?? [])[1] ?? NaN);
+    check(
+      "S9-37",
+      "筛选后顶部显示「命中数 / 总数（已筛选）」而不是全表人数",
+      headArea.includes("已筛选") && shownMatched === filteredRows,
+      `顶部显示 ${shownMatched}，表格实际 ${filteredRows} 行；片段=${headArea.slice(0, 60)}`
+    );
+
+    // 查无此人的值 → 0 行（不能再出现「有 1 行」这种假象）
+    const noneHtml = (await (await req(`${activeSheet}?col=${nameIdx}&op=contains&val=${encodeURIComponent("查无此人zzz")}`)).text()).replace(
+      /<!--[\s\S]*?-->/g,
+      ""
+    );
+    check(
+      "S9-38",
+      "筛选一个不存在的值 → 结果为 0 行",
+      rowsIn(noneHtml) === 0 || noneHtml.includes("没有符合条件的记录"),
+      `渲染 ${rowsIn(noneHtml)} 行`
+    );
+
+    // 筛选值必须真正进 URL（此前只在按 Enter 时提交，输入后点别处就丢）
+    const hasValInUrl = filtered.includes(`value="${emp0.name}"`) || filtered.includes(`value=&#x27;`);
+    check(
+      "S9-39",
+      "筛选值在页面上可回显（说明已随 URL 提交，不是只存在本地 state）",
+      hasValInUrl || filtered.includes(encodeURIComponent(emp0.name)),
+      ""
+    );
+
+    // ---------- 右下角浮动安装按钮已移除（曾与「保存修改」重叠） ----------
+    const floatGone =
+      !/fixed bottom-4 right-4[\s\S]{0,200}装到手机主屏幕/.test(activeHtml0) &&
+      !activeHtml0.includes("装到主屏幕");
+    check(
+      "S9-40",
+      "右下角浮动「装到主屏幕」按钮已移除（曾遮挡保存按钮），安装引导改到访问入口页",
+      floatGone,
+      floatGone ? "已移除" : "仍存在"
+    );
+
+    // ---------- 在职年限：实时 / 离职口径（S9-41） ----------
+    // 逐表核对：在职类算到今天，离职类算到离职日，且都是每次请求实时算（无缓存）
+    const tenureOf = async (sheet) => {
+      const h = (await (await req(`/sheets/${encodeURIComponent(sheet)}?size=60`)).text()).replace(
+        /<!--[\s\S]*?-->/g,
+        ""
+      );
+      return (h.match(/\d+\s*年\s*\d+\s*个月/g) ?? []).length;
+    };
+    const [tActive, tNc3, tOps, tResigned] = await Promise.all([
+      tenureOf("在职"),
+      tenureOf("南昌3店"),
+      tenureOf("运营部"),
+      tenureOf("离职"),
+    ]);
+    // 拿一个离职员工手工核对：入职日期 → 离职日期 的自然月差
+    const resignedSample = await prisma.employee.findFirst({
+      where: { deletedAt: null, status: "RESIGNED", hireDate: { not: null }, resignDate: { not: null } },
+      orderBy: { employeeId: "asc" },
+      select: { name: true, hireDate: true, resignDate: true },
+    });
+    let manualOk = false;
+    if (resignedSample) {
+      const h = (await (await req(`/sheets/${encodeURIComponent("离职")}?q=${encodeURIComponent(resignedSample.name)}&size=20`)).text()).replace(
+        /<!--[\s\S]*?-->/g,
+        ""
+      );
+      // 期望值：自然月差
+      const hy = resignedSample.hireDate.getUTCFullYear();
+      const hm = resignedSample.hireDate.getUTCMonth();
+      const hd = resignedSample.hireDate.getUTCDate();
+      const ry = resignedSample.resignDate.getUTCFullYear();
+      const rm = resignedSample.resignDate.getUTCMonth();
+      const rd = resignedSample.resignDate.getUTCDate();
+      let y = ry - hy;
+      let mo = rm - hm;
+      if (rd < hd) mo -= 1;
+      if (mo < 0) { y -= 1; mo += 12; }
+      manualOk = h.includes(`${y}年${mo}个月`);
+    }
+    check(
+      "S9-41",
+      "在职年限：在职类实时算到今天，离职类按「入职→离职」的自然月差",
+      tActive > 0 && tNc3 > 0 && tOps > 0 && tResigned > 0 && manualOk,
+      `在职${tActive} 南昌3店${tNc3} 运营部${tOps} 离职${tResigned} 行有值；` +
+        `离职样本 ${resignedSample?.name ?? "-"} 期望 ${manualOk ? "吻合" : "不符"}`
+    );
+
+    // 实时性：同一个「在职」页连开两次，年限文本必须一致且非空（说明是算出来的，不是快照）
+    const live1 = (await (await req(`${activeSheet}?size=60`)).text()).replace(/<!--[\s\S]*?-->/g, "");
+    const live2 = (await (await req(`${activeSheet}?size=60`)).text()).replace(/<!--[\s\S]*?-->/g, "");
+    const ten1 = (live1.match(/\d+\s*年\s*\d+\s*个月/g) ?? []).slice(0, 10).join(",");
+    const ten2 = (live2.match(/\d+\s*年\s*\d+\s*个月/g) ?? []).slice(0, 10).join(",");
+    check(
+      "S9-42",
+      "在职年限是每次请求实时计算（两次请求结果一致且有值，无缓存快照）",
+      ten1.length > 0 && ten1 === ten2,
+      `两次结果${ten1 === ten2 ? "一致" : "不一致"}：${ten1.slice(0, 50)}`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();

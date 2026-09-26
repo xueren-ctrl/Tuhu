@@ -197,7 +197,7 @@ Employee 表（唯一数据源）
 
 ---
 
-## 七、验收（`npm run test:stage9` 39/39，另见第十三节 Tailscale 实测）
+## 七、验收（`npm run test:stage9` 46/46）
 
 ```
 S9-01 临时账号登录成功                              ✓
