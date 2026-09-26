@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { Card, Alert } from "@/components/ui";
 import CopyField from "@/components/settings/CopyField";
+import AccessSelfCheck from "@/components/settings/AccessSelfCheck";
 import { getLanAddresses, isLocalAddress } from "@/lib/network";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +38,14 @@ export default async function AccessPage() {
           当前访问来源：<strong className="text-slate-700">{viaLan ? "局域网 / 外网地址" : "本机地址"}</strong>
           {viaLan ? "（说明其他设备已经能连上了）" : "（本机浏览器访问）。要给别人用，请用下面的局域网地址。"}
         </p>
+      </Card>
+
+      <Card title="⓪ 打不开？点一下自检">
+        <p className="mb-2.5 text-[12.5px] leading-relaxed text-slate-600">
+          如果某个设备上打不开、一直转圈、或提示「请检查网络」，在<strong>那个设备</strong>上点下面的按钮，
+          会直接告诉你断在哪一环（网络不通 / 登录失效 / 浏览器缓存了旧版本），不用自己排查。
+        </p>
+        <AccessSelfCheck />
       </Card>
 
       <Card title="② 手机 / 其他电脑（连同一个 WiFi）">
@@ -88,6 +97,34 @@ export default async function AccessPage() {
           隧道一旦开启，任何拿到该网址的人都能看到登录页。请务必使用强密码，
           用完及时关闭隧道窗口。数据始终存在这台电脑本地，不会上传到任何云端。
         </Alert>
+
+        <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5 text-[12px] leading-relaxed text-slate-600">
+          <div className="font-medium text-slate-700">公网地址打不开、或提示「请检查网络」时</div>
+          <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+            <li>
+              <strong>先强制刷新</strong>：电脑上按 <code className="rounded bg-white px-1">Ctrl+Shift+R</code>；
+              手机上关掉页面重新打开，或在浏览器菜单里「清除浏览数据 → 仅缓存的图片和文件」。
+              浏览器缓存了旧版本时，页面会永远停在加载状态。
+            </li>
+            <li>
+              <strong>确认隧道窗口还开着</strong>：本机窗口一关，地址立刻失效。
+              窗口里的地址才是当前有效地址，每次启动都会换新的。
+            </li>
+            <li>
+              <strong>换网络试</strong>：公司网络、校园网、公共 WiFi 常会拦截
+              <code className="mx-1 rounded bg-white px-1">*.trycloudflare.com</code>。
+              换手机流量（4G/5G）立刻试。
+            </li>
+            <li>
+              <strong>关掉浏览器代理 / VPN 插件</strong>：这类插件会接管所有请求，
+              导致本地隧道地址也走不出去。
+            </li>
+            <li>
+              还是不行就用<strong>上面的「⓪ 自检」</strong>：在出问题的那个设备上点一下，
+              直接看出断在哪一环。
+            </li>
+          </ol>
+        </div>
       </Card>
 
       <Card title="④ 安全提醒">
