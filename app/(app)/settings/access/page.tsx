@@ -2,15 +2,15 @@ import { headers } from "next/headers";
 import { Card, Alert } from "@/components/ui";
 import CopyField from "@/components/settings/CopyField";
 import AccessSelfCheck from "@/components/settings/AccessSelfCheck";
-import { getLanAddresses, isLocalAddress } from "@/lib/network";
+import { getLanAddresses, getTailscale, isCgnat, isLocalAddress } from "@/lib/network";
 
 export const dynamic = "force-dynamic";
 
 /**
  * /settings/access —— 访问入口
  *
- * 把「本机 / 局域网（手机同 WiFi）/ 外网（手机 4G）」三类访问方式集中说明，
- * 地址由服务端实时探测本机网卡生成，不需要用户自己去查 IP。
+ * 把「本机 / 局域网（手机同 WiFi）/ Tailscale 永久地址 / 公网临时隧道」四类访问方式
+ * 集中说明，地址由服务端实时探测网卡与 Tailscale 状态生成，不需要用户自己去查。
  */
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -21,9 +21,11 @@ export default async function AccessPage() {
   const forwardedProto = h.get("x-forwarded-proto")?.split(",")[0]?.trim();
   const proto = forwardedProto === "https" ? "https" : forwardedProto === "http" ? "http" : "http";
   const ip = host.split(":")[0] ?? "";
-  const viaLan = Boolean(ip) && !isLocalAddress(ip);
+  const viaLan = Boolean(ip) && !isLocalAddress(ip) && !isCgnat(ip);
+  const viaTs = isCgnat(ip);
   const currentUrl = host ? `${proto}://${host}` : "";
   const lan = getLanAddresses(PORT);
+  const ts = await getTailscale();
 
   return (
     <div className="mx-auto max-w-[900px] space-y-4">
@@ -35,12 +37,94 @@ export default async function AccessPage() {
       <Card title="① 你现在正在用的入口">
         <CopyField value={currentUrl} tone="primary" />
         <p className="mt-2 text-[12px] leading-relaxed text-slate-500">
-          当前访问来源：<strong className="text-slate-700">{viaLan ? "局域网 / 外网地址" : "本机地址"}</strong>
-          {viaLan ? "（说明其他设备已经能连上了）" : "（本机浏览器访问）。要给别人用，请用下面的局域网地址。"}
+          当前访问来源：
+          <strong className="text-slate-700">
+            {viaTs ? "Tailscale 永久地址" : viaLan ? "局域网 / 公网地址" : "本机地址"}
+          </strong>
+          {viaTs
+            ? "（说明你已经从外部设备连上了，这是最推荐的入口）"
+            : viaLan
+              ? "（说明其他设备已经能连上了）"
+              : "（本机浏览器访问）。要给手机用，请看下面的「永久地址」。"}
         </p>
       </Card>
 
-      <Card title="⓪ 打不开？点一下自检">
+      <Card title="② 永久地址：在任何地方都能用（推荐）">
+        {ts.ok && ts.ip ? (
+          <>
+            <p className="text-[12.5px] leading-relaxed text-slate-600">
+              这是这台电脑的<strong>专属固定地址</strong> —— 家里、公司、酒店、手机流量，
+              打开都是同一个地址，<strong>永不变动</strong>，电脑重启也不变。
+            </p>
+            <div className="mt-2.5 space-y-2">
+              <div>
+                <div className="mb-1 text-[11.5px] text-slate-400">
+                  按地址（推荐，手机收藏这个就够了）
+                </div>
+                <CopyField value={`http://${ts.ip}:${PORT}`} tone="primary" />
+              </div>
+              {ts.dnsName ? (
+                <div>
+                  <div className="mb-1 text-[11.5px] text-slate-400">按名称（更好记）</div>
+                  <CopyField value={`http://${ts.dnsName}:${PORT}`} />
+                </div>
+              ) : null}
+            </div>
+            <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-[12px] leading-relaxed text-emerald-900">
+              <strong>为什么推荐它：</strong>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                <li>
+                  <strong>地址永不变</strong> —— 不用每次找网址，收藏一次就够了；
+                  电脑关机几天后再开，地址照旧。
+                </li>
+                <li>
+                  <strong>外面的人完全访问不到</strong> —— 只有登录了你 Tailscale
+                  账号的设备才能打开，系统里存着身份证和薪资，这样最稳妥。
+                </li>
+                <li>
+                  <strong>不花钱、不买域名</strong>，也不像公网临时网址那样随时会失效。
+                </li>
+              </ul>
+            </div>
+            <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5 text-[12px] leading-relaxed text-slate-600">
+              <div className="font-medium text-slate-700">在手机 / 笔记本上怎么用</div>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+                <li>
+                  装 Tailscale —— iPhone 在 App Store、安卓在应用商店、笔记本在官网下载
+                </li>
+                <li>
+                  用<strong>同一个账号</strong>登录（就是你注册时用的 Google / GitHub）
+                </li>
+                <li>打开上面的地址，登录系统，即可使用；随后「添加到主屏幕」变成 App</li>
+              </ol>
+            </div>
+          </>
+        ) : ts.installed ? (
+          <Alert tone="warn">
+            Tailscale 已安装但<strong>还没登录</strong>。在项目目录执行
+            <code className="mx-1 rounded bg-white px-1">npm run ts:up</code>
+            ，按提示在浏览器里授权即可。
+          </Alert>
+        ) : (
+          <div>
+            <p className="text-[12.5px] leading-relaxed text-slate-600">
+              还没有配置永久地址。配置后，你在<strong>任何地方</strong>（家里、公司、酒店、
+              手机流量）都能用同一个地址打开这个系统，且<strong>外面的人完全访问不到</strong>。
+            </p>
+            <p className="mt-2 text-[12px] leading-relaxed text-slate-500">
+              只需在项目目录执行一次下面的命令，按提示用浏览器登录即可（约 3 分钟）：
+            </p>
+            <div className="mt-2">
+              <CopyField value="npm run ts:setup" />
+            </div>
+            <p className="mt-2 text-[12px] leading-relaxed text-slate-500">
+              未配置之前，可以先用下面「局域网」地址（同一个 WiFi）或「公网临时隧道」。
+            </p>
+          </div>
+        )}
+      </Card>
+
+      <Card title="⓪ 打不开？点一下自检（排查用，可忽略）">
         <p className="mb-2.5 text-[12.5px] leading-relaxed text-slate-600">
           如果某个设备上打不开、一直转圈、或提示「请检查网络」，在<strong>那个设备</strong>上点下面的按钮，
           会直接告诉你断在哪一环（网络不通 / 登录失效 / 浏览器缓存了旧版本），不用自己排查。
@@ -48,7 +132,7 @@ export default async function AccessPage() {
         <AccessSelfCheck />
       </Card>
 
-      <Card title="② 装到手机主屏幕，像 App 一样用">
+      <Card title="③ 装到手机主屏幕，像 App 一样用">
         <p className="text-[12.5px] leading-relaxed text-slate-600">
           装好后桌面会出现一个图标，点开是<strong>独立窗口、没有浏览器地址栏</strong>，
           和原生 App 一样。数据仍然来自这台电脑，不会存到手机上。
@@ -82,7 +166,7 @@ export default async function AccessPage() {
         </Alert>
       </Card>
 
-      <Card title="③ 手机 / 其他电脑（连同一个 WiFi）">
+      <Card title="④ 手机 / 其他电脑（连同一个 WiFi，最快）">
         {lan.length === 0 ? (
           <Alert tone="warn">没有检测到可用的局域网地址，请确认这台电脑已连接到 WiFi 或网线。</Alert>
         ) : (
@@ -112,7 +196,7 @@ export default async function AccessPage() {
         </div>
       </Card>
 
-      <Card title="④ 手机在外面、用 4G 也要能打开（外网）">
+      <Card title="⑤ 公网临时隧道（地址会变，备用）">
         <p className="text-[12.5px] leading-relaxed text-slate-600">
           外网访问靠一条临时隧道把本机服务暴露成一个公网网址。在项目目录另开一个命令行窗口执行：
         </p>
@@ -161,7 +245,7 @@ export default async function AccessPage() {
         </div>
       </Card>
 
-      <Card title="⑤ 这台电脑当服务器：自动运行与看护">
+      <Card title="⑥ 这台电脑当服务器：自动运行与看护">
         <p className="text-[12.5px] leading-relaxed text-slate-600">
           人事数据保存在这台电脑上，所以它必须<strong>一直开着</strong>。已帮你配好：
         </p>
@@ -194,7 +278,7 @@ export default async function AccessPage() {
         </div>
       </Card>
 
-      <Card title="⑥ 安全提醒">
+      <Card title="⑦ 安全提醒">
         <ul className="list-disc space-y-1 pl-4 text-[12.5px] leading-relaxed text-slate-600">
           <li>系统已开启登录校验：任何入口（本机 / 局域网 / 外网）都必须先登录。</li>
           <li>手机等设备的登录状态为 8 小时，超时自动要求重新登录。</li>

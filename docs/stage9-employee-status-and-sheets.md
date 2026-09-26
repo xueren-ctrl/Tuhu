@@ -197,7 +197,7 @@ Employee 表（唯一数据源）
 
 ---
 
-## 七、验收（`npm run test:stage9` 39/39）
+## 七、验收（`npm run test:stage9` 39/39，另见第十三节 Tailscale 实测）
 
 ```
 S9-01 临时账号登录成功                              ✓
@@ -401,3 +401,68 @@ S9-24（「数据库」可切换显示已停用档案）、S9-25（「数据库�
 
 ### 撤销
 在项目目录执行 `scripts/setup-autostart.ps1 -Uninstall`（加 `-Uninstall` 参数）。
+
+## 十三、Tailscale 永久私有地址（Stage 9.10）
+
+用户诉求：「一个电脑作为服务器，随时在任何地方的电脑或手机上访问修改」，
+并确认**不买域名**、**用 PWA 当 App**。本节落地长期访问。
+
+### 为什么选 Tailscale
+- **不花钱、不买域名**：`ts.net` 由 Tailscale 免费提供，绑定设备后即得永久地址
+- **地址永不变**：电脑重启、服务重启、几天不开机都不变
+- **不公开**：只有登录同一账号的设备能访问。系统里存着身份证和薪资，
+  公网隧道是「谁拿到网址都能看到登录页」，Tailscale 完全没有这个问题
+- **实测可达**（绕代理）：`ts.net` 200 / 2.5s、`login.tailscale.com` 302 / 0.9s、
+  `pkgs.tailscale.com` 安装包可下载
+
+对比：Cloudflare 命名隧道**必须买域名**（约 60~80 元/年），且地址是公网公开的。
+
+### 本机配置结果
+- 安装 Tailscale **1.102.4**（安装包 1.33 MB，来自 `pkgs.tailscale.com/stable/`）
+- 设备名 `CHINAMI-8MVD3GC`，登录账号 `li3256542896@gmail.com`
+- **永久 IP**：`100.87.147.116`
+- **MagicDNS 名称**：`chinami-8mvd3gc.tail711a7e.ts.net`（MagicDNS 已启用）
+- `tailscale set --unattended=true` → **重启后自动登录，无需再授权**
+- 节点密钥有效期至 2027-03-25
+
+### 交付
+| 文件 | 作用 |
+| --- | --- |
+| `lib/network.ts` | 新增 `getTailscale()`（异步读 `tailscale status --json`）、`isCgnat()`；`getLanAddresses()` 排除 100.64~127 段避免与局域网地址混淆 |
+| `app/(app)/settings/access/page.tsx` | 新增「② 永久地址」卡片（推荐位），含地址、名称、为什么推荐、手机端三步说明；原「当前入口」能识别是否从 Tailscale 访问 |
+| `scripts/setup-tailscale.ps1` | 一键安装 + 登录引导 + 开启无人值守 + 打印永久地址（`-EnableFunnel` 可选开公网 URL，`-Uninstall` 卸载） |
+| `package.json` | `ts:setup` / `ts:status` / `ts:up` / `ts:ip` |
+
+### ⚠️ 关键坑：同步读 tailscale 会 EBUSY
+最初 `getTailscale()` 用 `execFileSync` 读取，结果**永远抛 `EBUSY`**
+（本机 Windows + 沙箱 shim 会拦截同步派生进程 —— 与项目里已知的
+「`spawnSync` 派生第二个 node.exe 会 EBUSY」是同一类问题）。
+表现很隐蔽：IP 能从网卡列表兜底拿到，**只有 MagicDNS 名称是空的**，
+页面少了「按名称」那一行，差点被当成「用户没开 MagicDNS」。
+
+修法：改为**异步 `execFile` + Promise**，React 服务端组件里 `await getTailscale()`。
+同时保留网卡兜底（`getCgnatAddress()`），保证任何情况下都不会 500。
+
+### 实测（走 Tailscale 通道端到端）
+```
+1 登录              http=200  135ms
+2 首页看板           http=200   60ms
+2 员工表·数据库        http=200  169ms
+2 员工表·在职         http=200   38ms
+2 更改员工状态        http=200   26ms
+2 访问入口           http=200   18ms
+2 PWA manifest     http=200    3ms
+2 Service Worker   http=200    3ms
+3 未登录访问业务表 → 307（登录守卫仍然有效）
+4 页面源码中完整身份证号：0 处（敏感信息仍服务端打码）
+5 域名地址 chinami-8mvd3gc.tail711a7e.ts.net → 200
+访问入口页内容 10/10 项正确
+```
+
+### 防火墙
+`scripts/firewall.ps1` 的规则本就是 `-Profile Any`，已覆盖 Tailscale 虚拟网卡，**无需改动**。
+
+### 还没做
+- **手机端**：需在手机装 Tailscale 并登录同一账号（App Store / 应用商店），
+  之后「添加到主屏幕」即成 App。软件内「③ 装到手机主屏幕」卡片已有图文步骤。
+- 笔记本端同理。
