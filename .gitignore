@@ -76,3 +76,5 @@ tools/tailscale-setup.exe
 # 临时提交信息文件
 .gitmsg*.txt
 .m*.txt
+# 一次性修复脚本
+scripts/_fix-*.cjs
