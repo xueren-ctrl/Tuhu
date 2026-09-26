@@ -34,7 +34,8 @@ const SENSITIVE_KIND: Record<string, SensitiveKind> = {
   householdAddress: "address",
   salaryTerms: "money",
   firstMonthGuarantee: "money",
-  socialInsurancePurchased: "money",
+  // 注意：socialInsurancePurchased（社保购买 / 是否买社保）是「是 / 否」字段，
+  // 打码只会把它变成「··」看不出内容，不属于需要遮蔽的个人信息，故不打码。
 };
 
 /** 按来源字段自动补敏感标记 */
