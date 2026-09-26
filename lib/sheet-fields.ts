@@ -322,6 +322,33 @@ export function statusesForSheet(sheet: string): string[] | null {
     .map(([status]) => status);
 }
 
+/**
+ * 表的数据底座（用户 2026-09-26 确认）：
+ *   employee —— 完全由员工数据生成（新增/改状态会立刻反映）
+ *   excel    —— **以导入时的 Excel 原始名单为准**（人数与原来完全一致），
+ *               只把「在软件里新增的员工」按状态规则追加在后面。
+ *
+ * 「招聘面试登记表」与「薪资表」用 excel 底座：
+ * 这两张表本来就是「2026 年的名单」，历史上有的人面试 / 薪资数据已经找不到了，
+ * 用户明确要求「不补了」——所以名单不动，只让以后新增的人进来。
+ */
+export type SheetBase = "employee" | "excel";
+
+export const SHEET_BASE: Record<string, SheetBase> = {
+  在职: "employee",
+  离职: "employee",
+  南昌3店: "employee",
+  运营部: "employee",
+  运营部离职: "employee",
+  招聘面试登记表: "excel",
+  薪资表: "excel",
+  数据库: "employee",
+};
+
+export function sheetBase(sheet: string): SheetBase {
+  return SHEET_BASE[sheet] ?? "employee";
+}
+
 /** 该状态的人会出现在哪些表（给「改状态」页面做影响预览） */
 export function sheetsForStatus(status: string): string[] {
   return STATUS_SHEETS[status] ?? [];

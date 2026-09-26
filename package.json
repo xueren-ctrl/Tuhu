@@ -37,7 +37,8 @@
     "backup": "tsx scripts/backup-db.ts",
     "import:sheets": "tsx scripts/import-sheets.mjs",
     "migrate:statuses": "node scripts/migrate-statuses.mjs",
-    "test:stage9": "node scripts/stage9-test.mjs"
+    "test:stage9": "node scripts/stage9-test.mjs",
+    "status:candidate": "node scripts/set-candidate-status.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

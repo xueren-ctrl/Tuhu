@@ -138,6 +138,18 @@ async function main() {
       )
     );
     const total = await prisma.employee.count({ where: { deletedAt: null } });
+    // 「招聘面试登记表」「薪资表」以 Excel 原始名单为准，只追加软件新增的员工
+    const addedBySoftware = await prisma.employee.count({
+      where: {
+        deletedAt: null,
+        sourceSheet: null,
+        status: { in: ["INTERVIEWED", "ACTIVE", "RESIGNED", "NC3", "OPS", "OPS_RESIGNED"] },
+      },
+    });
+    const mirrorRows = {};
+    for (const s of ["招聘面试登记表", "薪资表"]) {
+      mirrorRows[s] = await prisma.sheetRow.count({ where: { sheet: s } });
+    }
     const MAP = {
       在职: ["ACTIVE"],
       南昌3店: ["NC3"],
@@ -148,10 +160,12 @@ async function main() {
       薪资表: ["ACTIVE", "RESIGNED", "NC3", "OPS", "OPS_RESIGNED"],
       数据库: null,
     };
+    const EXCEL_BASE = ["招聘面试登记表", "薪资表"];
     let mapOk = true;
     const mapDetail = [];
     for (const [sheet, statuses] of Object.entries(MAP)) {
-      const expected = statuses === null ? total : statuses.reduce((s, st) => s + (statusCounts[st] ?? 0), 0);
+      const eligible = statuses === null ? total : statuses.reduce((s, st) => s + (statusCounts[st] ?? 0), 0);
+      const expected = EXCEL_BASE.includes(sheet) ? mirrorRows[sheet] + addedBySoftware : eligible;
       const got = await sheetCount(sheet);
       const ok = got.status === 200 && got.count === expected;
       if (!ok) {
@@ -159,6 +173,7 @@ async function main() {
         mapDetail.push(`${sheet}: 期望 ${expected} 实际 ${got.count}`);
       }
     }
+    check("S9-04b", "招聘面试登记表 / 薪资表 以 Excel 原始名单为准", mirrorRows["招聘面试登记表"] === 478 && mirrorRows["薪资表"] === 290, `原始 ${mirrorRows["招聘面试登记表"]} / ${mirrorRows["薪资表"]} 行`);
     check("S9-04", "8 张表的行数与状态映射完全一致", mapOk, mapDetail.join(" | "));
 
     // ---------- 候选中 / 其他 一个表都不进 ----------

@@ -11,6 +11,7 @@
  * 只读：不写任何数据。增删改一律走 employee-service。
  */
 import { prisma } from "./prisma";
+import { loadSheet } from "./sheet-service";
 import { EMPLOYEE_STATUS_LABEL } from "./constants";
 import { formatDate } from "./format";
 import { hasCompletedTwoMonths, renderTenureCn } from "./tenure";
@@ -18,9 +19,17 @@ import type { SensitiveKind } from "./sheet-service";
 import {
   COMPUTED,
   SHEET_COLUMNS,
+  sheetBase,
   statusesForSheet,
   type SheetColumnSpec,
 } from "./sheet-fields";
+
+/**
+ * 「Excel 原始名单」表里，软件新增员工的行号基准。
+ * Excel 行号最大几千，Employee.id 当前一万多 —— 用一个高基数避开冲突，
+ * 保证同一页里每行的 rowNo 唯一（抽屉的上/下一行、React key 都依赖它）。
+ */
+const NEW_ROW_BASE = 5_000_000;
 
 export interface SheetColumn {
   index: number;
@@ -46,6 +55,8 @@ export interface LoadedEmployeeSheet {
   sheet: string;
   columns: SheetColumn[];
   rows: SheetRowData[];
+  /** 行数来源拆分：Excel 原始名单 vs 在软件里新增的员工（页面用来解释人数构成） */
+  origin: { excel: number; employee: number };
 }
 
 function excelLetter(n: number): string {
@@ -188,21 +199,51 @@ export async function loadEmployeeSheet(sheet: string): Promise<LoadedEmployeeSh
   if (!specs) return null;
 
   const statuses = statusesForSheet(sheet);
-  const employees = (await prisma.employee.findMany({
-    where: {
-      deletedAt: null,
-      ...(statuses ? { status: { in: statuses } } : {}),
-    },
-    select: EMPLOYEE_SELECT,
-    orderBy: { employeeId: "asc" },
-  })) as unknown as EmployeeLite[];
-
   const now = new Date();
-  const rows: SheetRowData[] = employees.map((e) => ({
-    rowNo: e.id,
-    employeeId: e.employeeId,
-    cells: specs.map((c) => cellValue(e, c.source, now)),
-  }));
+  const base = sheetBase(sheet);
+
+  // 员工驱动：按状态取人，逐格取值
+  const loadEmployees = (where: Record<string, unknown>) =>
+    prisma.employee.findMany({
+      where: { deletedAt: null, ...where } as never,
+      select: EMPLOYEE_SELECT,
+      orderBy: { employeeId: "asc" },
+    }) as Promise<unknown[]>;
+
+  const cellRow = (e: unknown): SheetRowData => {
+    const emp = e as EmployeeLite;
+    return {
+      rowNo: emp.id,
+      employeeId: emp.employeeId,
+      cells: specs.map((c) => cellValue(emp, c.source, now)),
+    };
+  };
+
+  let rows: SheetRowData[];
+  const origin = { excel: 0, employee: 0 };
+
+  if (base === "excel") {
+    // 以导入时的 Excel 原始名单为准（人数与原来完全一致），再追加软件新增的人
+    const mirror = await loadSheet(sheet);
+    const dataCols = specs.length - 1; // 最后一列是系统加的「状态」，原始行没有
+    const mirrorRows: SheetRowData[] = (mirror?.rows ?? []).map((r) => ({
+      rowNo: r.rowNo,
+      employeeId: "",
+      cells: [...r.cells.slice(0, dataCols), ...new Array(Math.max(0, specs.length - r.cells.length)).fill(""), ""],
+    }));
+    // 只追加「在软件里新建的员工」：状态符合规则才进表，历史数据不补
+    const added = await loadEmployees({
+      sourceSheet: null,
+      ...(statuses ? { status: { in: statuses } } : {}),
+    });
+    rows = [...mirrorRows, ...added.map((e) => ({ ...cellRow(e), rowNo: NEW_ROW_BASE + (e as EmployeeLite).id }))];
+    origin.excel = mirrorRows.length;
+    origin.employee = added.length;
+  } else {
+    const employees = await loadEmployees(statuses ? { status: { in: statuses } } : {});
+    rows = employees.map(cellRow);
+    origin.employee = rows.length;
+  }
 
   const columns: SheetColumn[] = specs.map((c, i) => {
     let filled = 0;
@@ -220,5 +261,5 @@ export async function loadEmployeeSheet(sheet: string): Promise<LoadedEmployeeSh
     };
   });
 
-  return { sheet, columns, rows };
+  return { sheet, columns, rows, origin };
 }
