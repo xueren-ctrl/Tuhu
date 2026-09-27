@@ -39,7 +39,6 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/", label: "首页看板", icon: "▦" },
       { href: "/employees/views", label: "视图总览", icon: "◱" },
-      { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂" },
       // 编制表一行代表一家门店（不是一个人），故与各统计视图同组
       { href: "/headcount", label: "门店人员编制", icon: "▥" },
       { href: "/distribution", label: "人员分布明细", icon: "◔" },

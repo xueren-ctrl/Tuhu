@@ -1587,6 +1587,47 @@ async function main() {
       `未分配部门的员工 ${unassignedTotal} 人`
     );
 
+    // ---------- Stage 9.25：删除「门店人员查询」后不得留死链 ----------
+    // 该页（/employees/views/stores）整页删除，此前被「视图总览」页引用了 3 处：
+    // 顶部卡片、门店 Top 10 的「查看全部」按钮、Top 10 里**每个店名都是链接**。
+    // 死链是最容易漏的 —— 页面删了但链接还在，用户点进去才发现 404。
+    // 这里**逐个访问导航里所有页面并搜残留链接**，做全站死链体检。
+    const NAV_PAGES = [
+      "/", "/employees/views", "/employees/views/departments", "/distribution",
+      "/headcount", "/attrition", "/employees/new", "/employees/status",
+      "/employees/batch", "/employees", "/data-quality",
+    ];
+    const deadLinkHits = [];
+    const navBroken = [];
+    for (const nav of NAV_PAGES) {
+      const r = await req(nav);
+      if (r.status !== 200) { navBroken.push(`${nav} → HTTP ${r.status}`); continue; }
+      const html = await r.text();
+      if (html.includes("/employees/views/stores")) deadLinkHits.push(nav);
+    }
+    check(
+      "S9-84",
+      "删除「门店人员查询」后：旧路由 404，且所有页面均无残留死链",
+      deadLinkHits.length === 0 &&
+        navBroken.length === 0 &&
+        (await req("/employees/views/stores")).status === 404,
+      deadLinkHits.length
+        ? `这些页面仍含死链：${deadLinkHits.join("、")}`
+        : navBroken.length
+          ? `这些页面打不开：${navBroken.join("、")}`
+          : `体检 ${NAV_PAGES.length} 个页面全部 200，零残留死链；旧路由 404`
+    );
+
+    // 侧边栏「统计与查询」不应再出现「门店人员查询」
+    const navHomeHtml = await (await req("/")).text();
+    check(
+      "S9-85",
+      "侧边栏「统计与查询」已移除「门店人员查询」，其余 5 项均在",
+      !navHomeHtml.includes("门店人员查询") &&
+        ["首页看板", "视图总览", "门店人员编制", "人员分布明细", "人员流失率"].every((c) => navHomeHtml.includes(c)),
+      `侧边栏现有：首页看板 / 视图总览 / 门店人员编制 / 人员分布明细 / 人员流失率`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();

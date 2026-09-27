@@ -9,9 +9,12 @@ import { SHEET_MAP } from "@/lib/sheet-meta";
 const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
   { match: /^\/$/, title: "首页看板", sub: "员工 / 门店 / 部门 / 职位 实时统计" },
   { match: /^\/employees\/views$/, title: "人员视图总览", sub: "按在职 / 离职 / 门店 / 部门查看人员" },
-  { match: /^\/employees\/views\/stores$/, title: "门店人员查询", sub: "按 Store 表动态生成" },
   { match: /^\/employees\/views\/departments$/, title: "部门人员查询", sub: "按 Department 查询" },
-  { match: /^\/employees\/views\/distribution$/, title: "人员分布统计", sub: "数据库实时聚合" },
+  // Stage 9.25 删除「门店人员查询」（/employees/views/stores）；
+  // 「人员分布统计」（旧 /employees/views/distribution）也已在 Stage 9.23 删除，
+  // 现由 /distribution「人员分布明细」承担。
+  { match: /^\/distribution$/, title: "人员分布明细", sub: "逐店列出各工种的全部在职人名，实时统计" },
+  { match: /^\/attrition$/, title: "人员流失率", sub: "按门店考核指标统计，实时计算" },
   { match: /^\/employees\/new$/, title: "新增员工", sub: "先选类型（门店 / 运营部），字段按对应表合并去重" },
   { match: /^\/headcount$/, title: "门店人员编制", sub: "现有人数实时统计自「在职」表，满编目标可人工调整" },
   { match: /^\/employees\/status$/, title: "更改员工状态", sub: "状态决定这个人出现在哪些表" },

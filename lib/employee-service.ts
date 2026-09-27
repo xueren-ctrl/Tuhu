@@ -1111,58 +1111,6 @@ export async function getPositionDistribution(): Promise<DistributionRow[]> {
   return toRows(groups, UNASSIGNED_LABEL);
 }
 
-/**
- * 指定门店的岗位分布 + 人数汇总。
- * 用于「门店人员查询」页：选择门店后展示在职/离职人数与岗位分布。
- */
-export async function getStoreSummary(storeId: number) {
-  const where = { storeId, deletedAt: null } as const;
-  const [total, active, resigned, candidate, byPosition] = await Promise.all([
-    prisma.employee.count({ where }),
-    prisma.employee.count({ where: { ...where, status: { in: [...ON_JOB_STATUSES] } } }),
-    prisma.employee.count({ where: { ...where, status: { in: [...RESIGNED_STATUSES] } } }),
-    prisma.employee.count({ where: { ...where, status: { in: [...UNHIRED_STATUSES] } } }),
-    prisma.employee.groupBy({
-      by: ["positionId", "status"],
-      where,
-      _count: { _all: true },
-    }),
-  ]);
-
-  const posIds = Array.from(
-    new Set(byPosition.map((g) => g.positionId).filter((v): v is number => v !== null))
-  );
-  const positions = await prisma.position.findMany({
-    where: { id: { in: posIds } },
-    select: { id: true, name: true },
-  });
-  const nameById = new Map(positions.map((p) => [p.id, p.name]));
-
-  const acc = new Map<string, DistributionRow>();
-  for (const g of byPosition) {
-    const key = g.positionId === null ? UNASSIGNED : String(g.positionId);
-    const label = g.positionId === null ? UNASSIGNED_LABEL : (nameById.get(g.positionId) ?? `#${g.positionId}`);
-    const cur =
-      acc.get(key) ??
-      { key, id: g.positionId, label, total: 0, active: 0, resigned: 0, candidate: 0 };
-    cur.total += g._count._all;
-    const b = statusBucket(g.status);
-    if (b === "active") cur.active += g._count._all;
-    else if (b === "resigned") cur.resigned += g._count._all;
-    else cur.candidate += g._count._all;
-    acc.set(key, cur);
-  }
-
-  return {
-    total,
-    active,
-    resigned,
-    candidate,
-    positionDistribution: Array.from(acc.values()).sort(
-      (a, b) => b.active - a.active || b.total - a.total || a.label.localeCompare(b.label, "zh-CN")
-    ),
-  };
-}
 
 /** 指定部门的岗位分布 + 人数汇总。用于「部门人员查询」页。 */
 export async function getDepartmentSummary(departmentId: number) {

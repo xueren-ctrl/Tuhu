@@ -41,15 +41,6 @@ export default async function ViewsOverviewPage() {
       desc: "含门店离职与运营部离职，含离职日期与离职原因。",
     },
     {
-      href: "/employees/views/stores",
-      title: "门店人员查询",
-      replaces: "按门店查人",
-      value: stats.storeCount,
-      unit: "家门店",
-      tone: "blue" as const,
-      desc: "按 Store 表动态生成，不建独立页面。",
-    },
-    {
       href: "/employees/views/departments",
       title: "部门人员查询",
       replaces: "Excel「运营部」「运营部离职」Sheet",
@@ -113,7 +104,9 @@ export default async function ViewsOverviewPage() {
         <Card
           title={`门店人数 Top 10（共 ${storeRows.length} 家）`}
           extra={
-            <Link href="/employees/views/stores">
+            // Stage 9.25：「门店人员查询」整页删除后，「查看全部」改指「人员分布明细」
+            // （那份表逐店列出各工种的人名，信息量更大且是实时统计）
+            <Link href="/distribution">
               <Button size="sm" variant="ghost">
                 查看全部 →
               </Button>
@@ -133,14 +126,8 @@ export default async function ViewsOverviewPage() {
             <tbody>
               {storeRows.slice(0, 10).map((r) => (
                 <tr key={r.key} className="text-[12.5px]">
-                  <td className="px-4 py-2">
-                    <Link
-                      href={`/employees/views/stores?storeId=${r.id}`}
-                      className="hover:text-brand-600 hover:underline"
-                    >
-                      {r.label}
-                    </Link>
-                  </td>
+                  {/* 店名不再可点（原链接指向已删除的门店人员查询页，会变死链） */}
+                  <td className="px-4 py-2 text-slate-700">{r.label}</td>
                   <td className="px-3 py-2 tabular-nums text-emerald-700">{r.active}</td>
                   <td className="px-3 py-2 tabular-nums text-slate-500">{r.resigned}</td>
                   <td className="px-3 py-2 font-medium tabular-nums">{r.total}</td>
