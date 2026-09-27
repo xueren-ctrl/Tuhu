@@ -1685,6 +1685,44 @@ async function main() {
       `全部 ${nAll} → 按姓名「${sampleName}」${nName} 条 / 按门店「${sampleStore}」${nStore} 条`
     );
 
+    // ---------- Stage 9.27：调店记录时间必须用本地时区（S9-89） ----------
+    // 曾经的 bug：用 getUTCHours() 显示 → 比北京时间少 8 小时
+    //（用户实际看到「14:28」，实际是 22:28 操作）。
+    // 库里存的是标准 UTC 瞬时值，显示**必须**用本地时区取值。
+    // 断言方式：把页面显示的时间解析回本地时间，必须**接近真实操作时刻**
+    //（用当天最后一条记录，要求与服务器当前时间相差在 12 小时内 ——
+    //  若错用 UTC 取值，差值会稳定在 8 小时上下，直接判失败）。
+    const trfTimeRows = [...trfBody.matchAll(/<tr[\s\S]*?<\/tr>/g)]
+      .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()))
+      .filter((r) => r.length === 7);
+    const latestShown = trfTimeRows[0]?.[0] ?? "";
+    const parsedShown = new Date(latestShown.replace(" ", "T"));
+    const driftMin = Number.isNaN(parsedShown.getTime())
+      ? NaN
+      : Math.abs(Date.now() - parsedShown.getTime()) / 60000;
+    // 库里该条记录的真实操作时刻（用 UTC 瞬时值直接算，绕开显示层）
+    const latestReal = await prisma.employeeHistory.findFirst({
+      where: { fieldName: "storeId" },
+      orderBy: { operatedAt: "desc" },
+      select: { operatedAt: true },
+    });
+    // 页面显示的时刻，与库里真实时刻的墙上时钟差（分钟）；本地时区下应 < 1
+    const shownMin = parsedShown.getHours() * 60 + parsedShown.getMinutes();
+    const realMin =
+      latestReal.operatedAt.getUTCHours() * 60 + latestReal.operatedAt.getUTCMinutes() +
+      new Date().getTimezoneOffset() / -60 * 60;
+    const clockSkew = Math.abs(shownMin - realMin);
+    check(
+      "S9-89",
+      "调店记录的时间用**本地时区**显示（不是 UTC，差 8 小时）",
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(latestShown) &&
+        !Number.isNaN(parsedShown.getTime()) &&
+        driftMin < 720 &&
+        clockSkew < 2,
+      `页面最新一条显示「${latestShown}」，距服务器当前时间 ${Math.round(driftMin)} 分钟；` +
+        `与库里真实时刻的时钟差 ${clockSkew} 分钟（应 <2；若错用 UTC 会是 480）`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();

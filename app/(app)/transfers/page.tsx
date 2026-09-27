@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getTransfers } from "@/lib/transfer-service";
+import { formatDateTime } from "@/lib/format";
 import { Card, Alert, Button } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -17,8 +18,15 @@ export const dynamic = "force-dynamic";
  *     是往期验收与门店治理时产生的记录（历史事实，不删，但明确标出）
  */
 
-const ymd = (d: Date) =>
-  `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+/**
+ * 时间显示用项目统一的 `formatDateTime`（**本地时区**取值）。
+ *
+ * ⚠️ 别自己写 `getUTCHours()` —— 那是 UTC，会比北京时间少 8 小时。
+ * 库里 `operatedAt` 存的是标准 UTC 瞬时值（如 `2026-09-27T14:28:58Z`，
+ * 对应北京时间 22:28），本地取值才对。
+ * 纯日期字段才用 UTC 取值（见 `lib/format.ts` 的 `formatDate`）。
+ */
+const ymd = (d: Date) => formatDateTime(d);
 
 export default async function TransfersPage({
   searchParams,
