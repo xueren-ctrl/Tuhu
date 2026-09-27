@@ -44,6 +44,7 @@ model Store {
   rules     DepartmentRule[]
   headcount StoreHeadcount?    // 该门店的满编目标（Stage 9.14）
   attrition AttritionIndicator? // 该门店的考核指标管理岗姓名（Stage 9.18）
+  attritionBaselines AttritionBaseline[] // 该门店各月的月初人数快照（Stage 9.22）
   storePeriods EmployeeStorePeriod[] // 该门店的员工任职历史（Stage 9.19）
 
   @@index([status])
@@ -112,6 +113,44 @@ model AttritionIndicator {
 
   @@unique([storeId])
   @@index([sortOrder])
+}
+
+// ------------------------------------------------------------
+// 月初人数快照（Stage 9.22 新增）
+//
+// 解决的问题：流失率的分母「月初人数」在某些月份**算不准**。
+// 库里 273 条历史档案「标记离职但没有离职日期」（Stage 7.3 治理事故遗留），
+// 这批人在 9/1 时点其实还在职、且入职已满 3 个月，按公式应该计入月初人数，
+// 但因为 status=RESIGNED 被当成「不在职」排除了 ——
+// 实测 2026-09 按公式只能算出 220 人，而人工核对的真实值是 255 人。
+//
+// 所以：**有快照的月份用快照（人工核对的权威值），没有快照的月份按公式实时算。**
+// 2026-09 的快照由用户提供的《9月月初人数.xlsx》导入（`npm run import:attrition-baseline`）。
+// 10 月起若不导入，则自动按公式计算。
+//
+// ⚠️ 快照只覆盖「月初人数」这一项；当月离职/当月入职始终实时统计。
+//    （用户明确：表里那两列不对，不要用。）
+// ------------------------------------------------------------
+model AttritionBaseline {
+  id     Int @id @default(autoincrement())
+  storeId Int
+  store   Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  /// 统计月，格式 YYYY-MM（月初，UTC 零点）
+  month  DateTime
+
+  /// 该店这个月的月初人数（人工核对值）
+  headcount Int
+
+  /// 数据来源：MANUAL=从 Excel 导入 / AUTO=系统自动快照
+  source String @default("MANUAL")
+  remark String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeId, month])
+  @@index([month])
 }
 
 // ------------------------------------------------------------

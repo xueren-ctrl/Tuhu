@@ -80,6 +80,12 @@ export interface AttritionRow {
   rate: number | null;
   /** 邀约数量：当月面试且招聘人 = 本行 managerName */
   invites: number;
+  /**
+   * 月初人数的来源（Stage 9.22）：
+   *   SNAPSHOT = 用了人工核对的快照（该月有导入）
+   *   COMPUTED = 按公式实时算（该月没有快照）
+   */
+  headcountSource: "SNAPSHOT" | "COMPUTED";
 }
 
 export interface AttritionSummary {
@@ -92,6 +98,8 @@ export interface AttritionSummary {
   /** 全公司流失率 =（合计离职 − 合计入职）/ 合计月初人数 */
   overallRate: number | null;
   storesWithResign: number;
+  /** 该月月初人数是否用了人工快照（true）/ 全部按公式实时算（false） */
+  usesSnapshot: boolean;
   /** 流失率最高的三家 */
   topWorst: { storeName: string; rate: number }[];
   /** 流失率最低的三家（有负值的=净流入） */
@@ -200,13 +208,40 @@ export async function getAttrition({ month }: MonthParam): Promise<{
   // ③ 邀约数量：当月面试记录，按招聘人（管理者姓名）分组
   const invites = await getInvitesByRecruiter(start, end);
 
+  /**
+   * ③' 月初人数：优先用「人工核对快照」，没有快照才按公式实时算。
+   *
+   * ⚠️ 为什么需要快照（Stage 9.22，**不是冗余功能，别删**）：
+   *   公式要求「1 号在职且入职满 3 个月」，但库里 273 条历史档案
+   *   「标记为离职却没有离职日期」（Stage 7.3 治理事故的遗留）。
+   *   这批人在 9/1 时点其实还在职、按公式应该计入月初人数，
+   *   但因为 status=RESIGNED 被当成「不在职」排除了。
+   *   实测：2026-09 按公式只能算出 **220** 人，人工核对真实值是 **255** 人，差 35。
+   *
+   * 口径（有快照优先）：
+   *   • 该月在 `AttritionBaseline` 里有记录 → 直接用人工核对的权威值
+   *   • 没有记录 → 按公式实时算（1 号在职 + 入职满 3 个月），10 月起自动生效
+   *
+   * ⚠️ 快照**只覆盖月初人数**这一项；当月离职/当月入职始终实时统计
+   *    （用户明确说过：Excel 表里那两列不对，不要用）。
+   */
+  const baselines = await prisma.attritionBaseline.findMany({
+    where: { month: start },
+    select: { storeId: true, headcount: true },
+  });
+  const baselineMap = new Map(baselines.map((b) => [b.storeId, b.headcount]));
+  const hasBaseline = baselineMap.size > 0;
+
   // ④ 逐店计算（有副店长的门店会产出 2 行）
   const rows: AttritionRow[] = [];
   for (const p of plans) {
     const list = byStore.get(p.storeId) ?? [];
 
-    // 月初人数：1 号在职 且 入职满 3 个月
-    let monthStartHeadcount = 0;
+    /**
+     * 月初人数 = 1 号在职 且 入职满 3 个月。
+     * 该月有快照时**直接用快照值**（快照优先，见上方说明）。
+     */
+    let monthStartHeadcount = baselineMap.get(p.storeId) ?? 0;
     // 当月离职：离职日期落在当月 且 入职满 3 个月
     let monthResigned = 0;
     // 当月入职：入职日期落在当月
@@ -215,10 +250,12 @@ export async function getAttrition({ month }: MonthParam): Promise<{
     for (const e of list) {
       const hired3m = hiredAtLeast3MonthsAgo(e.hireDate, start);
 
-      if (e.status === "ACTIVE") {
-        // 月初仍在职：需 入职 ≤ 月初 且 入职满 3 个月
+      // 月初人数：无快照时才实时统计
+      if (!hasBaseline && e.status === "ACTIVE") {
         if (e.hireDate && e.hireDate.getTime() <= start.getTime() && hired3m) monthStartHeadcount++;
-      } else {
+      }
+
+      if (e.status !== "ACTIVE") {
         // RESIGNED
         if (e.resignDate && e.resignDate.getTime() >= start.getTime() && e.resignDate.getTime() < end.getTime()) {
           if (hired3m) monthResigned++;
@@ -262,6 +299,7 @@ export async function getAttrition({ month }: MonthParam): Promise<{
       role: "STORE_MANAGER",
       managerName: inviteName,
       invites: inviteName ? invites.get(inviteName) ?? 0 : 0,
+      headcountSource: hasBaseline ? "SNAPSHOT" : "COMPUTED",
     });
 
     // 该店有副店长 → 追加一行，人数/流失率相同，只换邀约数量
@@ -271,6 +309,7 @@ export async function getAttrition({ month }: MonthParam): Promise<{
         role: "DEPUTY_MANAGER",
         managerName: p.deputyManager,
         invites: invites.get(p.deputyManager) ?? 0,
+        headcountSource: hasBaseline ? "SNAPSHOT" : "COMPUTED",
       });
     }
   }
@@ -298,6 +337,7 @@ export async function getAttrition({ month }: MonthParam): Promise<{
       invitesTotal,
       overallRate: monthStartTotal > 0 ? (resignedTotal - hiredTotal) / monthStartTotal : null,
       storesWithResign: storeRows.filter((r) => r.monthResigned > 0).length,
+      usesSnapshot: hasBaseline,
       topWorst: withRate
         .filter((r) => r.role === "STORE_MANAGER")
         .slice(0, 3)

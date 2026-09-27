@@ -1139,13 +1139,14 @@ async function main() {
     );
 
     // ---------- Stage 9.18：人员流失率视图（S9-62 ~ S9-65） ----------
+    // ⚠️ 第 6 列表头在 Stage 9.22 已从「实时人数」改为「月初人数」（流失率的分母）。
     const attrPage = await req("/attrition?month=2026-08");
     const attrHtml = (await attrPage.text()).replace(/<!--[\s\S]*?-->/g, "");
     check(
       "S9-62",
       "人员流失率页可访问，10 列与 Excel 完全一致",
       attrPage.status === 200 &&
-        ["序号", "门店名称", "店长", "技术店长", "副店长", "实时人数", "当月离职", "当月入职", "流失率", "邀约数量"].every((c) =>
+        ["序号", "门店名称", "店长", "技术店长", "副店长", "月初人数", "当月离职", "当月入职", "流失率", "邀约数量"].every((c) =>
           attrHtml.includes(c)
         ),
       `http=${attrPage.status} 大小=${attrHtml.length}B`
@@ -1354,6 +1355,84 @@ async function main() {
         afterBatchRestore.every((r, i) => r.storeId === batchMovers[i].storeId),
       `批量调动 ${batchMovers.length} 人 → ${batchTarget.name}（HTTP ${batchPut.status}）：` +
         `新增任职历史 ${perAfterBatch.length - perBeforeBatch} 条；复原后门店正确：${afterBatchRestore.every((r, i) => r.storeId === batchMovers[i].storeId)}`
+    );
+
+    // ---------- Stage 9.22：月初人数快照（有快照用快照，没快照按公式算） ----------
+    // 背景：流失率的分母「月初人数」按公式算不准 —— 库里 273 条历史档案
+    // 「标记离职却没有离职日期」，这批人在 9/1 其实还在职但被排除了
+    // （按公式只能算出 220，人工核对的真实值是 255）。
+    // 2026-09 的真实值由用户提供的《9月月初人数.xlsx》导入。
+    // 三条规则：① 列名是「月初人数」；② 有快照用快照；
+    //           ③ 没有快照的月份仍按公式自动算（不能退化成常量）。
+    const hcBaseline = await prisma.attritionBaseline.findMany({
+      select: { storeId: true, headcount: true, month: true, source: true },
+    });
+    const sep2026 = hcBaseline.filter((b) => b.month.toISOString().slice(0, 7) === "2026-09");
+    const sepTotal = sep2026.reduce((s, b) => s + b.headcount, 0);
+    check(
+      "S9-72",
+      "2026-09 月初人数快照 = 36 家 / 合计 255（用户提供的权威值）",
+      sep2026.length === 36 && sepTotal === 255 && sep2026.every((b) => b.source === "MANUAL"),
+      `快照 ${sep2026.length} 条，合计 ${sepTotal}，来源 ${[...new Set(sep2026.map((b) => b.source))].join("/")}（应为 36 / 255 / MANUAL）`
+    );
+
+    /** 抓流失率页并解析成 { headers, rows }（用项目统一的 req 助手） */
+    const fetchAttr = async (m) => {
+      const html = (await (await req(`/attrition?month=${m}`)).text()).replace(/<!--[\s\S]*?-->/g, "");
+      return {
+        html,
+        headers: [...html.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((x) =>
+          x[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+        ),
+        rows: [
+          ...(html.slice(html.indexOf("<tbody")).matchAll(/<tr[\s\S]*?<\/tr>/g))
+        ]
+          .map((x) => [...x[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()))
+          .filter((r) => r.length === 10),
+      };
+    };
+
+    const attrSep = await fetchAttr("2026-09");
+    const sepTotalRow = attrSep.rows[attrSep.rows.length - 1];
+    check(
+      "S9-73",
+      "页面第 6 列标题为「月初人数」，9 月显示快照值 255 并标注数据来源",
+      attrSep.headers.includes("月初人数") &&
+        !attrSep.headers.includes("实时人数") &&
+        sepTotalRow[5] === "255" &&
+        attrSep.html.includes("本月用的是人工核对的数据"),
+      `第 6 列表头 = ${attrSep.headers[5]}；9 月合计月初 ${sepTotalRow[5]}（应 255）；` +
+        `页面${attrSep.html.includes("本月用的是人工核对的数据") ? "已标注人工快照" : "★未标注来源"}`
+    );
+
+    // 没有快照的月份必须仍按公式自动算（防止「有快照后所有月份都退化成常量」）
+    const attrAug = await fetchAttr("2026-08");
+    const augTotalRow = attrAug.rows[attrAug.rows.length - 1];
+    const augSnapshot = hcBaseline.filter((b) => b.month.toISOString().slice(0, 7) === "2026-08");
+    check(
+      "S9-74",
+      "没有快照的月份（2026-08）仍按公式自动计算，不受 9 月快照影响",
+      augSnapshot.length === 0 &&
+        attrAug.html.includes("本月按公式自动计算") &&
+        augTotalRow[5] !== "255" &&
+        Number(augTotalRow[5]) > 0,
+      `8 月快照 ${augSnapshot.length} 条（应 0）；8 月合计月初 ${augTotalRow[5]}（应 ≠ 9 月的 255）；` +
+        `页面${attrAug.html.includes("本月按公式自动计算") ? "已标注自动计算" : "★未标注"}`
+    );
+
+    // 流失率公式在「用快照做分母」的月份也必须逐店成立
+    let sepFormulaOk = 0;
+    for (const r of attrSep.rows.slice(0, -1).filter((x) => !(x[2] === "—" && x[4] !== "—"))) {
+      const base = parseNum(r[5]), res = parseNum(r[6]), hire = parseNum(r[7]);
+      const shown = parseNum(r[8]);
+      const expect = base > 0 ? ((res - hire) / base) * 100 : null;
+      if (expect === null ? shown === 0 : Math.abs(shown - expect) < 0.06) sepFormulaOk++;
+    }
+    check(
+      "S9-75",
+      "9 月用快照做分母后，流失率公式仍逐店成立（36 家）",
+      sepFormulaOk === 36,
+      `${sepFormulaOk}/36 家公式吻合（分母为快照值）`
     );
 
     // ---------- 新增员工页 ----------

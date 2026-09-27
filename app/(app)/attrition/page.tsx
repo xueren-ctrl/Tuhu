@@ -9,13 +9,16 @@ export const dynamic = "force-dynamic";
  * /attrition —— 人员流失率（Stage 9.18）
  *
  * 复刻 Excel「人员流失率」Sheet（2026 年门店考核指标数据），10 列：
- *   序号 | 门店名称 | 店长 | 技术店长 | 副店长 | 实时人数 | 当月离职 | 当月入职 | 流失率 | 邀约数量
+ *   序号 | 门店名称 | 店长 | 技术店长 | 副店长 | 月初人数 | 当月离职 | 当月入职 | 流失率 | 邀约数量
  *
  * 口径（用户给的公式）：
  *   流失率   =（当月离职人数 − 当月入职人数）/ 月初人数
  *   当月离职 = 当月离职 **且入职满三个月**
  *   当月入职 = 当月入职
  *   月初人数 = 1 号在职人数 **且入职时间满 3 个月**
+ *
+ * ⚠️ 月初人数（Stage 9.22）：该月有「人工核对快照」就用快照，没有才按公式实时算。
+ *   原因见 lib/attrition-service.ts 的说明（库里 273 条档案缺离职日期，公式会少算）。
  *
  * 「店长/技术店长/副店长」是考核指标里的手填姓名（`AttritionIndicator` 表），
  * 「邀约数量」靠这些姓名去招聘面试登记表匹配；其余全部实时统计。
@@ -90,8 +93,25 @@ export default async function AttritionPage({
           <div>
             <strong>流失率 =（当月离职人数 − 当月入职人数）/ 月初人数</strong>。
             <strong>当月离职</strong>只算「当月离职<strong>且入职满 3 个月</strong>」的人
-            （刚入职不满 3 个月就走的，不计入流失，避免把试用期离职算成流失）；
-            <strong>月初人数</strong>是「1 号在职<strong>且入职满 3 个月</strong>」。
+            （刚入职不满 3 个月就走的，不计入流失，避免把试用期离职算成流失）。
+          </div>
+          <div>
+            <strong>「月初人数」是流失率的分母</strong>，口径是「1 号在职<strong>且入职满 3 个月</strong>」。
+            {summary.usesSnapshot ? (
+              <>
+                {" "}
+                <strong className="text-brand-700">本月用的是人工核对的数据</strong>
+                （{summary.month} 导入的权威值，合计 {summary.monthStartTotal} 人）——
+                {" "}因为历史档案里有大量「标记离职却没填离职日期」的记录，
+                直接按公式算会少算约 35 人。
+              </>
+            ) : (
+              <>
+                {" "}
+                <strong className="text-brand-700">本月按公式自动计算</strong>
+                （该月没有导入人工数据）—— 每月 1 号自动重算一次，无需手工维护。
+              </>
+            )}
           </div>
           <div>
             <strong>「店长」与「技术店长」是两种不同的店，职位性质不同</strong>：
@@ -148,7 +168,7 @@ export default async function AttritionPage({
               <th className="w-[76px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">店长</th>
               <th className="w-[76px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">技术店长</th>
               <th className="w-[76px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">副店长</th>
-              <th className="w-[84px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">实时人数</th>
+              <th className="w-[84px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">月初人数</th>
               <th className="w-[84px] border-b border-r border-slate-200 bg-rose-50/60 px-2 py-1.5 text-center">当月离职</th>
               <th className="w-[84px] border-b border-r border-slate-200 bg-emerald-50/60 px-2 py-1.5 text-center">当月入职</th>
               <th className="w-[90px] border-b border-r border-slate-200 bg-amber-50/60 px-2 py-1.5 text-center">流失率</th>
@@ -178,7 +198,13 @@ export default async function AttritionPage({
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
                   {r.role === "DEPUTY_MANAGER" ? r.managers.deputyManager || "—" : "—"}
                 </td>
-                <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center font-semibold text-slate-800">
+                {/* 月初人数（流失率的分母）。
+                    SNAPSHOT = 该月用了人工核对的权威值；COMPUTED = 按公式实时算。
+                    视觉上不加任何标记（保持表格干净），来源在页面上方说明里讲。 */}
+                <td
+                  className="border-b border-r border-slate-100 px-2 py-1.5 text-center font-semibold text-slate-800"
+                  title={r.headcountSource === "SNAPSHOT" ? "该月使用人工核对的月初人数" : "按公式自动计算：1 号在职且入职满 3 个月"}
+                >
                   {r.monthStartHeadcount}
                 </td>
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center">
