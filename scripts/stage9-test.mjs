@@ -1138,6 +1138,56 @@ async function main() {
       `${lzz?.employeeId} 职位备注=${JSON.stringify(lzz?.positionNote)}；凤岗碧湖大道店在职美容师傅 ${lzzMaster}/2`
     );
 
+    // ---------- Stage 9.18：人员流失率视图（S9-62 ~ S9-65） ----------
+    const attrPage = await req("/attrition?month=2026-08");
+    const attrHtml = (await attrPage.text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-62",
+      "人员流失率页可访问，10 列与 Excel 完全一致",
+      attrPage.status === 200 &&
+        ["序号", "门店名称", "店长", "技术店长", "副店长", "实时人数", "当月离职", "当月入职", "流失率", "邀约数量"].every((c) =>
+          attrHtml.includes(c)
+        ),
+      `http=${attrPage.status} 大小=${attrHtml.length}B`
+    );
+
+    // 36 家门店 + 合计行
+    const attrBody = attrHtml.slice(attrHtml.indexOf("<tbody"));
+    const attrRows = [...attrBody.matchAll(/<tr[\s\S]*?<\/tr>/g)]
+      .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()))
+      .filter((r) => r.length === 10);
+    check(
+      "S9-63",
+      "流失率表覆盖全部 36 家门店并含合计行",
+      attrRows.length === 37 && attrRows[attrRows.length - 1][1] === "所有门店合计",
+      `行数 ${attrRows.length}（36 店 + 1 合计）`
+    );
+
+    // 公式核对：流失率 =（当月离职 − 当月入职）/ 月初人数
+    const parseNum = (s) => (s === "—" || s === "" ? 0 : Number(String(s).replace("%", "")));
+    let formulaOk = 0;
+    for (const r of attrRows.slice(0, -1)) {
+      const base = parseNum(r[5]), res = parseNum(r[6]), hire = parseNum(r[7]);
+      const shown = parseNum(r[8]);
+      const expect = base > 0 ? ((res - hire) / base) * 100 : null;
+      if (expect === null ? shown === 0 : Math.abs(shown - expect) < 0.06) formulaOk++;
+    }
+    check(
+      "S9-64",
+      "流失率 =（当月离职 − 当月入职）/ 月初人数（逐店核对 36 家）",
+      formulaOk === 36,
+      `${formulaOk}/36 家公式吻合`
+    );
+
+    // 口径：满 3 个月用自然月加法；与 Excel 的差异应只来自「Excel 按今天算年限」这一缺陷
+    const indicators = await prisma.attritionIndicator.count();
+    check(
+      "S9-65",
+      "考核指标已导入 36 家（含 Excel 同名两行已合并：38 行 → 36 家）",
+      indicators === 36,
+      `AttritionIndicator ${indicators} 条`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();

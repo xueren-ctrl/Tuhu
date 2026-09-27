@@ -42,7 +42,8 @@ model Store {
   employees Employee[]
   aliases   StoreAlias[]
   rules     DepartmentRule[]
-  headcount StoreHeadcount? // 该门店的满编目标（Stage 9.14）
+  headcount StoreHeadcount?    // 该门店的满编目标（Stage 9.14）
+  attrition AttritionIndicator? // 该门店的考核指标管理岗姓名（Stage 9.18）
 
   @@index([status])
 }
@@ -74,6 +75,36 @@ model StoreHeadcount {
 
   /// 该门店的展示顺序（沿用 Excel 里的序号）
   sortOrder Int    @default(0)
+  remark    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeId])
+  @@index([sortOrder])
+}
+
+// ------------------------------------------------------------
+// 门店考核指标里的管理岗姓名（Stage 9.18 新增）
+// 用途：复刻 Excel「人员流失率」Sheet（2026 年门店考核指标数据）。
+//
+// 为什么单独存：
+//   该表 C/D/E 三列（店长 / 技术店长 / 副店长）是**考核指标里的手填姓名**，
+//   属于「考核口径」而非「员工档案当前状态」—— 人换店、店长换人后，
+//   考核指标仍按原姓名计算邀约数。**刻意不从 Employee 实时反查**。
+//   「邀约数量」= 招聘面试登记表里当月面试、且招聘人 = 该店长的记录数，
+//   必须依赖这里的姓名。
+// 流失率的其余部分（月初人数 / 当月离职 / 当月入职）全部实时统计，不落库。
+model AttritionIndicator {
+  id     Int  @id @default(autoincrement())
+  storeId Int
+  store   Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  storeManager   String? // 店长
+  techManager    String? // 技术店长
+  deputyManager  String? // 副店长
+
+  /// 展示顺序（沿用 Excel 里的序号）
+  sortOrder Int     @default(0)
   remark    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
