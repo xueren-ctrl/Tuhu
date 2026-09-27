@@ -79,7 +79,7 @@ export default async function AttritionPage({
         </Card>
         <Card title="净流失门店">
           <div className="text-[20px] font-semibold text-slate-800">
-            {rows.filter((r) => (r.rate ?? 0) > 0).length}
+            {rows.filter((r) => r.role === "STORE_MANAGER" && (r.rate ?? 0) > 0).length}
           </div>
           <div className="text-[11.5px] text-slate-400">家 · 蓝色为净流入</div>
         </Card>
@@ -94,9 +94,15 @@ export default async function AttritionPage({
             <strong>月初人数</strong>是「1 号在职<strong>且入职满 3 个月</strong>」。
           </div>
           <div>
-            <strong>「店长 / 技术店长 / 副店长」</strong>取自考核指标里登记的姓名（不随员工调岗变动），
-            <strong>「邀约数量」</strong>= 招聘面试登记表里当月面试、且招聘人是该店店长的记录数。
-            负数流失率表示当月净流入。
+            <strong>有副店长的门店会多出一行</strong>（斜体、店名后标「（副）」）：
+            该行的人数与流失率和上面店长行<strong>完全相同</strong>（都是按门店算的），
+            只有<strong>「邀约数量」换成副店长本人当月面试的人数</strong> —— 副店长是独立考核对象。
+            合计行的人数只按门店算一次，邀约数量两条都计。
+          </div>
+          <div>
+            <strong>门店之间调动频繁，所以按「统计月 1 号那天他在哪家店」归属</strong>：
+            从 A 店调到 B 店帮忙，A 店就减、B 店就加，<strong>不会两边重复计</strong>。
+            今后在软件里改员工门店时会自动记下这段任职历史；早于建档的历史数据按当前门店近似。
           </div>
         </div>
       </Alert>
@@ -132,7 +138,7 @@ export default async function AttritionPage({
             <tr className="bg-[#f7f9fc] text-[11.5px] font-medium text-slate-600">
               <th className="w-[46px] border-b border-r border-slate-200 px-2 py-1.5 text-center">序号</th>
               <th className="w-[160px] border-b border-r border-slate-200 px-2 py-1.5 text-left">门店名称</th>
-              <th className="w-[76px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">店长</th>
+              <th className="w-[76px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">管理者</th>
               <th className="w-[76px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">技术店长</th>
               <th className="w-[76px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">副店长</th>
               <th className="w-[84px] border-b border-r border-slate-200 bg-sky-50/60 px-2 py-1.5 text-center">实时人数</th>
@@ -144,21 +150,27 @@ export default async function AttritionPage({
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.sortOrder + r.storeName} className="hover:bg-brand-50/40">
+              <tr key={r.sortOrder + "-" + r.storeName + "-" + r.role} className="hover:bg-brand-50/40">
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-400">
                   {r.sortOrder}
                 </td>
-                <td className="border-b border-r border-slate-100 px-2 py-1.5 font-medium text-slate-700">
+                <td
+                  className={`border-b border-r border-slate-100 px-2 py-1.5 ${
+                    r.role === "DEPUTY_MANAGER" ? "pl-6 italic text-slate-500" : "font-medium text-slate-700"
+                  }`}
+                >
                   {r.storeName}
+                  {r.role === "DEPUTY_MANAGER" ? "（副）" : ""}
+                </td>
+                {/* 管理者姓名：店长行取店长/技术店长，副店长行取副店长 */}
+                <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
+                  {r.managerName || "—"}
                 </td>
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
-                  {r.managers.storeManager || "—"}
+                  {r.role === "STORE_MANAGER" ? r.managers.techManager || "—" : "—"}
                 </td>
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
-                  {r.managers.techManager || "—"}
-                </td>
-                <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
-                  {r.managers.deputyManager || "—"}
+                  {r.role === "STORE_MANAGER" ? r.managers.deputyManager || "—" : "—"}
                 </td>
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center font-semibold text-slate-800">
                   {r.monthStartHeadcount}
@@ -206,7 +218,7 @@ export default async function AttritionPage({
                 {pct(summary.overallRate)}
               </td>
               <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-600">
-                {rows.reduce((s, r) => s + r.invites, 0)}
+                {summary.invitesTotal}
               </td>
             </tr>
           </tbody>
@@ -214,13 +226,14 @@ export default async function AttritionPage({
       </div>
 
       <p className="text-[11.5px] leading-relaxed text-slate-400">
-        口径说明：全部数字从「在职 / 离职」实时统计，不落库 ——
-        员工一入职、离职、调岗，这里立刻变。
+        口径说明：全部数字从「在职 / 离职」实时统计，不落库 —— 员工一入职、离职、调岗，这里立刻变。
         「入职满 3 个月」按<strong>自然月加法</strong>判定（入职日 + 3 个自然月 ≤ 统计月 1 号）。
         ⚠️ 此口径比 Excel 更准确：Excel 靠解析「在职年限」文本列（如「3年2个月」）判断，
         而那个文本列是<strong>算到今天</strong>的时长，会把「8 月才入职、但到 9 月已满 3 个月」的人
         错误计入 8 月的月初人数。负数流失率表示当月净流入。
-        需要改店长姓名请到 <Link href="/settings/stores" className="text-brand-600 underline">基础设置</Link> 维护。
+        「店长 / 技术店长 / 副店长」取自考核指标里登记的姓名（不随员工调岗变动），
+        「邀约数量」= 招聘面试登记表里当月面试、且招聘人是该行管理者的记录数。
+        需要改管理者姓名请到 <Link href="/settings/stores" className="text-brand-600 underline">基础设置</Link> 维护。
       </p>
     </div>
   );

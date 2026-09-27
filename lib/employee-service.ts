@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
+import { recordStoreChange } from "./store-period-service";
 import { maskObject } from "./mask";
 import {
   EMPLOYEE_STATUS,
@@ -455,6 +456,24 @@ export async function createEmployee(input: Record<string, unknown>, operator?: 
     operator,
   });
 
+  // 任职门店历史（Stage 9.19）：新员工开**第一段**任职（从入职日开始，至今）
+  if (storeId) {
+    try {
+      await prisma.employeeStorePeriod.create({
+        data: {
+          employeeId: created.id,
+          storeId,
+          fromDate: created.hireDate ?? new Date(),
+          toDate: null,
+          source: "AUTO",
+          remark: "建档时写入的第一段任职",
+        },
+      });
+    } catch (e) {
+      console.error("[createEmployee] 首段任职记录失败", created.id, (e as Error).message);
+    }
+  }
+
   return created;
 }
 
@@ -528,6 +547,21 @@ export async function updateEmployee(
       detail: JSON.stringify({ changedFields: Object.keys(data) }),
     },
   });
+
+  // 任职门店历史（Stage 9.19）：改门店时自动记一段「旧店结束 + 新店开始」，
+  // 否则月初人数无从追溯（途虎门店之间调动频繁）。
+  // ⚠️ 用**独立**事务而非并入上面的 update —— 上面这条是裸 prisma（无事务），
+  //    硬并会把整个 update 包进事务、放大锁范围，批量编辑时尤其明显。
+  //    这里顺序执行：先成功改档案，再记历史；历史记失败不回滚档案（宁可少记不可卡住主流程）。
+  if ("storeId" in data && data.storeId !== existing.storeId) {
+    try {
+      // ⚠️ 必须把**变更前**的门店传进去：此刻档案已改成新店，
+      //    recordStoreChange 内部再查库会拿到新值 → 误判成「没换店」而不记账。
+      await recordStoreChange(prisma, id, data.storeId as number, existing.storeId);
+    } catch (e) {
+      console.error("[recordStoreChange] 任职门店历史记录失败", id, (e as Error).message);
+    }
+  }
 
   // 变更记录：逐字段 diff（第三阶段）—— 只写真正变化的字段
   const changes = diffFields(

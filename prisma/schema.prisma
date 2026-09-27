@@ -44,6 +44,7 @@ model Store {
   rules     DepartmentRule[]
   headcount StoreHeadcount?    // 该门店的满编目标（Stage 9.14）
   attrition AttritionIndicator? // 该门店的考核指标管理岗姓名（Stage 9.18）
+  storePeriods EmployeeStorePeriod[] // 该门店的员工任职历史（Stage 9.19）
 
   @@index([status])
 }
@@ -111,6 +112,47 @@ model AttritionIndicator {
 
   @@unique([storeId])
   @@index([sortOrder])
+}
+
+// ------------------------------------------------------------
+// 任职门店历史（Stage 9.19 新增）
+//
+// 解决的问题：途虎门店之间人员调动频繁（去别的店帮忙、待一阵调回、或调走不回来），
+// 而 Employee 只存**当前** storeId，导致：
+//   - 「月初人数」算不准（1 号那天他到底在哪个店？）
+//   - 同一人可能有多条档案、或两个店同时挂着他
+//
+// 设计：**一段任职 = 一行**（不是一个人一行）。
+//   employeeId  可空 —— 补录历史时可能还没建档
+//   storeId     这段期间所在的门店
+//   fromDate    开始日期（可空 = 未知，统计时按「早于一切」处理）
+//   toDate      结束日期（可空 = 至今仍在这家店）
+//   同一员工的多段任职**不允许时间重叠**，重叠即数据错误。
+//
+// 从「现在起」：
+//   改员工门店时自动记一段（与档案同事务，保证同生共死）。
+//   统计时**优先用本表**；表里没有的历史数据回退到 Employee 当前 storeId。
+// ------------------------------------------------------------
+model EmployeeStorePeriod {
+  id         Int       @id @default(autoincrement())
+  employeeId Int?
+  employee   Employee? @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  storeId    Int
+  store      Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  fromDate   DateTime? // 开始（null = 未知，按「早于一切」处理）
+  toDate     DateTime? // 结束（null = 至今仍在此店）
+
+  /// 来源：AUTO 软件内改门店自动记录 / MANUAL 人工补录 / MIGRATION 治理回填
+  source     String    @default("AUTO")
+  remark     String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([employeeId])
+  @@index([storeId])
+  @@index([fromDate])
+  @@index([toDate])
 }
 
 // ------------------------------------------------------------
@@ -318,6 +360,7 @@ model Employee {
 
   /** 该员工的字段变更历史（第三阶段新增，所有修改自动留痕） */
   histories EmployeeHistory[]
+  storePeriods EmployeeStorePeriod[] // 该员工的任职门店历史（Stage 9.19）
 
   /** 该员工的数据质量工单（第四阶段新增） */
   qualityIssues QualityIssue[]

@@ -1151,22 +1151,26 @@ async function main() {
       `http=${attrPage.status} 大小=${attrHtml.length}B`
     );
 
-    // 36 家门店 + 合计行
+    // 36 家门店 + 2 家有副店长的追加行 + 合计行
+    // （Stage 9.19：有副店长的门店会多出一行，人数/流失率相同、邀约数量换成副店长的）
     const attrBody = attrHtml.slice(attrHtml.indexOf("<tbody"));
     const attrRows = [...attrBody.matchAll(/<tr[\s\S]*?<\/tr>/g)]
       .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()))
       .filter((r) => r.length === 10);
+    const attrStoreRows = attrRows.slice(0, -1).filter((r) => !r[1].includes("（副）"));
+    const attrDepRows = attrRows.slice(0, -1).filter((r) => r[1].includes("（副）"));
     check(
       "S9-63",
-      "流失率表覆盖全部 36 家门店并含合计行",
-      attrRows.length === 37 && attrRows[attrRows.length - 1][1] === "所有门店合计",
-      `行数 ${attrRows.length}（36 店 + 1 合计）`
+      "流失率表 = 36 家门店 + 2 家副店长追加行 + 合计行",
+      attrRows.length === 39 && attrStoreRows.length === 36 && attrDepRows.length === 2 &&
+        attrRows[attrRows.length - 1][1] === "所有门店合计",
+      `总行 ${attrRows.length}（店长行 ${attrStoreRows.length} + 副店长行 ${attrDepRows.length} + 1 合计）；副店长行：${attrDepRows.map((r) => r[1]).join("、")}`
     );
 
-    // 公式核对：流失率 =（当月离职 − 当月入职）/ 月初人数
+    // 公式核对：流失率 =（当月离职 − 当月入职）/ 月初人数（逐店核对 36 家店长行）
     const parseNum = (s) => (s === "—" || s === "" ? 0 : Number(String(s).replace("%", "")));
     let formulaOk = 0;
-    for (const r of attrRows.slice(0, -1)) {
+    for (const r of attrStoreRows) {
       const base = parseNum(r[5]), res = parseNum(r[6]), hire = parseNum(r[7]);
       const shown = parseNum(r[8]);
       const expect = base > 0 ? ((res - hire) / base) * 100 : null;
@@ -1179,6 +1183,28 @@ async function main() {
       `${formulaOk}/36 家公式吻合`
     );
 
+    // 副店长行的人数/流失率必须与所属门店的店长行完全一致（只是考核对象不同）
+    const depMatch = attrDepRows.every((d) => {
+      const parent = attrStoreRows.find((s) => s[1] === d[1].replace("（副）", ""));
+      return parent && parent[5] === d[5] && parent[6] === d[6] && parent[7] === d[7] && parent[8] === d[8];
+    });
+    check(
+      "S9-66",
+      "副店长行的人数/当月离职/当月入职/流失率与所属门店店长行完全一致",
+      depMatch,
+      attrDepRows.map((d) => `${d[1]}：${d[2]}（店长 ${d[3]}）人数 ${d[5]} 邀约 ${d[9]}`).join("；")
+    );
+
+    // 合计行的人数不能因副店长行而翻倍
+    const sumHead = parseNum(attrRows[attrRows.length - 1][5]);
+    const sumOfStores = attrStoreRows.reduce((s, r) => s + parseNum(r[5]), 0);
+    check(
+      "S9-67",
+      "合计行人数只按门店算一次（副店长行不重复计入，否则总人数翻倍）",
+      sumHead === sumOfStores,
+      `合计 ${sumHead} vs 36 家门店相加 ${sumOfStores}`
+    );
+
     // 口径：满 3 个月用自然月加法；与 Excel 的差异应只来自「Excel 按今天算年限」这一缺陷
     const indicators = await prisma.attritionIndicator.count();
     check(
@@ -1186,6 +1212,53 @@ async function main() {
       "考核指标已导入 36 家（含 Excel 同名两行已合并：38 行 → 36 家）",
       indicators === 36,
       `AttritionIndicator ${indicators} 条`
+    );
+
+    // ---------- Stage 9.19：任职门店历史（S9-68） ----------
+    // 途虎门店之间调动频繁。改门店时必须自动记一段任职历史，
+    // 否则「1 号那天他在哪家店」永远算不出来。
+    const periodsBefore = await prisma.employeeStorePeriod.count();
+    const mover = await prisma.employee.findFirst({
+      where: { deletedAt: null, status: "ACTIVE", storeId: { not: null } },
+      select: { id: true, employeeId: true, storeId: true, name: true },
+    });
+    const otherStore = await prisma.store.findFirst({
+      where: { id: { not: mover.storeId }, status: "ACTIVE" },
+      select: { id: true, name: true },
+    });
+    const upd = await req(`/api/employees/${mover.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ storeId: otherStore.id }),
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const newPeriods = await prisma.employeeStorePeriod.findMany({
+      where: { employeeId: mover.id },
+      select: { storeId: true, toDate: true },
+    });
+    // 复原
+    await req(`/api/employees/${mover.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ storeId: mover.storeId }),
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const afterRestore = await prisma.employeeStorePeriod.findMany({
+      where: { employeeId: mover.id },
+      select: { storeId: true, toDate: true },
+    });
+    const restoredStore = await prisma.employee.findUnique({ where: { id: mover.id }, select: { storeId: true } });
+    // 清理本次测试写入的任职历史
+    await prisma.employeeStorePeriod.deleteMany({ where: { employeeId: mover.id } });
+
+    check(
+      "S9-68",
+      "改门店时自动记任职历史（旧段关闭 + 新段开始），复原后门店正确",
+      upd.status === 200 &&
+        newPeriods.length >= 1 &&
+        newPeriods.some((p) => p.storeId === otherStore.id && p.toDate === null) &&
+        afterRestore.some((p) => p.storeId === mover.storeId && p.toDate === null) &&
+        restoredStore?.storeId === mover.storeId,
+      `${mover.employeeId} ${mover.name}：调到 ${otherStore.name} 后新段 ${newPeriods.length} 条（含 1 条至今未结束）；` +
+        `复原后当前门店正确：${restoredStore?.storeId === mover.storeId}（测试任职历史已清理，表原有 ${periodsBefore} 条）`
     );
 
     // ---------- 新增员工页 ----------

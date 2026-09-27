@@ -1,5 +1,6 @@
 import { prisma } from "./prisma";
 import { addNaturalMonths } from "./tenure";
+import { storesOfManyAt } from "./store-period-service";
 
 /**
  * 门店人员流失率（Stage 9.18）
@@ -38,12 +39,23 @@ export interface MonthParam {
   month: string;
 }
 
+/**
+ * 流失率的一行 = 一家门店的**店长**。
+ * 若该店另有副店长，Excel 的惯例是**再插一行**：店名重复、店长列填副店长的名字、
+ * 其余「人数/流失率」与上一行完全相同，只把「邀约数量」换成副店长的面试数。
+ * （Excel 原文就是这么排的：R4 常平朗贝社区店-何小亮、R5 同店-王成龙；
+ *   「邀约数量」公式引用的列也随之从 C 换成 E。）
+ * `role` 用于页面区分「店长行 / 副店长行」。
+ */
 export interface AttritionRow {
   sortOrder: number;
   storeName: string;
-  /** 考核指标里的店长/技术店长/副店长姓名（Excel 手填，导入时存） */
+  /** 店长行 / 副店长行 */
+  role: "STORE_MANAGER" | "DEPUTY_MANAGER";
+  /** 本行对应的管理者姓名 */
+  managerName: string | null;
   managers: { storeManager: string | null; techManager: string | null; deputyManager: string | null };
-  /** 月初人数：1 号在职 且 入职满 3 个月 */
+  /** 月初人数：1 号在职 且 入职满 3 个月（按门店计，店长/副店长行相同） */
   monthStartHeadcount: number;
   /** 当月离职（且入职满 3 个月） */
   monthResigned: number;
@@ -51,7 +63,7 @@ export interface AttritionRow {
   monthHired: number;
   /** 流失率 =（当月离职 − 当月入职）/ 月初人数；月初人数为 0 时为 null */
   rate: number | null;
-  /** 邀约数量：当月面试且招聘人为该店店长 */
+  /** 邀约数量：当月面试且招聘人 = 本行 managerName */
   invites: number;
 }
 
@@ -60,6 +72,8 @@ export interface AttritionSummary {
   monthStartTotal: number;
   resignedTotal: number;
   hiredTotal: number;
+  /** 邀约数量合计（店长行 + 副店长行都计，两个管理者各招各的） */
+  invitesTotal: number;
   /** 全公司流失率 =（合计离职 − 合计入职）/ 合计月初人数 */
   overallRate: number | null;
   storesWithResign: number;
@@ -123,6 +137,7 @@ export async function getAttrition({ month }: MonthParam): Promise<{
   const emps = await prisma.employee.findMany({
     where: { deletedAt: null, status: { in: ["ACTIVE", "RESIGNED"] }, storeId: { not: null } },
     select: {
+      id: true,
       storeId: true,
       status: true,
       hireDate: true,
@@ -130,17 +145,38 @@ export async function getAttrition({ month }: MonthParam): Promise<{
     },
   });
 
+  /**
+   * 员工在某月的归属门店（Stage 9.19）。
+   *
+   * ⚠️ 途虎门店之间调动频繁，A 店的人可能被借到 B 店帮忙、调回、或调走不回来。
+   *    光看 Employee 当前的 storeId 算不出「1 号那天他在哪家店」。
+   *    这里**按统计月 1 号那天的任职归属**来判断（用 EmployeeStorePeriod 任职历史），
+   *    没有历史记录时回退到当前门店（视为长期在此店）。
+   *
+   * 用户确认的口径：**按当前门店计** —— 调走就从原店减、调入就给新店加，
+   * 绝不「两边都算」（会重复计数、总数虚高）。
+   */
+  const fallback = new Map<number, number | null>(emps.map((e) => [e.id, e.storeId]));
+  const storeAtStart = await storesOfManyAt(
+    emps.map((e) => e.id),
+    start,
+    fallback
+  );
+
   const byStore = new Map<number, typeof emps>();
   for (const e of emps) {
-    if (!byStore.has(e.storeId!)) byStore.set(e.storeId!, []);
-    byStore.get(e.storeId!)!.push(e);
+    const sid = storeAtStart.get(e.id) ?? e.storeId;
+    if (sid === null || sid === undefined) continue;
+    if (!byStore.has(sid)) byStore.set(sid, []);
+    byStore.get(sid)!.push(e);
   }
 
-  // ③ 邀约数量：当月面试记录，按招聘人（店长姓名）分组
+  // ③ 邀约数量：当月面试记录，按招聘人（管理者姓名）分组
   const invites = await getInvitesByRecruiter(start, end);
 
-  // ④ 逐店计算
-  const rows: AttritionRow[] = plans.map((p) => {
+  // ④ 逐店计算（有副店长的门店会产出 2 行）
+  const rows: AttritionRow[] = [];
+  for (const p of plans) {
     const list = byStore.get(p.storeId) ?? [];
 
     // 月初人数：1 号在职 且 入职满 3 个月
@@ -169,35 +205,56 @@ export async function getAttrition({ month }: MonthParam): Promise<{
       }
     }
 
-    // 邀约：Excel J 列 = COUNTIFS(招聘面试登记表!O=店长, F=当月)
-    // 店长列是手填姓名，若为空则退而用「技术店长」再试（Excel 各行取值列不同）
-    const inviteKey = p.storeManager ?? p.techManager ?? p.deputyManager ?? "";
-    const invitesCount = inviteKey ? invites.get(inviteKey) ?? 0 : 0;
-
     const rate =
       monthStartHeadcount > 0 ? (monthResigned - monthHired) / monthStartHeadcount : null;
+    const managers = {
+      storeManager: p.storeManager,
+      techManager: p.techManager,
+      deputyManager: p.deputyManager,
+    };
 
-    return {
+    // 店长行（副店长行沿用同一组人数与流失率）
+    const baseRow = {
       sortOrder: p.sortOrder,
       storeName: p.store.name,
-      managers: {
-        storeManager: p.storeManager,
-        techManager: p.techManager,
-        deputyManager: p.deputyManager,
-      },
+      managers,
       monthStartHeadcount,
       monthResigned,
       monthHired,
       rate,
-      invites: invitesCount,
     };
-  });
+    rows.push({
+      ...baseRow,
+      role: "STORE_MANAGER",
+      managerName: p.storeManager ?? p.techManager,
+      invites: (p.storeManager ?? p.techManager)
+        ? invites.get(p.storeManager ?? p.techManager!) ?? 0
+        : 0,
+    });
+
+    // 该店有副店长 → 追加一行，人数/流失率相同，只换邀约数量
+    if (p.deputyManager) {
+      rows.push({
+        ...baseRow,
+        role: "DEPUTY_MANAGER",
+        managerName: p.deputyManager,
+        invites: invites.get(p.deputyManager) ?? 0,
+      });
+    }
+  }
 
   // ⑤ 汇总
-  const monthStartTotal = rows.reduce((s, r) => s + r.monthStartHeadcount, 0);
-  const resignedTotal = rows.reduce((s, r) => s + r.monthResigned, 0);
-  const hiredTotal = rows.reduce((s, r) => s + r.monthHired, 0);
-  const withRate = rows.filter((r) => r.rate !== null).sort((a, b) => b.rate! - a.rate!);
+  // ⚠️ 副店长行的人数/流失率与店长行**完全相同**（同一个门店的数据），
+  //    汇总时**只能算一次**，否则总人数翻倍、整体流失率算错。
+  //    邀约数量则两条都要计（两个管理者各招各的）。
+  const storeRows = rows.filter((r) => r.role === "STORE_MANAGER");
+  const monthStartTotal = storeRows.reduce((s, r) => s + r.monthStartHeadcount, 0);
+  const resignedTotal = storeRows.reduce((s, r) => s + r.monthResigned, 0);
+  const hiredTotal = storeRows.reduce((s, r) => s + r.monthHired, 0);
+  const invitesTotal = rows.reduce((s, r) => s + r.invites, 0);
+  const withRate = rows
+    .filter((r) => r.rate !== null)
+    .sort((a, b) => b.rate! - a.rate!);
 
   return {
     rows,
@@ -206,10 +263,18 @@ export async function getAttrition({ month }: MonthParam): Promise<{
       monthStartTotal,
       resignedTotal,
       hiredTotal,
+      invitesTotal,
       overallRate: monthStartTotal > 0 ? (resignedTotal - hiredTotal) / monthStartTotal : null,
-      storesWithResign: rows.filter((r) => r.monthResigned > 0).length,
-      topWorst: withRate.slice(0, 3).map((r) => ({ storeName: r.storeName, rate: r.rate! })),
-      topBest: withRate.slice(-3).reverse().map((r) => ({ storeName: r.storeName, rate: r.rate! })),
+      storesWithResign: storeRows.filter((r) => r.monthResigned > 0).length,
+      topWorst: withRate
+        .filter((r) => r.role === "STORE_MANAGER")
+        .slice(0, 3)
+        .map((r) => ({ storeName: r.storeName, rate: r.rate! })),
+      topBest: withRate
+        .filter((r) => r.role === "STORE_MANAGER")
+        .slice(-3)
+        .reverse()
+        .map((r) => ({ storeName: r.storeName, rate: r.rate! })),
     },
     monthList: monthOptions(),
   };
