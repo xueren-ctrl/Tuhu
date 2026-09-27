@@ -291,6 +291,10 @@ async function main() {
         return tds.length ? tds[tds.length - 1] : null;
       };
       const beforeCell = await statusCellOfRow();
+      // ⚠️ 基线人数必须**实时取**，不能写死 289/1402 ——
+      //    否则每次修正历史数据（如把误判的离职改回在职）都会让本项假失败。
+      const onJobBefore = await sheetCount("在职");
+      const resignedBefore = await sheetCount("离职");
       const stRes = await changeStatus([cand.employee.id], "RESIGNED");
       const afterCell = await statusCellOfRow();
       const onJob = await sheetCount("在职");
@@ -302,9 +306,10 @@ async function main() {
           stRes.data.changed === 1 &&
           beforeCell === "已入职" &&
           afterCell === "离职" &&
-          onJob.count === 289 &&
-          resigned.count === 1402,
-        `状态列：${beforeCell} → ${afterCell}；在职 ${onJob.count} 离职 ${resigned.count}`
+          onJob.count === onJobBefore.count - 1 &&
+          resigned.count === resignedBefore.count + 1,
+        `状态列：${beforeCell} → ${afterCell}；在职 ${onJobBefore.count}→${onJob.count}（应 −1）、` +
+          `离职 ${resignedBefore.count}→${resigned.count}（应 +1）`
       );
       // 复原
       await changeStatus([cand.employee.id], "ACTIVE");
