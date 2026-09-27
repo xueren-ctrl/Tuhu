@@ -1152,19 +1152,23 @@ async function main() {
     );
 
     // 36 家门店 + 2 家有副店长的追加行 + 合计行
-    // （Stage 9.19：有副店长的门店会多出一行，人数/流失率相同、邀约数量换成副店长的）
+    // （Stage 9.19：有副店长的门店会多出一行，人数/流失率相同、邀约数量取副店长）
+    // 副店长行与 Excel 排法一致：**店名重复**、店长列留空、只在副店长列填名字。
     const attrBody = attrHtml.slice(attrHtml.indexOf("<tbody"));
     const attrRows = [...attrBody.matchAll(/<tr[\s\S]*?<\/tr>/g)]
       .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()))
       .filter((r) => r.length === 10);
-    const attrStoreRows = attrRows.slice(0, -1).filter((r) => !r[1].includes("（副）"));
-    const attrDepRows = attrRows.slice(0, -1).filter((r) => r[1].includes("（副）"));
+    const dataRows = attrRows.slice(0, -1);
+    // 副店长行 = 店长列为空、副店长列有值的行
+    const attrDepRows = dataRows.filter((r) => r[2] === "—" && r[4] !== "—");
+    const attrStoreRows = dataRows.filter((r) => !(r[2] === "—" && r[4] !== "—"));
     check(
       "S9-63",
       "流失率表 = 36 家门店 + 2 家副店长追加行 + 合计行",
       attrRows.length === 39 && attrStoreRows.length === 36 && attrDepRows.length === 2 &&
         attrRows[attrRows.length - 1][1] === "所有门店合计",
-      `总行 ${attrRows.length}（店长行 ${attrStoreRows.length} + 副店长行 ${attrDepRows.length} + 1 合计）；副店长行：${attrDepRows.map((r) => r[1]).join("、")}`
+      `总行 ${attrRows.length}（店长行 ${attrStoreRows.length} + 副店长行 ${attrDepRows.length} + 1 合计）；` +
+        `副店长行：${attrDepRows.map((r) => `${r[1]}-${r[4]}`).join("、")}`
     );
 
     // 公式核对：流失率 =（当月离职 − 当月入职）/ 月初人数（逐店核对 36 家店长行）
@@ -1185,14 +1189,19 @@ async function main() {
 
     // 副店长行的人数/流失率必须与所属门店的店长行完全一致（只是考核对象不同）
     const depMatch = attrDepRows.every((d) => {
-      const parent = attrStoreRows.find((s) => s[1] === d[1].replace("（副）", ""));
+      const parent = attrStoreRows.find((s) => s[1] === d[1]);
       return parent && parent[5] === d[5] && parent[6] === d[6] && parent[7] === d[7] && parent[8] === d[8];
     });
     check(
       "S9-66",
-      "副店长行的人数/当月离职/当月入职/流失率与所属门店店长行完全一致",
+      "副店长行：店名与店长行相同、店长列留空、名字只出现在副店长列，人数/流失率与店长行一致",
       depMatch,
-      attrDepRows.map((d) => `${d[1]}：${d[2]}（店长 ${d[3]}）人数 ${d[5]} 邀约 ${d[9]}`).join("；")
+      attrDepRows
+        .map((d) => {
+          const parent = attrStoreRows.find((s) => s[1] === d[1]);
+          return `${d[1]}：店长列=${d[2]} 副店长列=${d[4]} 人数${d[5]}(店长行${parent?.[5]}) 邀约${d[9]}(店长行${parent?.[9]})`;
+        })
+        .join("；")
     );
 
     // 合计行的人数不能因副店长行而翻倍
