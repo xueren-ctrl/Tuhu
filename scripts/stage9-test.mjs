@@ -1622,10 +1622,67 @@ async function main() {
     const navHomeHtml = await (await req("/")).text();
     check(
       "S9-85",
-      "侧边栏「统计与查询」已移除「门店人员查询」，其余 5 项均在",
+      "侧边栏「统计与查询」已移除「门店人员查询」，其余 6 项均在",
       !navHomeHtml.includes("门店人员查询") &&
-        ["首页看板", "视图总览", "门店人员编制", "人员分布明细", "人员流失率"].every((c) => navHomeHtml.includes(c)),
-      `侧边栏现有：首页看板 / 视图总览 / 门店人员编制 / 人员分布明细 / 人员流失率`
+        ["首页看板", "视图总览", "门店人员编制", "人员分布明细", "人员流失率", "调店记录"].every((c) =>
+          navHomeHtml.includes(c)
+        ),
+      `侧边栏现有：首页看板 / 视图总览 / 门店人员编制 / 人员分布明细 / 人员流失率 / 调店记录`
+    );
+
+    // ---------- Stage 9.26：调店记录页（S9-86 ~ S9-88） ----------
+    // 数据来自 EmployeeHistory 里 fieldName="storeId" 的行 —— 每次改门店自动写一条。
+    // ⚠️ 关键：老版本记录里门店存的是**店名文本**而非编号，
+    //    页面必须两种都认（先试 ID 解析、失败就当文本原样显示），
+    //    **绝不能把裸数字 ID 甩给用户看**。
+    const trfPage = await req("/transfers");
+    const trfHtml = (await trfPage.text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-86",
+      "调店记录页可访问，7 列（时间/员工/调出门店/→/调入门店/操作人/来源）齐全",
+      trfPage.status === 200 &&
+        ["时间", "员工", "调出门店", "调入门店", "操作人", "来源"].every((c) => trfHtml.includes(c)),
+      `HTTP ${trfPage.status}`
+    );
+
+    // 解析明细，逐行核对：店名必须是店名，不能是裸 ID
+    const trfBody = trfHtml.slice(trfHtml.indexOf("<tbody"));
+    const trfRows = [...trfBody.matchAll(/<tr[\s\S]*?<\/tr>/g)]
+      .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()))
+      .filter((r) => r.length === 7);
+    // 门店两列（index 2 / 4）若出现纯数字即说明没解析成店名
+    const bareId = trfRows.filter((r) => /^\d{2,4}$/.test(r[2]) || /^\d{2,4}$/.test(r[4]));
+    // 每行的时间/员工/操作人都不能空
+    const incomplete = trfRows.filter((r) => !r[0] || !r[1] || !r[5]);
+    // 与库里真实条数对账
+    const trfInDb = await prisma.employeeHistory.count({ where: { fieldName: "storeId" } });
+    check(
+      "S9-87",
+      `调店记录逐行完整（${trfRows.length} 行）：门店列全部为店名，无裸数字 ID，无空单元格`,
+      trfRows.length > 0 &&
+        bareId.length === 0 &&
+        incomplete.length === 0 &&
+        trfRows.length === Math.min(300, trfInDb),
+      `页面 ${trfRows.length} 行 / 库 ${trfInDb} 条；裸 ID ${bareId.length} 处（应 0）；空单元格 ${incomplete.length} 处（应 0）`
+    );
+
+    // 筛选：按姓名、按门店都要能真的过滤
+    const sampleName = trfRows[0]?.[1]?.split(" ")[0] ?? "";
+    const sampleStore = trfRows[0]?.[2] ?? "";
+    const byName = await req(`/transfers?q=${encodeURIComponent(sampleName)}`);
+    const byNameText = (await byName.text()).replace(/<!--[\s\S]*?-->/g, "");
+    const byStore = await req(`/transfers?store=${encodeURIComponent(sampleStore)}`);
+    const byStoreText = (await byStore.text()).replace(/<!--[\s\S]*?-->/g, "");
+    const countRows = (html) =>
+      [...(html.slice(html.indexOf("<tbody")).matchAll(/<tr[\s\S]*?<\/tr>/g))]
+        .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].length)
+        .filter((n) => n === 7).length;
+    const nAll = countRows(trfHtml), nName = countRows(byNameText), nStore = countRows(byStoreText);
+    check(
+      "S9-88",
+      "调店记录可按姓名、按门店筛选（命中数必须真的变少，且不为 0）",
+      byName.status === 200 && byStore.status === 200 && nName > 0 && nStore > 0 && nName <= nAll && nStore <= nAll,
+      `全部 ${nAll} → 按姓名「${sampleName}」${nName} 条 / 按门店「${sampleStore}」${nStore} 条`
     );
 
     // ---------- 新增员工页 ----------

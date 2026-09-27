@@ -15,6 +15,7 @@ const TITLE_MAP: { match: RegExp; title: string; sub?: string }[] = [
   // 现由 /distribution「人员分布明细」承担。
   { match: /^\/distribution$/, title: "人员分布明细", sub: "逐店列出各工种的全部在职人名，实时统计" },
   { match: /^\/attrition$/, title: "人员流失率", sub: "按门店考核指标统计，实时计算" },
+  { match: /^\/transfers$/, title: "调店记录", sub: "谁、哪天、从哪家店调到了哪家店" },
   { match: /^\/employees\/new$/, title: "新增员工", sub: "先选类型（门店 / 运营部），字段按对应表合并去重" },
   { match: /^\/headcount$/, title: "门店人员编制", sub: "现有人数实时统计自「在职」表，满编目标可人工调整" },
   { match: /^\/employees\/status$/, title: "更改员工状态", sub: "状态决定这个人出现在哪些表" },
