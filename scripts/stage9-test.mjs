@@ -1522,6 +1522,71 @@ async function main() {
         GRADE_COLS.map(([c], i) => `${distTotalRow[c]}/${gradeTotals[i]}`).join(" ")
     );
 
+    // ---------- Stage 9.24：归档 stage1~3 脚本时，把它们独有的 4 项搬过来 ----------
+    // 背景：`scripts/stage2-test.mjs` 等 4 个历史脚本在 Stage 6 加鉴权后失效
+    // （裸 fetch 不带 cookie → 写接口全 401），已移到 `scripts/archive/`。
+    // 它们的主体功能（跨表联动等）已被本脚本覆盖，但**以下 4 项当时无人测**，在此补齐。
+    const statRes = await req("/api/statistics");
+    const statData = (await statRes.json())?.data;
+    check(
+      "S9-80",
+      "/api/statistics 返回全部规定字段（总数/在职/离职/门店/部门/岗位）",
+      statRes.status === 200 &&
+        ["totalEmployees", "activeEmployees", "resignedEmployees", "storeCount", "departmentCount", "positionCount"]
+          .every((k) => typeof statData?.[k] === "number"),
+      `总数=${statData?.totalEmployees} 在职=${statData?.activeEmployees} 离职=${statData?.resignedEmployees} ` +
+        `门店=${statData?.storeCount} 部门=${statData?.departmentCount} 岗位=${statData?.positionCount}`
+    );
+
+    const detailRes = await req("/api/statistics?detail=1");
+    const dd = (await detailRes.json())?.data;
+    const empTotal = (await (await req("/api/employees?pageSize=1")).json())?.total;
+    const sumStore = (dd?.storeDistribution ?? []).reduce((s, r) => s + r.total, 0);
+    const sumDept = (dd?.departmentDistribution ?? []).reduce((s, r) => s + r.total, 0);
+    check(
+      "S9-81",
+      "分布统计口径自洽：门店人数合计 = 部门人数合计 = 员工总数",
+      detailRes.status === 200 &&
+        Array.isArray(dd?.storeDistribution) &&
+        Array.isArray(dd?.departmentDistribution) &&
+        Array.isArray(dd?.positionDistribution) &&
+        sumStore === empTotal &&
+        sumDept === empTotal,
+      `门店分布 ${dd?.storeDistribution?.length} 项合计 ${sumStore}；部门分布 ${dd?.departmentDistribution?.length} 项合计 ${sumDept}；` +
+        `员工总数 ${empTotal}`
+    );
+
+    // URL 参数驱动：刷新后分页/排序依然生效（同一页连续请求结果一致 = 服务端实时查询）
+    // ⚠️ 用真实页面「/sheets/在职」——`/employees/views/active` 在 Stage 9.3 已改成
+    //    旧地址跳转页（307 → /sheets/在职），不是列表页了。
+    const sheetUrl = `/sheets/${encodeURIComponent("在职")}?page=2&pageSize=20&sortBy=name&sortOrder=desc`;
+    const urlPaged = await req(sheetUrl);
+    const urlPagedText = await urlPaged.text();
+    const urlPaged2 = await req(sheetUrl);
+    const urlPaged2Text = await urlPaged2.text();
+    check(
+      "S9-82",
+      "URL 参数驱动：分页/排序在刷新后依然生效，且同一 URL 连续两次请求结果一致（服务端实时查询）",
+      urlPaged.status === 200 &&
+        urlPaged2.status === 200 &&
+        urlPagedText.includes("途虎") &&
+        // 两次请求必须给出同样的数据行，排除前端假数据 / 随机渲染
+        urlPagedText.replace(/<!--[\s\S]*?-->/g, "") === urlPaged2Text.replace(/<!--[\s\S]*?-->/g, ""),
+      `HTTP ${urlPaged.status} / ${urlPaged2.status}；两次响应一致=${
+        urlPagedText.replace(/<!--[\s\S]*?-->/g, "") === urlPaged2Text.replace(/<!--[\s\S]*?-->/g, "")
+      }`
+    );
+
+    // 「未分配」筛选：departmentId=__none__
+    const unassigned = await req("/api/employees?departmentId=__none__&pageSize=1");
+    const unassignedTotal = (await unassigned.json())?.total;
+    check(
+      "S9-83",
+      "支持「未分配」筛选（departmentId=__none__）",
+      unassigned.status === 200 && typeof unassignedTotal === "number" && unassignedTotal >= 0,
+      `未分配部门的员工 ${unassignedTotal} 人`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();
