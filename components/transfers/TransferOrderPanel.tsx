@@ -68,34 +68,12 @@ function EmpSearch({
   const [hi, setHi] = useState(0);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  // 已选中时只读显示，改选请先清空
-  if (value) {
-    return (
-      <div className="flex h-[30px] w-[260px] items-center gap-1.5 rounded border border-slate-300 bg-slate-50 px-2 text-[12.5px]">
-        <span className="font-medium text-slate-800">{value.name}</span>
-        <span className="text-[11px] text-slate-400">{value.employeeId}</span>
-        <span className="text-[11px] text-emerald-700">当前：{value.storeName ?? "未挂门店"}</span>
-        <button
-          type="button"
-          onClick={() => {
-            onPick(null);
-            setKw("");
-            setHits([]);
-          }}
-          className="ml-auto text-[11px] text-slate-400 hover:text-rose-600"
-          title="重新选择"
-        >
-          更换
-        </button>
-      </div>
-    );
-  }
-
-  // 防抖搜索
+  // 防抖搜索（Hook 区：以下所有 Hook 必须无条件执行，禁止在它们之前 return）
   useEffect(() => {
     const s = kw.trim();
-    if (!s) {
-      setHits([]);
+    if (!s || value) {
+      // 已选中员工时输入框是隐藏的，没必要再发请求
+      if (!s) setHits([]);
       return;
     }
     setLoading(true);
@@ -124,6 +102,33 @@ function EmpSearch({
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+
+  // ---- ⚠️ Hook 区结束，下面才可以写条件 return ----
+  // ⚠️⚠️ 这个 return 必须留在**所有 Hook 之后**。
+  //     曾经它被写在 useState 之后、useEffect 之前，结果选中员工的瞬间
+  //     本次渲染少跑 2 个 Hook → React 抛 "Rendered fewer hooks than expected"
+  //     → 整页 Application error。改动此处请跑：npm run check:hooks
+  if (value) {
+    return (
+      <div className="flex h-[30px] w-[260px] items-center gap-1.5 rounded border border-slate-300 bg-slate-50 px-2 text-[12.5px]">
+        <span className="font-medium text-slate-800">{value.name}</span>
+        <span className="text-[11px] text-slate-400">{value.employeeId}</span>
+        <span className="text-[11px] text-emerald-700">当前：{value.storeName ?? "未挂门店"}</span>
+        <button
+          type="button"
+          onClick={() => {
+            onPick(null);
+            setKw("");
+            setHits([]);
+          }}
+          className="ml-auto text-[11px] text-slate-400 hover:text-rose-600"
+          title="重新选择"
+        >
+          更换
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div ref={boxRef} className="relative w-[260px]">
@@ -214,6 +219,18 @@ function StoreSearch({
   const [hi, setHi] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // ⚠️ 同 EmpSearch：条件 return 必须在所有 Hook 之后，否则选中门店即崩。
+  const list = all.filter((s) => !kw.trim() || s.name.includes(kw.trim()));
+
+  // ---- 以下不再有任何 Hook ----
   if (value) {
     return (
       <div className="flex h-[30px] w-[210px] items-center gap-1.5 rounded border border-slate-300 bg-slate-50 px-2 text-[12.5px]">
@@ -228,16 +245,6 @@ function StoreSearch({
       </div>
     );
   }
-
-  const list = all.filter((s) => !kw.trim() || s.name.includes(kw.trim()));
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
 
   return (
     <div ref={ref} className="relative w-[210px]">

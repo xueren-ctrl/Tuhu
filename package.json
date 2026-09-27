@@ -29,6 +29,7 @@
     "test:stage8": "node scripts/stage8-test.mjs",
     "test:tenure": "tsx scripts/tenure-test.mjs",
     "check:auth": "node scripts/check-auth-coverage.mjs",
+    "check:hooks": "node scripts/check-react-hooks.mjs",
     "test:cleanup": "tsx scripts/cleanup-test-data.ts",
     "backup": "tsx scripts/backup-db.ts",
     "import:sheets": "tsx scripts/import-sheets.mjs",
