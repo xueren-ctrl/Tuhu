@@ -1509,17 +1509,28 @@ async function main() {
     );
 
     // 合计行：人数与工种列都与库实时聚合一致
-    const wantTotal = distActive.length;
-    const gradeTotals = GRADE_COLS.map(([, g]) =>
-      distActive.filter((e) => g.includes(String(e.jobGradeRaw ?? "").trim())).length
+    // ⚠️ 口径：页面**只统计编制表里的 36 家门店**（StoreHeadcount），
+    //    而全库有 67 家门店。若有在职员工挂在编制表外的门店（如「东城景湖春天」），
+    //    页面合计会**少于**全库在职数 —— 这是设计如此（与 Excel 编制表口径一致），不是 bug。
+    const inPlanStores = new Set(
+      (await prisma.storeHeadcount.findMany({ select: { storeId: true } })).map((x) => x.storeId)
     );
+    const planEmps = distActive.filter((e) => inPlanStores.has(e.storeId));
+    const wantTotal = planEmps.length;
+    const gradeTotals = GRADE_COLS.map(([, g]) =>
+      planEmps.filter((e) => g.includes(String(e.jobGradeRaw ?? "").trim())).length
+    );
+    const outsidePlan = distActive.length - planEmps.length;
     check(
       "S9-79",
-      "合计行的门店人数与 7 个工种人数与库实时聚合一致",
+      "合计行的门店人数与 7 个工种人数与「编制表内门店」实时聚合一致（编制表外门店不计入）",
       distTotalRow[2] === String(wantTotal) &&
         GRADE_COLS.every(([col], i) => distTotalRow[col] === String(gradeTotals[i])),
       `合计 人数${distTotalRow[2]}/${wantTotal}；工种 ` +
-        GRADE_COLS.map(([c], i) => `${distTotalRow[c]}/${gradeTotals[i]}`).join(" ")
+        GRADE_COLS.map(([c], i) => `${distTotalRow[c]}/${gradeTotals[i]}`).join(" ") +
+        (outsidePlan > 0
+          ? `（编制表外门店的在职 ${outsidePlan} 人不计入，与 Excel 编制表口径一致）`
+          : "")
     );
 
     // ---------- Stage 9.24：归档 stage1~3 脚本时，把它们独有的 4 项搬过来 ----------
@@ -1655,6 +1666,13 @@ async function main() {
     // 每行的时间/员工/操作人都不能空
     const incomplete = trfRows.filter((r) => !r[0] || !r[1] || !r[5]);
     // 与库里真实条数对账
+    // ⚠️ Stage 9.28 起默认视图会把「A→B→A」往返**折叠成一行**，
+    //    所以页面行数 ≤ 库内条数（差额 = 被折叠掉的往返）。
+    //    断言方向：页面行数 > 0、不超过库内条数、且 `?raw=1` 展开后行数 = 库内条数。
+    const trfRaw = await (await req("/transfers?raw=1")).text();
+    const trfRawRows = [...(trfRaw.slice(trfRaw.indexOf("<tbody")).matchAll(/<tr[\s\S]*?<\/tr>/g))]
+      .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].length)
+      .filter((n) => n === 7).length;
     const trfInDb = await prisma.employeeHistory.count({ where: { fieldName: "storeId" } });
     check(
       "S9-87",
@@ -1662,8 +1680,10 @@ async function main() {
       trfRows.length > 0 &&
         bareId.length === 0 &&
         incomplete.length === 0 &&
-        trfRows.length === Math.min(300, trfInDb),
-      `页面 ${trfRows.length} 行 / 库 ${trfInDb} 条；裸 ID ${bareId.length} 处（应 0）；空单元格 ${incomplete.length} 处（应 0）`
+        trfRows.length <= trfInDb &&
+        trfRawRows === trfInDb,
+      `折叠视图 ${trfRows.length} 行 / 展开视图 ${trfRawRows} 行 / 库 ${trfInDb} 条（差 ${trfInDb - trfRows.length} = 被折叠的往返）；` +
+        `裸 ID ${bareId.length} 处（应 0）；空单元格 ${incomplete.length} 处（应 0）`
     );
 
     // 筛选：按姓名、按门店都要能真的过滤
@@ -1721,6 +1741,134 @@ async function main() {
         clockSkew < 2,
       `页面最新一条显示「${latestShown}」，距服务器当前时间 ${Math.round(driftMin)} 分钟；` +
         `与库里真实时刻的时钟差 ${clockSkew} 分钟（应 <2；若错用 UTC 会是 480）`
+    );
+
+    // ---------- Stage 9.28：调店单（S9-90 ~ S9-93） ----------
+    // 解决「店长说调去、几天后又说不去」的反复：登记待生效单 → 店长改口就作废，
+    // **门店完全不用动**。全程走真实 HTTP，验证副作用。
+    /** req() 返回 Response，包成 { status, json } 便于断言 */
+    const api = async (method, path, payload) => {
+      const r = await req(path, { method, body: JSON.stringify(payload) });
+      return { status: r.status, json: await r.json().catch(() => ({})) };
+    };
+    const ordEmp = await prisma.employee.findFirst({
+      where: { deletedAt: null, status: "ACTIVE", storeId: { not: null } },
+      select: { id: true, name: true, storeId: true },
+    });
+    const ordTarget = await prisma.store.findFirst({
+      where: { status: "ACTIVE", id: { not: ordEmp.storeId } },
+      select: { id: true, name: true },
+    });
+    const storeNameOf = async (id) =>
+      (await prisma.employee.findUnique({ where: { id }, select: { store: { select: { name: true } } } })).store?.name;
+    const storeBefore = await storeNameOf(ordEmp.id);
+    // ⚠️ 先清掉该员工可能残留的待生效单（上次失败会留下），
+    //    否则「同一员工不能有两张待生效单」会让本组测试直接跑不下去。
+    await prisma.transferOrder.deleteMany({ where: { employeeId: ordEmp.id, status: "PENDING" } });
+    const hadPendingBefore = 0;
+
+    // ① 登记一张未来生效单 → 门店**不应**变动
+    const mk = await api("POST", "/api/transfers", {
+      employeeId: ordEmp.id,
+      toStoreId: ordTarget.id,
+      effectiveDate: "2099-12-31",
+      reason: "S9-30 店长告知调去支援",
+    });
+    const ordId = mk.json?.data?.orderId;
+    const storeAfterMk = await storeNameOf(ordEmp.id);
+    // ② 不填原因作废 → 必须被拒
+    const cancelNoReason = await api("PUT", "/api/transfers", { action: "cancel", orderId: ordId, voidReason: "" });
+    // ③ 填原因作废 → 成功，且门店**仍未动过**
+    const cancel = await api("PUT", "/api/transfers", {
+      action: "cancel",
+      orderId: ordId,
+      voidReason: "S9-30 店长说不去了",
+    });
+    const storeAfterCancel = await storeNameOf(ordEmp.id);
+    const ordRow = await prisma.transferOrder.findUnique({ where: { id: ordId } });
+    check(
+      "S9-90",
+      "登记待生效调店单时门店不变；作废必须填原因；作废后门店依然没动过（业务反复的标准场景）",
+      mk.status === 200 &&
+        mk.json?.data?.status === "PENDING" &&
+        storeAfterMk === storeBefore &&
+        cancelNoReason.status === 409 &&
+        cancel.status === 200 &&
+        ordRow?.status === "CANCELLED" &&
+        ordRow?.voidReason === "S9-30 店长说不去了" &&
+        storeAfterCancel === storeBefore,
+      `登记后门店 ${storeAfterMk}（应=${storeBefore}）；空原因作废 HTTP ${cancelNoReason.status}（应 409）；` +
+        `填原因作废 → ${ordRow?.status}/${ordRow?.voidReason}；作废后门店 ${storeAfterCancel}`
+    );
+
+    // ④ 同一员工不能有两张待生效单
+    const mk2 = await api("POST", "/api/transfers", {
+      employeeId: ordEmp.id,
+      toStoreId: ordTarget.id,
+      effectiveDate: "2099-12-30",
+    });
+    const dup = await api("POST", "/api/transfers", {
+      employeeId: ordEmp.id,
+      toStoreId: ordTarget.id,
+      effectiveDate: "2099-12-29",
+    });
+    check(
+      "S9-91",
+      "同一员工不能同时存在两张待生效调店单（避免互相冲突）",
+      mk2.status === 200 && dup.status === 409 && dup.json?.code === "PENDING_EXISTS",
+      `第一张 HTTP ${mk2.status}；第二张 HTTP ${dup.status}（${dup.json?.code || "无 code"}）`
+    );
+
+    // ⑤ 立即生效 + 撤销回退
+    // ⚠️ 先清掉 S9-91 留下的待生效单，否则「立即生效」会被
+    //    「同一员工不能有两张待生效单」规则挡下。
+    await prisma.transferOrder.deleteMany({ where: { employeeId: ordEmp.id, status: "PENDING" } });
+    const ordNow = await api("POST", "/api/transfers", {
+      employeeId: ordEmp.id,
+      toStoreId: ordTarget.id,
+      reason: "S9-30 立即生效测试",
+    });
+    const storeNow = await storeNameOf(ordEmp.id);
+    const rev = await api("PUT", "/api/transfers", {
+      action: "reverse",
+      orderId: ordNow.json?.data?.orderId,
+      voidReason: "S9-30 登记错了",
+    });
+    const storeAfterRev = await storeNameOf(ordEmp.id);
+    const revRow = await prisma.transferOrder.findUnique({ where: { id: ordNow.json?.data?.orderId } });
+    check(
+      "S9-92",
+      "立即生效会真的改门店；撤销后门店自动回退且单据标记 REVERSED（手滑改错的标准场景）",
+      ordNow.status === 200 &&
+        ordNow.json?.data?.status === "EFFECTED" &&
+        storeNow === ordTarget.name &&
+        rev.status === 200 &&
+        storeAfterRev === storeBefore &&
+        revRow?.status === "REVERSED",
+      `立即生效：门店 ${storeBefore} → ${storeNow}；撤销后 → ${storeAfterRev}（应=${storeBefore}）；单据 ${revRow?.status}`
+    );
+
+    // ⑥ 往返记录折叠（页面把「A→B→A」合并成一行，且不删数据）
+    const trfFolded = await (await req("/transfers")).text();
+    const rawParam = trfFolded.includes("去了又调回（净变动 = 0");
+    const rawExpanded = await (await req("/transfers?raw=1")).text();
+    const rawHasNormal = rawExpanded.includes("净变动 = 0") === false;
+    check(
+      "S9-93",
+      "调店记录把「A→B→A」往返折叠成一行（可展开），且折叠只影响显示不删数据",
+      rawParam && rawHasNormal,
+      `默认视图有往返折叠行=${rawParam}；?raw=1 展开后无折叠标记=${rawHasNormal}；` +
+        `库内 storeId 记录仍为 ${await prisma.employeeHistory.count({ where: { fieldName: "storeId" } })} 条（未删）`
+    );
+
+    // 清理本组测试单据
+    await prisma.transferOrder.deleteMany({ where: { employeeId: ordEmp.id } });
+    const pendAfter = await prisma.transferOrder.count({ where: { employeeId: ordEmp.id, status: "PENDING" } });
+    check(
+      "S9-94",
+      "测试调店单已清理（生产零残留），员工门店复原",
+      pendAfter === hadPendingBefore && (await storeNameOf(ordEmp.id)) === storeBefore,
+      `剩余待生效 ${pendAfter} 条（应 ${hadPendingBefore}）；${ordEmp.name} 门店 = ${await storeNameOf(ordEmp.id)}`
     );
 
     // ---------- 新增员工页 ----------

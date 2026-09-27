@@ -43,7 +43,8 @@
     "tunnel:status": "node -e \"try{const l=require('fs').readFileSync('logs/tunnel-url.txt','utf8').split('\\n');console.log('当前外网地址:',l.find(x=>x.startsWith('https://'))||'(隧道未运行)')}catch(e){console.log('当前外网地址: (隧道未运行)');}\"",
     "import:headcount": "node scripts/import-headcount.mjs",
     "import:attrition:baseline": "node scripts/import-attrition-baseline.mjs",
-    "snapshot:attrition:baseline": "node scripts/snapshot-attrition-baseline.mjs"
+    "snapshot:attrition:baseline": "node scripts/snapshot-attrition-baseline.mjs",
+    "transfers:run-due": "tsx scripts/run-due-transfers.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

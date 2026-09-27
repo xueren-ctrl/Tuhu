@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { getTransfers } from "@/lib/transfer-service";
+import { foldRoundTrips } from "@/lib/transfer-fold";
 import { formatDateTime } from "@/lib/format";
+import { prisma } from "@/lib/prisma";
+import { STATUS_LABEL } from "@/lib/transfer-order-service";
+import TransferOrderPanel from "@/components/transfers/TransferOrderPanel";
 import { Card, Alert, Button } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +51,66 @@ export default async function TransfersPage({
   });
 
   const hasFilter = Boolean(keyword || storeKeyword || onlyReal);
+
+  /**
+   * 折叠「改过去又改回」的往返噪音（Stage 9.28）。
+   * 判定：同一人、A→B 之后紧接着 B→A，**间隔 ≤ 48 小时** → 净变动为 0。
+   * 数据一条不删，只是合并成一行显示，让真实调店能被看见。
+   *
+   * `?raw=1` 可展开全部往返明细（审计/排查时需要）。
+   */
+  const showRaw = one("raw") === "1";
+  const rawRecords = records;
+  const folded = showRaw ? [] : foldRoundTrips(records);
+  const displayRows = showRaw
+    ? rawRecords.map((r) => ({ ...r, at: r.operatedAt, isRoundTrip: false as const, tripCount: 0, minutes: 0 }))
+    : folded.map((r) =>
+        r.kind === "roundtrip"
+          ? {
+              id: r.id,
+              at: r.at,
+              employeeId: r.employeeId,
+              employeeName: r.employeeName,
+              employeeCode: r.employeeCode,
+              fromStore: r.store,
+              toStore: null,
+              operator: r.operators,
+              source: r.source,
+              isNoise: r.isNoise,
+              batchKey: null,
+              isRoundTrip: true as const,
+              tripCount: r.tripCount,
+              minutes: r.minutes,
+            }
+          : r
+      );
+  const roundTripCount = showRaw ? 0 : folded.filter((r) => r.kind === "roundtrip").length;
+
+  // 调店单 + 登记需要的员工/门店下拉
+  const [orders, empOpts, storeOpts] = await Promise.all([
+    prisma.transferOrder.findMany({
+      orderBy: [{ status: "asc" }, { effectiveDate: "desc" }],
+      include: {
+        employee: { select: { id: true, name: true, employeeId: true } },
+        fromStore: { select: { id: true, name: true } },
+        toStore: { select: { id: true, name: true } },
+      },
+    }),
+    prisma.employee.findMany({
+      where: { deletedAt: null, status: "ACTIVE" },
+      select: { id: true, name: true, employeeId: true, storeId: true, store: { select: { name: true } } },
+      orderBy: { name: "asc" },
+      take: 500,
+    }),
+    prisma.store.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
+  ]);
+
+  const pendingCount = orders.filter((o) => o.status === "PENDING").length;
+
   const qs = (patch: Record<string, string | undefined>) => {
     const p = new URLSearchParams();
     const merged: Record<string, string | undefined> = { q: keyword, store: storeKeyword, real: onlyReal ? "1" : undefined, ...patch };
@@ -62,6 +126,40 @@ export default async function TransfersPage({
         <p className="mt-0.5 text-[12.5px] text-slate-500">
           共 {summary.total} 条 · 涉及 {summary.employeeCount} 人 · 单个编辑与批量编辑都会自动记录
         </p>
+      </div>
+
+      {/* ① 调店单（登记 / 待生效 / 作废 / 撤销）—— Stage 9.28 */}
+      <div>
+        <div className="mb-1.5 flex items-center gap-2">
+          <h2 className="text-[14px] font-medium text-slate-700">调店单</h2>
+          {pendingCount > 0 ? (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800">
+              {pendingCount} 张待生效
+            </span>
+          ) : null}
+        </div>
+        <TransferOrderPanel
+          orders={orders.map((o) => ({
+            id: o.id,
+            status: o.status as "PENDING" | "EFFECTED" | "CANCELLED" | "REVERSED",
+            statusLabel: STATUS_LABEL[o.status as keyof typeof STATUS_LABEL] ?? o.status,
+            employee: { id: o.employee.id, name: o.employee.name, code: o.employee.employeeId },
+            fromStore: o.fromStore,
+            toStore: o.toStore,
+            effectiveDate: o.effectiveDate.toISOString().slice(0, 10),
+            reason: o.reason,
+            voidReason: o.voidReason,
+            createdBy: o.createdBy,
+          }))}
+          employees={empOpts.map((e) => ({
+            id: e.id,
+            name: e.name,
+            code: e.employeeId,
+            storeId: e.storeId,
+            storeName: e.store?.name ?? null,
+          }))}
+          stores={storeOpts}
+        />
       </div>
 
       {/* 速览 */}
@@ -182,8 +280,20 @@ export default async function TransfersPage({
         </div>
       ) : null}
 
-      {/* 明细表 */}
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      {/* ② 历史明细（「改过去又改回」的往返已折叠合并成一行） */}
+      <div>
+        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-[14px] font-medium text-slate-700">历史调店明细</h2>
+          {roundTripCount > 0 ? (
+            <Link
+              href={qs({ raw: showRaw ? undefined : "1" })}
+              className="text-[11.5px] text-brand-600 underline hover:text-brand-700"
+            >
+              {showRaw ? "按折叠方式显示" : `展开 ${roundTripCount} 组往返明细`}
+            </Link>
+          ) : null}
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
         <table className="w-full min-w-[820px] border-collapse text-[12.5px]">
           <thead>
             <tr className="bg-[#f7f9fc] text-[11.5px] font-medium text-slate-600">
@@ -197,14 +307,40 @@ export default async function TransfersPage({
             </tr>
           </thead>
           <tbody>
-            {records.length === 0 ? (
+            {displayRows.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-3 py-10 text-center text-slate-400">
                   {hasFilter ? "没有符合条件的记录" : "暂无调店记录"}
                 </td>
               </tr>
             ) : (
-              records.map((r) => (
+              displayRows.map((r) =>
+                r.isRoundTrip ? (
+                  <tr key={`rt-${r.id}`} className="bg-slate-50/60">
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center tabular-nums text-slate-400">
+                      {ymd(r.at)}
+                    </td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5">
+                      <Link
+                        href={`/employees/${r.employeeId}`}
+                        className="font-medium text-slate-500 hover:text-brand-600 hover:underline"
+                      >
+                        {r.employeeName}
+                      </Link>
+                    </td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-slate-500">
+                      {r.fromStore ?? "（未挂门店）"}
+                    </td>
+                    <td className="border-b border-r border-slate-100 px-1 py-1.5 text-center text-slate-300">↔</td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-slate-500">
+                      去了又调回（净变动 = 0 · {r.tripCount} 次 · {r.minutes} 分钟内）
+                    </td>
+                    <td className="border-b border-r border-slate-100 px-2 py-1.5 text-slate-400">{r.operator}</td>
+                    <td className="border-b border-slate-100 px-2 py-1.5 text-center">
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">往返</span>
+                    </td>
+                  </tr>
+                ) : (
                 <tr key={r.id} className="hover:bg-brand-50/40">
                   <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center tabular-nums text-slate-500">
                     {ymd(r.operatedAt)}
@@ -240,10 +376,12 @@ export default async function TransfersPage({
                     )}
                   </td>
                 </tr>
-              ))
+                )
+              )
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       {records.length >= 300 ? (
