@@ -39,6 +39,7 @@ export default async function OtherEmployeesPage({
       emptyText="暂无状态为「其他」的员工"
       columns={[
         "name",
+        "storeNameRaw",
         "position",
         "hireDate",
         "phone",

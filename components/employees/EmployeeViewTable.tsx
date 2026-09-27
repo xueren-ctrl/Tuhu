@@ -122,7 +122,15 @@ const COLUMNS: Record<ViewColumnKey, ColumnDef> = {
   dormitoryWaiver: { key: "dormitoryWaiver", label: "宿舍免责协议", className: "w-[116px]" },
   onboardingMedical: { key: "onboardingMedical", label: "入职体检", className: "w-[92px]" },
   // Stage 7.3.5：「数据库」全表 —— 完整原始字段
-  storeNameRaw: { key: "storeNameRaw", label: "门店(原文)", className: "min-w-[140px]" },
+  /**
+   * 「所属门店」= 员工在 Excel 里原本写的门店（`storeNameRaw`，原始证据）。
+   *
+   * 为什么要单独一列（Stage 9.17）：
+   *   「其他」表里这批人的 `storeId` 被门店治理改指向了占位门店「其他」，
+   *   所以普通的「门店」列显示的全是「其他」，看不出这些人原本属于哪家店。
+   *   `storeNameRaw` 没被治理覆盖，「骏达中路 / 常马路」这些真实门店名都还在。
+   */
+  storeNameRaw: { key: "storeNameRaw", label: "所属门店", className: "min-w-[140px]" },
   departmentNameRaw: { key: "departmentNameRaw", label: "部门(原文)", className: "min-w-[110px]" },
   jobGradeRaw: { key: "jobGradeRaw", label: "工种(原文)", className: "min-w-[120px]" },
   ageRaw: { key: "ageRaw", label: "年龄(原文)", className: "w-[92px]" },
