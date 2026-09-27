@@ -783,12 +783,21 @@ export async function batchUpdateEmployees(
         continue;
       }
 
+      /** 本次要写入的门店（null = 改为无门店，不记任职历史） */
+      const newStoreId = ("storeId" in cleanPatch ? (cleanPatch.storeId as number | null) : null);
+
       // ① 档案修改（事务内）
       await t.employee.update({
         where: { id: e.id },
         data,
         select: { storeId: true, departmentId: true, positionId: true },
       });
+      // ①-2 任职门店历史（Stage 9.20）：**批量改门店也必须记**，
+      //      否则「月初人数」会算不准 —— 而批量编辑恰恰是日常调动最常用的入口。
+      //      放在同一事务里：记不上就整批回滚，绝不出现「改了门店但没记历史」。
+      if (newStoreId !== null && newStoreId !== e.storeId) {
+        await recordStoreChange(t, e.id, newStoreId, e.storeId);
+      }
       // ② 变更历史（同一事务，写失败 → 整批回滚）
       await recordEmployeeHistory({
         employeeId: e.id,

@@ -1294,37 +1294,66 @@ async function main() {
         `复原后当前门店正确：${restoredStore?.storeId === mover.storeId}（测试任职历史已清理，表原有 ${periodsBefore} 条）`
     );
 
-    // ---------- Stage 9.20：任职历史回填与「按当前门店」口径的验证（S9-70） ----------
-    // 回填 249 段后，49 位有多段档案的在职员工用任职历史算出的 8/1 归属
-    // 与当前门店 100% 一致 → 证明「按当前门店」这个近似本来就是对的。
-    const cut0801 = new Date("2026-08-01T00:00:00.000Z");
+    // ---------- Stage 9.20：批量编辑改门店也必须记任职历史（S9-70 / S9-71） ----------
+    // 背景：用户决定「历史不管，从现在起」—— 回填的 249 段已删除，
+    // 今后只靠「在软件里改门店时自动记录」来保证流失率准确。
+    // ⚠️ 而**批量编辑才是日常调动最常用的入口**，它原先根本不记账（重大漏洞，已补）。
     const allPeriods = await prisma.employeeStorePeriod.findMany({
-      select: {
-        employeeId: true, storeId: true, fromDate: true, toDate: true,
-        employee: { select: { storeId: true } },
-      },
+      select: { employeeId: true, storeId: true, fromDate: true, toDate: true, source: true },
     });
-    const grouped = new Map();
-    for (const x of allPeriods) {
-      if (!grouped.has(x.employeeId)) grouped.set(x.employeeId, []);
-      grouped.get(x.employeeId).push(x);
-    }
-    let atDateSame = 0;
-    let atDateDiff = 0;
-    for (const [, segs] of grouped) {
-      const hit = segs.find(
-        (s) => (s.toDate === null || s.toDate > cut0801) && (s.fromDate === null || s.fromDate <= cut0801)
-      );
-      if (!hit) continue;
-      if (hit.storeId === segs[0].employee.storeId) atDateSame++;
-      else atDateDiff++;
-    }
     check(
       "S9-70",
-      "任职历史回填后，用历史算出的 8/1 归属与当前门店一致（验证「按当前门店」口径正确）",
-      allPeriods.length >= 200 && atDateDiff === 0,
-      `任职历史 ${allPeriods.length} 段；能定位 8/1 归属 ${atDateSame + atDateDiff} 人，` +
-        `一致 ${atDateSame} / 不一致 ${atDateDiff}`
+      "历史回填数据已按用户要求清空（今后只记新的调动）",
+      allPeriods.filter((x) => x.source === "MIGRATION").length === 0,
+      `MIGRATION（回填）剩余 ${allPeriods.filter((x) => x.source === "MIGRATION").length} 条（应为 0）；` +
+        `AUTO（软件内记录）${allPeriods.filter((x) => x.source === "AUTO").length} 条`
+    );
+
+    const batchMovers = await prisma.employee.findMany({
+      where: { deletedAt: null, status: "ACTIVE", storeId: { not: null } },
+      take: 2,
+      orderBy: { id: "asc" },
+      select: { id: true, storeId: true, name: true },
+    });
+    const batchTarget = await prisma.store.findFirst({
+      where: { id: { notIn: batchMovers.map((e) => e.storeId) }, status: "ACTIVE" },
+      select: { id: true, name: true },
+    });
+    const perBeforeBatch = await prisma.employeeStorePeriod.count({
+      where: { employeeId: { in: batchMovers.map((e) => e.id) } },
+    });
+    // ⚠️ 批量接口的参数是**平铺**的（storeId），不是嵌套在 patch 里
+    const batchPut = await req("/api/employees/batch", {
+      method: "POST",
+      body: JSON.stringify({ ids: batchMovers.map((e) => e.id), storeId: batchTarget.id }),
+    });
+    const perAfterBatch = await prisma.employeeStorePeriod.findMany({
+      where: { employeeId: { in: batchMovers.map((e) => e.id) } },
+      select: { employeeId: true, storeId: true, toDate: true, source: true },
+    });
+    // 复原
+    for (const e of batchMovers) {
+      await req("/api/employees/batch", {
+        method: "POST",
+        body: JSON.stringify({ ids: [e.id], storeId: e.storeId }),
+      });
+    }
+    const afterBatchRestore = await prisma.employee.findMany({
+      where: { id: { in: batchMovers.map((e) => e.id) } },
+      select: { id: true, storeId: true },
+    });
+    await prisma.employeeStorePeriod.deleteMany({
+      where: { employeeId: { in: batchMovers.map((e) => e.id) } },
+    });
+    check(
+      "S9-71",
+      "批量编辑改门店时同样记任职历史（日常调动最常用的入口，原先完全没记）",
+      batchPut.status === 200 &&
+        perAfterBatch.length - perBeforeBatch === batchMovers.length &&
+        perAfterBatch.filter((p) => p.storeId === batchTarget.id && p.toDate === null).length === batchMovers.length &&
+        afterBatchRestore.every((r, i) => r.storeId === batchMovers[i].storeId),
+      `批量调动 ${batchMovers.length} 人 → ${batchTarget.name}（HTTP ${batchPut.status}）：` +
+        `新增任职历史 ${perAfterBatch.length - perBeforeBatch} 条；复原后门店正确：${afterBatchRestore.every((r, i) => r.storeId === batchMovers[i].storeId)}`
     );
 
     // ---------- 新增员工页 ----------
