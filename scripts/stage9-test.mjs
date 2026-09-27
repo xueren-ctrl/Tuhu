@@ -1726,21 +1726,25 @@ async function main() {
       orderBy: { operatedAt: "desc" },
       select: { operatedAt: true },
     });
-    // 页面显示的时刻，与库里真实时刻的墙上时钟差（分钟）；本地时区下应 < 1
-    const shownMin = parsedShown.getHours() * 60 + parsedShown.getMinutes();
-    const realMin =
-      latestReal.operatedAt.getUTCHours() * 60 + latestReal.operatedAt.getUTCMinutes() +
-      new Date().getTimezoneOffset() / -60 * 60;
-    const clockSkew = Math.abs(shownMin - realMin);
+    // ⚠️ 要比的是**完整时刻**（含日期），不能只比「时分」——
+    //    否则跨零点时新旧两天同一时刻会算出 1440 分钟的假差值。
+    //    库里 `operatedAt` 是标准 UTC 瞬时值，**直接用本地 getter 读就是北京时间**
+    //    （和页面 `formatDateTime` 完全同一套算法）。
+    const d = latestReal.operatedAt;
+    const pad = (v) => String(v).padStart(2, "0");
+    const realStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const shownStr = latestShown.slice(0, 16);
+    // 允许 1 分钟误差（页面渲染与读取之间可能跨过整分）
+    const driftSec = Math.abs(new Date(shownStr.replace(" ", "T")).getTime() - new Date(realStr.replace(" ", "T")).getTime()) / 1000;
     check(
       "S9-89",
       "调店记录的时间用**本地时区**显示（不是 UTC，差 8 小时）",
       /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(latestShown) &&
         !Number.isNaN(parsedShown.getTime()) &&
         driftMin < 720 &&
-        clockSkew < 2,
-      `页面最新一条显示「${latestShown}」，距服务器当前时间 ${Math.round(driftMin)} 分钟；` +
-        `与库里真实时刻的时钟差 ${clockSkew} 分钟（应 <2；若错用 UTC 会是 480）`
+        driftSec < 90,
+      `页面显示「${shownStr}」，库里真实时刻换算成本地时区是「${realStr}」，相差 ${Math.round(driftSec)} 秒（应 <90）；` +
+        `距当前 ${Math.round(driftMin)} 分钟（若错用 UTC 取值这里会是 480）`
     );
 
     // ---------- Stage 9.28：调店单（S9-90 ~ S9-93） ----------
@@ -1753,7 +1757,8 @@ async function main() {
     };
     const ordEmp = await prisma.employee.findFirst({
       where: { deletedAt: null, status: "ACTIVE", storeId: { not: null } },
-      select: { id: true, name: true, storeId: true },
+      // employeeId 必须 select —— S9-96 要用它验证「按工号也能搜到」
+      select: { id: true, name: true, storeId: true, employeeId: true },
     });
     const ordTarget = await prisma.store.findFirst({
       where: { status: "ACTIVE", id: { not: ordEmp.storeId } },
@@ -1869,6 +1874,49 @@ async function main() {
       "测试调店单已清理（生产零残留），员工门店复原",
       pendAfter === hadPendingBefore && (await storeNameOf(ordEmp.id)) === storeBefore,
       `剩余待生效 ${pendAfter} 条（应 ${hadPendingBefore}）；${ordEmp.name} 门店 = ${await storeNameOf(ordEmp.id)}`
+    );
+
+    // ---------- Stage 9.29：登记调店改为「手动输入 + 显示当前门店」（S9-95 ~ S9-96） ----------
+    // 用户反馈：「员工要下拉一个一个找太难了，改成手动输入，
+    // 之后还要显示现在所在门店，这样我才能知道现在是哪个店的」
+    const trfPage2 = await req("/transfers");
+    const trfHtml2 = (await trfPage2.text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-95",
+      "登记调店的员工/门店都改为手动输入联想（页面不再有 <select> 下拉）",
+      trfPage2.status === 200 &&
+        !trfHtml2.includes("<select") &&
+        trfHtml2.includes("员工（输入姓名或工号）") &&
+        trfHtml2.includes("输入姓名或工号，如：") &&
+        trfHtml2.includes("输入门店名，如："),
+      `页面 <select> 数量 ${(trfHtml2.match(/<select/g) || []).length}（应 0）；` +
+        `姓名/工号搜索框与门店搜索框均已就位`
+    );
+
+    // 联想搜索接口：按姓名 / 工号都能搜到，且**返回当前所在门店**（这是用户明确要的）
+    // ⚠️ Response body 只能读一次 —— 必须先取 text 再 parse，不能调两次 .json()
+    const byNameRes = await req(`/api/employees?keyword=${encodeURIComponent(ordEmp.name)}&pageSize=5`);
+    const byCodeRes = await req(`/api/employees?keyword=${encodeURIComponent(ordEmp.employeeId)}&pageSize=5`);
+    const byNameJson = JSON.parse(await byNameRes.text());
+    const byCodeJson = JSON.parse(await byCodeRes.text());
+    const nameRow = (byNameJson?.data ?? [])[0];
+    const codeRow = (byCodeJson?.data ?? [])[0];
+    const expectStore = await prisma.employee.findUnique({
+      where: { id: ordEmp.id },
+      select: { store: { select: { name: true } } },
+    });
+    check(
+      "S9-96",
+      "联想搜索能按姓名/工号命中，且结果里带「当前所在门店」（选人后即可知道是哪家店的）",
+      byNameRes.status === 200 &&
+        byCodeRes.status === 200 &&
+        nameRow?.id === ordEmp.id &&
+        codeRow?.id === ordEmp.id &&
+        nameRow?.storeName === expectStore?.store?.name &&
+        trfHtml2.includes("调往门店（当前："),
+      `按姓名命中 ${byNameJson?.total} 人（首个 ${nameRow?.name} @ ${nameRow?.storeName}）；` +
+        `按工号命中 ${byCodeJson?.total} 人（首个 ${codeRow?.name}）；` +
+        `页面含「调往门店（当前：」提示位`
     );
 
     // ---------- 新增员工页 ----------

@@ -1,18 +1,33 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 /**
- * 调店单操作区（Stage 9.28）
+ * 调店单操作区（Stage 9.28 / 9.29）
  *
  * 两个入口：
- *  - 「登记调店」：填员工 + 目标门店 + 生效日期（留空 = 立即生效）+ 原因
+ *  - 「登记调店」：手动输入员工姓名/工号 → 联想选中 → 显示**当前所在门店** → 选目标门店
  *  - 「作废 / 撤销」：待生效单作废（档案不动）；已生效单撤销（门店自动回退）
  *
  * ⚠️ 交互原则：作废/撤销**必须填原因**（行业惯例：审计要留 why），
  *    确认框里明确写出「会发生什么」，避免误点。
+ *
+ * ⚠️ Stage 9.29：员工从 500 项下拉改为**手动输入 + 联想搜索**。
+ *    门店下拉同理（67 家也不适合翻）。
+ *    选人后必须显示**当前所在门店**——否则不知道这个人现在属于哪家店，
+ *    也就无法判断该不该调、调去哪里。
  */
+
+/** 联想搜索返回的员工（与 /api/employees 的 rows 形状一致，只取需要的字段） */
+type EmpHit = {
+  id: number;
+  employeeId: string;
+  name: string;
+  storeName: string | null;
+  jobGradeRaw: string | null;
+  status: string;
+};
 
 type Order = {
   id: number;
@@ -29,13 +44,263 @@ type Order = {
   reversedBy?: string | null;
 };
 
+const STATUS_TEXT: Record<string, string> = {
+  ACTIVE: "在职",
+  RESIGNED: "离职",
+  OTHER: "其他",
+  CANDIDATE: "候选人",
+};
+
+/** 员工联想输入框（手动输入 + 防抖搜索 + 键盘选择） */
+function EmpSearch({
+  value,
+  onPick,
+  autoFocus,
+}: {
+  value: EmpHit | null;
+  onPick: (e: EmpHit | null) => void;
+  autoFocus?: boolean;
+}) {
+  const [kw, setKw] = useState("");
+  const [hits, setHits] = useState<EmpHit[]>([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [hi, setHi] = useState(0);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // 已选中时只读显示，改选请先清空
+  if (value) {
+    return (
+      <div className="flex h-[30px] w-[260px] items-center gap-1.5 rounded border border-slate-300 bg-slate-50 px-2 text-[12.5px]">
+        <span className="font-medium text-slate-800">{value.name}</span>
+        <span className="text-[11px] text-slate-400">{value.employeeId}</span>
+        <span className="text-[11px] text-emerald-700">当前：{value.storeName ?? "未挂门店"}</span>
+        <button
+          type="button"
+          onClick={() => {
+            onPick(null);
+            setKw("");
+            setHits([]);
+          }}
+          className="ml-auto text-[11px] text-slate-400 hover:text-rose-600"
+          title="重新选择"
+        >
+          更换
+        </button>
+      </div>
+    );
+  }
+
+  // 防抖搜索
+  useEffect(() => {
+    const s = kw.trim();
+    if (!s) {
+      setHits([]);
+      return;
+    }
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await fetch(
+          `/api/employees?keyword=${encodeURIComponent(s)}&pageSize=12&sortBy=name&sortOrder=asc`
+        );
+        const j = await r.json();
+        if (j?.ok) setHits(j.data ?? []);
+        else setHits([]);
+      } catch {
+        setHits([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [kw]);
+
+  // 点外部关闭
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  return (
+    <div ref={boxRef} className="relative w-[260px]">
+      <input
+        value={kw}
+        autoFocus={autoFocus}
+        onChange={(e) => {
+          setKw(e.target.value);
+          setOpen(true);
+          setHi(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (!open || hits.length === 0) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setHi((h) => (h + 1) % hits.length);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHi((h) => (h - 1 + hits.length) % hits.length);
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            onPick(hits[hi]);
+            setKw("");
+            setHits([]);
+            setOpen(false);
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        placeholder="输入姓名或工号，如：龚峰"
+        className="h-[30px] w-full rounded border border-slate-300 px-2 text-[12.5px] outline-none focus:border-brand-500"
+      />
+      {open && kw.trim() ? (
+        <div className="absolute left-0 top-full z-40 mt-0.5 max-h-[260px] w-[340px] overflow-y-auto rounded border border-slate-200 bg-white shadow-lg">
+          {loading ? (
+            <div className="px-2 py-2 text-[12px] text-slate-400">搜索中…</div>
+          ) : hits.length === 0 ? (
+            <div className="px-2 py-2 text-[12px] text-slate-400">没有匹配的员工</div>
+          ) : (
+            hits.map((h, i) => (
+              <button
+                key={h.id}
+                type="button"
+                onMouseEnter={() => setHi(i)}
+                onClick={() => {
+                  onPick(h);
+                  setKw("");
+                  setHits([]);
+                  setOpen(false);
+                }}
+                className={`flex w-full items-center gap-2 px-2 py-1.5 text-left text-[12.5px] ${
+                  i === hi ? "bg-brand-50" : ""
+                }`}
+              >
+                <span className="font-medium text-slate-800">{h.name}</span>
+                <span className="text-[11px] text-slate-400">{h.employeeId}</span>
+                <span className="text-[11px] text-emerald-700">当前：{h.storeName ?? "未挂门店"}</span>
+                {h.jobGradeRaw ? <span className="text-[11px] text-slate-400">· {h.jobGradeRaw}</span> : null}
+                {h.status !== "ACTIVE" ? (
+                  <span className="ml-auto rounded bg-slate-100 px-1 text-[10.5px] text-slate-500">
+                    {STATUS_TEXT[h.status] ?? h.status}
+                  </span>
+                ) : null}
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 门店联想输入框（同样从下拉改为手动输入） */
+function StoreSearch({
+  all,
+  value,
+  onPick,
+  placeholder,
+}: {
+  all: { id: number; name: string }[];
+  value: { id: number; name: string } | null;
+  onPick: (s: { id: number; name: string } | null) => void;
+  placeholder?: string;
+}) {
+  const [kw, setKw] = useState("");
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+
+  if (value) {
+    return (
+      <div className="flex h-[30px] w-[210px] items-center gap-1.5 rounded border border-slate-300 bg-slate-50 px-2 text-[12.5px]">
+        <span className="font-medium text-slate-800">{value.name}</span>
+        <button
+          type="button"
+          onClick={() => onPick(null)}
+          className="ml-auto text-[11px] text-slate-400 hover:text-rose-600"
+        >
+          更换
+        </button>
+      </div>
+    );
+  }
+
+  const list = all.filter((s) => !kw.trim() || s.name.includes(kw.trim()));
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative w-[210px]">
+      <input
+        value={kw}
+        onChange={(e) => {
+          setKw(e.target.value);
+          setOpen(true);
+          setHi(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (!open || list.length === 0) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setHi((h) => (h + 1) % list.length);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHi((h) => (h - 1 + list.length) % list.length);
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            onPick(list[hi]);
+            setKw("");
+            setOpen(false);
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        placeholder={placeholder ?? "输入门店名，如：大坪"}
+        className="h-[30px] w-full rounded border border-slate-300 px-2 text-[12.5px] outline-none focus:border-brand-500"
+      />
+      {open ? (
+        <div className="absolute left-0 top-full z-40 mt-0.5 max-h-[260px] w-[240px] overflow-y-auto rounded border border-slate-200 bg-white shadow-lg">
+          {list.length === 0 ? (
+            <div className="px-2 py-2 text-[12px] text-slate-400">没有匹配的门店</div>
+          ) : (
+            list.map((s, i) => (
+              <button
+                key={s.id}
+                type="button"
+                onMouseEnter={() => setHi(i)}
+                onClick={() => {
+                  onPick(s);
+                  setKw("");
+                  setOpen(false);
+                }}
+                className={`block w-full px-2 py-1.5 text-left text-[12.5px] ${i === hi ? "bg-brand-50" : ""}`}
+              >
+                {s.name}
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function TransferOrderPanel({
   orders,
-  employees,
   stores,
 }: {
   orders: Order[];
-  employees: { id: number; name: string; code: string | null; storeId: number | null; storeName: string | null }[];
   stores: { id: number; name: string }[];
 }) {
   const router = useRouter();
@@ -44,8 +309,8 @@ export default function TransferOrderPanel({
   const [busy, setBusy] = useState(false);
 
   // 登记表单
-  const [empId, setEmpId] = useState("");
-  const [toStore, setToStore] = useState("");
+  const [emp, setEmp] = useState<EmpHit | null>(null);
+  const [toStore, setToStore] = useState<{ id: number; name: string } | null>(null);
   const [effDate, setEffDate] = useState("");
   const [reason, setReason] = useState("");
 
@@ -57,8 +322,12 @@ export default function TransferOrderPanel({
 
   async function submitCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!empId || !toStore) {
-      setMsg({ kind: "err", text: "请选择员工和目标门店" });
+    if (!emp) {
+      setMsg({ kind: "err", text: "请先搜索并选择员工" });
+      return;
+    }
+    if (!toStore) {
+      setMsg({ kind: "err", text: "请选择调往的门店" });
       return;
     }
     setBusy(true);
@@ -67,8 +336,8 @@ export default function TransferOrderPanel({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          employeeId: Number(empId),
-          toStoreId: Number(toStore),
+          employeeId: emp.id,
+          toStoreId: toStore.id,
           effectiveDate: effDate || null,
           reason: reason || null,
         }),
@@ -78,8 +347,8 @@ export default function TransferOrderPanel({
         setMsg({ kind: "err", text: j?.error ?? `保存失败（HTTP ${res.status}）` });
       } else {
         const label = j.data.status === "EFFECTED" ? "已立即生效" : "已登记为待生效";
-        setMsg({ kind: "ok", text: `${label}（单号 #${j.data.orderId}）` });
-        setEmpId(""); setToStore(""); setEffDate(""); setReason("");
+        setMsg({ kind: "ok", text: `${emp.name}（${emp.storeName ?? "未挂门店"} → ${toStore.name}）${label}，单号 #${j.data.orderId}` });
+        setEmp(null); setToStore(null); setEffDate(""); setReason("");
         reload();
       }
     } catch (err) {
@@ -111,7 +380,7 @@ export default function TransferOrderPanel({
           kind: "ok",
           text:
             act.kind === "cancel"
-              ? `单 #${act.order.id} 已作废。该员工门店未变动。`
+              ? `单 #${act.order.id} 已作废，${act.order.employee.name} 的门店未发生任何变动。`
               : `单 #${act.order.id} 已撤销，${act.order.employee.name} 的门店已回退到「${act.order.fromStore.name}」。`,
         });
         setAct(null);
@@ -153,43 +422,20 @@ export default function TransferOrderPanel({
         <div className="mb-2 text-[12px] font-medium text-slate-600">登记调店</div>
         <div className="flex flex-wrap items-end gap-2">
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-slate-500">员工</label>
-            <select
-              value={empId}
-              onChange={(e) => {
-                setEmpId(e.target.value);
-                const emp = employees.find((x) => String(x.id) === e.target.value);
-                // 默认建议目标门店 = 其他某家店，减少一次点击
-                if (emp?.storeId) {
-                  const alt = stores.find((s) => s.id !== emp.storeId);
-                  setToStore(alt ? String(alt.id) : "");
-                }
+            <label className="text-[11px] text-slate-500">员工（输入姓名或工号）</label>
+            <EmpSearch
+              value={emp}
+              onPick={(e) => {
+                setEmp(e);
+                setToStore(null);
               }}
-              className="w-[190px] rounded border border-slate-300 px-2 py-1 text-[12.5px] outline-none focus:border-brand-500"
-            >
-              <option value="">请选择…</option>
-              {employees.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.name}
-                  {e.storeName ? `（${e.storeName}）` : "（未挂门店）"}
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-slate-500">调往门店</label>
-            <select
-              value={toStore}
-              onChange={(e) => setToStore(e.target.value)}
-              className="w-[190px] rounded border border-slate-300 px-2 py-1 text-[12.5px] outline-none focus:border-brand-500"
-            >
-              <option value="">请选择…</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
+            <label className="text-[11px] text-slate-500">
+              调往门店（当前：{emp?.storeName ?? "—"}）
+            </label>
+            <StoreSearch all={stores} value={toStore} onPick={setToStore} />
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-slate-500">生效日期（留空 = 立即生效）</label>
@@ -197,7 +443,7 @@ export default function TransferOrderPanel({
               type="date"
               value={effDate}
               onChange={(e) => setEffDate(e.target.value)}
-              className="w-[150px] rounded border border-slate-300 px-2 py-1 text-[12.5px] outline-none focus:border-brand-500"
+              className="h-[30px] w-[140px] rounded border border-slate-300 px-2 text-[12.5px] outline-none focus:border-brand-500"
             />
           </div>
           <div className="flex flex-col gap-1">
@@ -206,18 +452,19 @@ export default function TransferOrderPanel({
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               placeholder="如：店长告知调去支援"
-              className="w-[200px] rounded border border-slate-300 px-2 py-1 text-[12.5px] outline-none focus:border-brand-500"
+              className="h-[30px] w-[180px] rounded border border-slate-300 px-2 text-[12.5px] outline-none focus:border-brand-500"
             />
           </div>
           <button
             type="submit"
             disabled={busy}
-            className="rounded bg-brand-600 px-3 py-1 text-[12.5px] text-white hover:bg-brand-700 disabled:opacity-50"
+            className="h-[30px] rounded bg-brand-600 px-3 text-[12.5px] text-white hover:bg-brand-700 disabled:opacity-50"
           >
             {busy ? "处理中…" : "登记"}
           </button>
         </div>
         <p className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
+          搜索框支持姓名或工号，回车或点选即可。选中后会显示该员工<strong>当前所在门店</strong>。
           填了生效日期 = 先挂着不动，到期当天由系统自动改门店；中途店长改口，在下面「待生效」里点「作废」即可，
           <strong>不用再改回门店</strong>。留空 = 当场生效。
         </p>
@@ -335,7 +582,11 @@ export default function TransferOrderPanel({
                   </td>
                   <td className="px-2 py-1.5 text-slate-500">
                     {o.voidReason || "—"}
-                    {o.voidReason ? <span className="ml-1 text-[11px] text-slate-400">（{o.reversedBy ? o.voidedBy : o.reversedBy}）</span> : null}
+                    {o.voidReason ? (
+                      <span className="ml-1 text-[11px] text-slate-400">
+                        （{o.status === "REVERSED" ? o.reversedBy : o.voidedBy}）
+                      </span>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -371,9 +622,7 @@ export default function TransferOrderPanel({
               )}
             </div>
             <div className="mt-2.5 flex flex-col gap-1">
-              <label className="text-[11.5px] text-slate-500">
-                原因（必填，会记入审计）
-              </label>
+              <label className="text-[11.5px] text-slate-500">原因（必填，会记入审计）</label>
               <input
                 value={actReason}
                 onChange={(e) => setActReason(e.target.value)}

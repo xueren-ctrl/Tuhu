@@ -86,8 +86,9 @@ export default async function TransfersPage({
       );
   const roundTripCount = showRaw ? 0 : folded.filter((r) => r.kind === "roundtrip").length;
 
-  // 调店单 + 登记需要的员工/门店下拉
-  const [orders, empOpts, storeOpts] = await Promise.all([
+  // 调店单 + 门店候选（Stage 9.29：员工改为「手动输入 + 联想搜索」，
+  // 走 /api/employees?keyword=… 按需查，**不再全量拉 500 条**）
+  const [orders, storeOpts] = await Promise.all([
     prisma.transferOrder.findMany({
       orderBy: [{ status: "asc" }, { effectiveDate: "desc" }],
       include: {
@@ -95,12 +96,6 @@ export default async function TransfersPage({
         fromStore: { select: { id: true, name: true } },
         toStore: { select: { id: true, name: true } },
       },
-    }),
-    prisma.employee.findMany({
-      where: { deletedAt: null, status: "ACTIVE" },
-      select: { id: true, name: true, employeeId: true, storeId: true, store: { select: { name: true } } },
-      orderBy: { name: "asc" },
-      take: 500,
     }),
     prisma.store.findMany({
       where: { status: "ACTIVE" },
@@ -150,13 +145,8 @@ export default async function TransfersPage({
             reason: o.reason,
             voidReason: o.voidReason,
             createdBy: o.createdBy,
-          }))}
-          employees={empOpts.map((e) => ({
-            id: e.id,
-            name: e.name,
-            code: e.employeeId,
-            storeId: e.storeId,
-            storeName: e.store?.name ?? null,
+            voidedBy: o.voidedBy,
+            reversedBy: o.reversedBy,
           }))}
           stores={storeOpts}
         />
