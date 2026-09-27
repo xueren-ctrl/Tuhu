@@ -1009,7 +1009,9 @@ async function main() {
         m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
       );
       return {
-        name: tds[1],
+        // ⚠️ Stage 9.16 起门店名单元格多了「设满编」按钮文字，
+        //    必须剥掉才能拿门店名去查库（否则查不到 → 误用全库数字断言）。
+        name: (tds[1] ?? "").replace(/\s*设满编\s*$/, "").trim(),
         svc: tds[5],
         mech: tds[6],
         beauty: tds[7],
@@ -1018,11 +1020,18 @@ async function main() {
         junior: tds[16],
       };
     })();
-    const hcStore = await prisma.store.findFirst({ where: { name: hcFirstStore.name }, select: { id: true } });
-    const hcEmps = await prisma.employee.findMany({
-      where: { deletedAt: null, status: "ACTIVE", storeId: hcStore?.id },
-      select: { jobGradeRaw: true, positionNote: true },
-    });
+    const hcStore = hcFirstStore.name
+      ? await prisma.store.findFirst({ where: { name: hcFirstStore.name }, select: { id: true } })
+      : null;
+    if (!hcStore) {
+      check("S9-53", "编制表数据列与表头对应正确", false, `无法从页面解析门店名：「${hcFirstStore.name}」`);
+    }
+    const hcEmps = hcStore
+      ? await prisma.employee.findMany({
+          where: { deletedAt: null, status: "ACTIVE", storeId: hcStore.id },
+          select: { jobGradeRaw: true, positionNote: true },
+        })
+      : [];
     const cnt = (pred) => hcEmps.filter((e) => pred(String(e.jobGradeRaw ?? "").trim())).length;
     const cnt2 = (g, n) =>
       hcEmps.filter(
@@ -1131,6 +1140,18 @@ async function main() {
       "两表不一致的职位备注已按「在职表」修正（骆作豪=师傅），凤岗碧湖师傅数为 2",
       lzz?.positionNote === "师傅" && lzzMaster === 2,
       `${lzz?.employeeId} 职位备注=${JSON.stringify(lzz?.positionNote)}；凤岗碧湖大道店在职美容师傅 ${lzzMaster}/2`
+    );
+
+    // ---------- Stage 9.16：满编「人工设置」入口必须在页面上可见可点（S9-61） ----------
+    // 背景：满编本来就是人工设定，但入口藏在「点击门店名」里，点击前毫无提示，
+    // 用户完全不知道能改 → 现在满编数字本身就是入口（虚线下划线 + 悬停变色）。
+    const fullEditBtns = [...hcBodyHtml.matchAll(/title="人工设置满编：点击修改[^"]+"/g)].length;
+    const hasSetFullBtn = hcHtml.includes("设满编");
+    check(
+      "S9-61",
+      "满编 5 列每格都是可点击的人工设置入口（数字带提示 + 门店名旁有「设满编」）",
+      fullEditBtns >= 36 * 5 && hasSetFullBtn,
+      `满编编辑入口 ${fullEditBtns} 个（36 店 × 5 列 = 180）；门店名旁「设满编」按钮：${hasSetFullBtn}`
     );
 
     // ---------- 新增员工页 ----------

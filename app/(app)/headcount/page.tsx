@@ -1,6 +1,7 @@
 import { getStoreHeadcount } from "@/lib/headcount-service";
 import { Card, Alert } from "@/components/ui";
 import HeadcountPlanEditor from "@/components/headcount/HeadcountPlanEditor";
+import HeadcountFullCell from "@/components/headcount/HeadcountFullCell";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +63,6 @@ const HEAD_HTML =
     "</tr>",
   ].join("");
 
-const num = (v: number | null) => (v === null || v === undefined ? "—" : String(v));
 /** 缺编用颜色标出：>0 缺人（红）、=0 刚好（绿）、<0 超编（蓝，显示负数） */
 const gapTone = (n: number) =>
   n > 0 ? "text-rose-600 font-semibold" : n === 0 ? "text-emerald-600" : "text-sky-600 font-semibold";
@@ -156,12 +156,13 @@ export default async function HeadcountPage() {
       <Alert tone="info">
         <div className="space-y-1">
           <div>
-            <strong>「现有」列是实时算出来的</strong>：直接来自「在职」表按「门店 + 工种」统计，
-            员工一入职、一离职、一调岗，这里立刻变，不需要刷新或重新导入。
+            <strong className="text-amber-700">满编配制人数 = 你自己设定的目标</strong>：
+            带虚线下划线的数字<strong>直接点击就能改</strong>（点任意一格，5 项一起编辑、一起保存）。
+            经营调整随时改，改完立即重算缺编。留空 = 该职位不设满编、不参与缺编计算。
           </div>
           <div>
-            <strong>「满编」列是人工设定的目标</strong>（<strong>点击门店名称</strong>可展开编辑，改完立即重算缺编）。
-            数据已从 Excel 一次性导入，<strong>不需要设的职位留空即可</strong>（不参与缺编计算）。
+            <strong>「现有」列是实时算出来的</strong>：直接来自「在职」表按「门店 + 工种」统计，
+            员工一入职、一离职、一调岗，这里立刻变，不需要刷新或重新导入。
           </div>
         </div>
       </Alert>
@@ -207,12 +208,22 @@ export default async function HeadcountPage() {
                 <td className="border-b border-slate-100 px-2 py-1.5 text-center font-semibold text-slate-800">
                   {r.current.total}
                 </td>
-                {/* 满编 */}
-                <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{num(r.full.serviceManager)}</td>
-                <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{num(r.full.mechanic)}</td>
-                <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{num(r.full.beauty)}</td>
-                <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{num(r.full.beautyMaster)}</td>
-                <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{num(r.full.beautyJunior)}</td>
+                {/* 满编（人工设置：数字本身即入口，点击就地编辑） */}
+                <td className="border-b border-slate-100 px-1 py-1.5">
+                  <HeadcountFullCell storeId={r.storeId} row={r} field="serviceManagerFull" />
+                </td>
+                <td className="border-b border-slate-100 px-1 py-1.5">
+                  <HeadcountFullCell storeId={r.storeId} row={r} field="mechanicFull" />
+                </td>
+                <td className="border-b border-slate-100 px-1 py-1.5">
+                  <HeadcountFullCell storeId={r.storeId} row={r} field="beautyFull" />
+                </td>
+                <td className="border-b border-slate-100 px-1 py-1.5">
+                  <HeadcountFullCell storeId={r.storeId} row={r} field="beautyMasterFull" />
+                </td>
+                <td className="border-b border-slate-100 px-1 py-1.5">
+                  <HeadcountFullCell storeId={r.storeId} row={r} field="beautyJuniorFull" />
+                </td>
                 {/* 美容现有 */}
                 <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{r.current.beautyMaster || "—"}</td>
                 <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{r.current.beautyJunior || "—"}</td>
