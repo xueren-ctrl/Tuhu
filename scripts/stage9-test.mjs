@@ -1294,6 +1294,39 @@ async function main() {
         `复原后当前门店正确：${restoredStore?.storeId === mover.storeId}（测试任职历史已清理，表原有 ${periodsBefore} 条）`
     );
 
+    // ---------- Stage 9.20：任职历史回填与「按当前门店」口径的验证（S9-70） ----------
+    // 回填 249 段后，49 位有多段档案的在职员工用任职历史算出的 8/1 归属
+    // 与当前门店 100% 一致 → 证明「按当前门店」这个近似本来就是对的。
+    const cut0801 = new Date("2026-08-01T00:00:00.000Z");
+    const allPeriods = await prisma.employeeStorePeriod.findMany({
+      select: {
+        employeeId: true, storeId: true, fromDate: true, toDate: true,
+        employee: { select: { storeId: true } },
+      },
+    });
+    const grouped = new Map();
+    for (const x of allPeriods) {
+      if (!grouped.has(x.employeeId)) grouped.set(x.employeeId, []);
+      grouped.get(x.employeeId).push(x);
+    }
+    let atDateSame = 0;
+    let atDateDiff = 0;
+    for (const [, segs] of grouped) {
+      const hit = segs.find(
+        (s) => (s.toDate === null || s.toDate > cut0801) && (s.fromDate === null || s.fromDate <= cut0801)
+      );
+      if (!hit) continue;
+      if (hit.storeId === segs[0].employee.storeId) atDateSame++;
+      else atDateDiff++;
+    }
+    check(
+      "S9-70",
+      "任职历史回填后，用历史算出的 8/1 归属与当前门店一致（验证「按当前门店」口径正确）",
+      allPeriods.length >= 200 && atDateDiff === 0,
+      `任职历史 ${allPeriods.length} 段；能定位 8/1 归属 ${atDateSame + atDateDiff} 人，` +
+        `一致 ${atDateSame} / 不一致 ${atDateDiff}`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();
