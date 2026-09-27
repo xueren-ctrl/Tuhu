@@ -63,9 +63,14 @@ const HEAD_HTML =
   ].join("");
 
 const num = (v: number | null) => (v === null || v === undefined ? "—" : String(v));
-/** 缺编用颜色标出：>0 红、=0 绿、<0（超编）蓝 */
+/** 缺编用颜色标出：>0 缺人（红）、=0 刚好（绿）、<0 超编（蓝，显示负数） */
 const gapTone = (n: number) =>
-  n > 0 ? "text-rose-600 font-semibold" : n === 0 ? "text-emerald-600" : "text-sky-600";
+  n > 0 ? "text-rose-600 font-semibold" : n === 0 ? "text-emerald-600" : "text-sky-600 font-semibold";
+/**
+ * 缺编明细单元格：Excel 原样显示负数（超编），不再一律打「—」。
+ * 0 显示 0，负数显示 -N。
+ */
+const gapCell = (n: number) => <span className={gapTone(n)}>{n}</span>;
 
 export default async function HeadcountPage() {
   const { rows, summary } = await getStoreHeadcount();
@@ -96,6 +101,18 @@ export default async function HeadcountPage() {
     }
   );
 
+  const fullTotals = rows.reduce(
+    (acc, r) => {
+      acc.serviceManager += r.full.serviceManager ?? 0;
+      acc.mechanic += r.full.mechanic ?? 0;
+      acc.beauty += r.full.beauty ?? 0;
+      acc.beautyMaster += r.full.beautyMaster ?? 0;
+      acc.beautyJunior += r.full.beautyJunior ?? 0;
+      return acc;
+    },
+    { serviceManager: 0, mechanic: 0, beauty: 0, beautyMaster: 0, beautyJunior: 0 }
+  );
+
   return (
     <div className="space-y-3">
       <div>
@@ -107,7 +124,9 @@ export default async function HeadcountPage() {
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
         <Card title="在编人数">
-          <div className="text-[20px] font-semibold text-slate-800">{totals.manager + totals.techManager + totals.deputyManager + totals.serviceManager + totals.mechanic + totals.beauty + totals.logistics}</div>
+          <div className="text-[20px] font-semibold text-slate-800">
+            {totals.manager + totals.deputyManager + totals.serviceManager + totals.mechanic + totals.beauty + totals.logistics}
+          </div>
           <div className="text-[11.5px] text-slate-400">实时统计自「在职」表</div>
         </Card>
         <Card title="满编目标合计">
@@ -199,23 +218,17 @@ export default async function HeadcountPage() {
                 <td className="border-b border-slate-100 px-2 py-1.5 text-center text-slate-600">{r.current.beautyJunior || "—"}</td>
                 {/* 缺编汇总 */}
                 <td className={`border-b border-slate-100 px-2 py-1.5 text-center ${gapTone(r.gap.total)}`}>
-                  {r.gap.total === 0 ? "0" : r.gap.total}
+                  {r.gap.total}
                 </td>
-                {/* 各职位缺编 */}
+                {/* 各职位缺编（可为负 = 超编，与 Excel 一致） */}
                 <td className="border-b border-slate-100 px-2 py-1.5 text-center">
-                  <span className={r.gap.mechanic > 0 ? "text-rose-600" : "text-slate-300"}>
-                    {r.gap.mechanic > 0 ? r.gap.mechanic : "—"}
-                  </span>
+                  {gapCell(r.gap.mechanic)}
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1.5 text-center">
-                  <span className={r.gap.beauty > 0 ? "text-rose-600" : "text-slate-300"}>
-                    {r.gap.beauty > 0 ? r.gap.beauty : "—"}
-                  </span>
+                  {gapCell(r.gap.beauty)}
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1.5 text-center">
-                  <span className={r.gap.serviceManager > 0 ? "text-rose-600" : "text-slate-300"}>
-                    {r.gap.serviceManager > 0 ? r.gap.serviceManager : "—"}
-                  </span>
+                  {gapCell(r.gap.serviceManager)}
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1.5 text-slate-600">{r.gap.detail || "—"}</td>
               </tr>
@@ -234,21 +247,38 @@ export default async function HeadcountPage() {
               <td className="border-t-2 border-slate-300 px-2 py-2 text-center">{totals.mechanic}</td>
               <td className="border-t-2 border-slate-300 px-2 py-2 text-center">{totals.beauty}</td>
               <td className="border-t-2 border-slate-300 px-2 py-2 text-center">{totals.logistics}</td>
-              <td className="border-t-2 border-slate-300 px-2 py-2 text-center">
-                {totals.manager + totals.techManager + totals.deputyManager + totals.serviceManager + totals.mechanic + totals.beauty + totals.logistics}
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center font-semibold text-slate-800">
+                {totals.manager + totals.deputyManager + totals.serviceManager + totals.mechanic + totals.beauty + totals.logistics}
               </td>
-              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-500">
-                {summary.fullTotal}
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-600">
+                {fullTotals.serviceManager}
               </td>
-              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-400">—</td>
-              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-400">—</td>
-              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-400">—</td>
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-600">
+                {fullTotals.mechanic}
+              </td>
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-600">
+                {fullTotals.beauty}
+              </td>
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-600">
+                {fullTotals.beautyMaster}
+              </td>
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-slate-600">
+                {fullTotals.beautyJunior}
+              </td>
               <td className="border-t-2 border-slate-300 px-2 py-2 text-center">{totals.beautyMaster}</td>
               <td className="border-t-2 border-slate-300 px-2 py-2 text-center">{totals.beautyJunior}</td>
-              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-rose-600">{summary.gapTotal}</td>
-              <td className="border-t-2 border-slate-300 px-2 py-2" />
-              <td className="border-t-2 border-slate-300 px-2 py-2" />
-              <td className="border-t-2 border-slate-300 px-2 py-2" />
+              <td className={`border-t-2 border-slate-300 px-2 py-2 text-center ${gapTone(summary.gapTotal)}`}>
+                {summary.gapTotal}
+              </td>
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-rose-600">
+                {rows.reduce((s, r) => s + Math.max(0, r.gap.mechanic), 0)}
+              </td>
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-rose-600">
+                {rows.reduce((s, r) => s + Math.max(0, r.gap.beauty), 0)}
+              </td>
+              <td className="border-t-2 border-slate-300 px-2 py-2 text-center text-rose-600">
+                {rows.reduce((s, r) => s + Math.max(0, r.gap.serviceManager), 0)}
+              </td>
               <td className="border-t-2 border-slate-300 px-2 py-2 text-slate-500">
                 {summary.storesWithGap} 家门店有缺编
               </td>
@@ -258,9 +288,15 @@ export default async function HeadcountPage() {
       </div>
 
       <p className="text-[11.5px] leading-relaxed text-slate-400">
-        口径说明：店长含「代理店长」；美容按职位是否含「师傅」拆分为「美容师傅」与「美容中小工」，
-        两者之和即「美容现有」；缺编 = MAX(0, 满编 − 现有)，满编留空的职位不参与计算。
-        满编数从 Excel 一次性导入后不再同步 Excel，如需批量更新请在软件里逐店调整。
+        口径说明（与 Excel「门店人员编制」Sheet 的 COUNTIFS 公式逐条对齐）：
+        店长含「代理店长」；<strong>「机修现有」含「技术店长」</strong>（Excel 公式为
+        <code className="rounded bg-slate-100 px-1">COUNTIFS(工种, 机修 / 技术店长)</code>），
+        因此「当前合计人数」= 各列之和 <strong>− 技术店长</strong>，避免重复计一次；
+        「美容现有」是全部美容工种人数，<strong>不等于</strong>师傅 + 中小工 ——
+        「现有美容师傅」按<strong>职位备注 = 师傅</strong>统计，
+        「现有美容中小工」按<strong>职位备注 = 学徒 或 中工</strong>统计，职位备注为空的人两边都不计。
+        缺编明细 = 满编 − 现有，<strong className="text-sky-600">负数表示超编</strong>（如 −2），
+        「缺编」汇总列只累加正数。满编数从 Excel 一次性导入后不再同步 Excel，如需批量更新请在软件里逐店调整。
       </p>
     </div>
   );

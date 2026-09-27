@@ -770,13 +770,14 @@ async function main() {
     for (const e of activeEmps) {
       if (e.storeId === null) continue;
       const g = String(e.jobGradeRaw ?? "").trim();
-      const pos = String(e.position?.name ?? "").trim();
-      if (!tally.has(e.storeId)) tally.set(e.storeId, { svc: 0, mech: 0, beauty: 0, total: 0 });
+      if (!tally.has(e.storeId)) tally.set(e.storeId, { svc: 0, mech: 0, beauty: 0, total: 0, tech: 0 });
       const t = tally.get(e.storeId);
-      // 当前合计人数 = 全部工种（与 Excel 一致）
+      // ⚠️ Excel 口径（Stage 9.15 修）：
+      //   「机修现有」含「技术店长」；「当前合计人数」= SUM(C:I) − D
+      //   技术店长既单列在 D、又被 G 含一次，扣 D 抵消 → 结果就等于「该店在职总人数」
       t.total += 1;
       if (g === "客服经理") t.svc += 1;
-      else if (g === "机修") t.mech += 1;
+      else if (g === "机修" || g === "技术店长") t.mech += 1;
       else if (g === "美容") t.beauty += 1;
     }
 
@@ -849,6 +850,63 @@ async function main() {
       "满编输入非法值被拒绝（负数 / 非数字）",
       bad1.status === 400 && bad2.status === 400,
       `负数=${bad1.status} 非数字=${bad2.status}`
+    );
+
+    // ---------- Stage 9.15.2：部分字段更新绝不能清空其它字段（S9-59） ----------
+    // 严重 bug 回顾：`saveHeadcountPlan` 曾用 `data.x ?? null` 全量覆盖，
+    // 而前端「全部保存」是 for 循环逐字段发请求（每次只带 1 个字段），
+    // 于是每点一次「全部保存」就把另外 4 个满编值抹成空。
+    // 实测后果：常平朗贝社区店 客服/美容/师傅/中小工 满编全被清空（审计 14:08:21）。
+    const partialBefore = await prisma.storeHeadcount.findUnique({
+      where: { storeId: target.storeId },
+      select: { serviceManagerFull: true, mechanicFull: true, beautyFull: true, beautyMasterFull: true, beautyJuniorFull: true },
+    });
+    // 只改「机修满编」这**一个**字段
+    await req(`/api/headcount/${target.storeId}`, {
+      method: "PUT",
+      body: JSON.stringify({ mechanicFull: (partialBefore?.mechanicFull ?? 3) + 1 }),
+    });
+    const partialAfter = await prisma.storeHeadcount.findUnique({
+      where: { storeId: target.storeId },
+      select: { serviceManagerFull: true, mechanicFull: true, beautyFull: true, beautyMasterFull: true, beautyJuniorFull: true },
+    });
+    const othersIntact = ["serviceManagerFull", "beautyFull", "beautyMasterFull", "beautyJuniorFull"].every(
+      (k) => (partialBefore?.[k] ?? null) === (partialAfter?.[k] ?? null)
+    );
+    // 复原
+    await req(`/api/headcount/${target.storeId}`, {
+      method: "PUT",
+      body: JSON.stringify({ mechanicFull: partialBefore?.mechanicFull ?? null }),
+    });
+    const partialRestored = await prisma.storeHeadcount.findUnique({
+      where: { storeId: target.storeId },
+      select: { serviceManagerFull: true, mechanicFull: true, beautyFull: true, beautyMasterFull: true, beautyJuniorFull: true },
+    });
+    const fullyRestored = ["serviceManagerFull", "mechanicFull", "beautyFull", "beautyMasterFull", "beautyJuniorFull"].every(
+      (k) => (partialBefore?.[k] ?? null) === (partialRestored?.[k] ?? null)
+    );
+    check(
+      "S9-59",
+      "只改 1 个满编字段时，其余 4 个字段必须原样保留（曾被全部清空）",
+      othersIntact && fullyRestored,
+      `${target.store.name} 只改机修满编后：客服 ${partialBefore?.serviceManagerFull ?? "空"}→${partialAfter?.serviceManagerFull ?? "空"} ` +
+        `美容 ${partialBefore?.beautyFull ?? "空"}→${partialAfter?.beautyFull ?? "空"} ` +
+        `师傅 ${partialBefore?.beautyMasterFull ?? "空"}→${partialAfter?.beautyMasterFull ?? "空"} ` +
+        `中小工 ${partialBefore?.beautyJuniorFull ?? "空"}→${partialAfter?.beautyJuniorFull ?? "空"}（测试后已复原：${fullyRestored}）`
+    );
+
+    // 满编 5 列必须与 Excel 完全一致（防「—」再次出现）
+    const FULL_XL = { serviceManagerFull: 29, mechanicFull: 146, beautyFull: 83, beautyMasterFull: 38, beautyJuniorFull: 43 };
+    const allPlans = await prisma.storeHeadcount.findMany({
+      select: { serviceManagerFull: true, mechanicFull: true, beautyFull: true, beautyMasterFull: true, beautyJuniorFull: true },
+    });
+    const got = {};
+    for (const k of Object.keys(FULL_XL)) got[k] = allPlans.reduce((s, p) => s + (p[k] ?? 0), 0);
+    check(
+      "S9-60",
+      "满编 5 列合计与 Excel 一致（客服29/机修146/美容83/师傅38/中小工43）",
+      Object.keys(FULL_XL).every((k) => got[k] === FULL_XL[k]),
+      Object.keys(FULL_XL).map((k) => `${k}=${got[k]}/${FULL_XL[k]}`).join(" ")
     );
 
     // 未登录不能改
@@ -950,27 +1008,129 @@ async function main() {
       const tds = [...hcFirstTr.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) =>
         m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
       );
-      return { name: tds[1], svc: tds[5], mech: tds[6], beauty: tds[7], total: tds[9] };
+      return {
+        name: tds[1],
+        svc: tds[5],
+        mech: tds[6],
+        beauty: tds[7],
+        total: tds[9],
+        master: tds[15],
+        junior: tds[16],
+      };
     })();
     const hcStore = await prisma.store.findFirst({ where: { name: hcFirstStore.name }, select: { id: true } });
     const hcEmps = await prisma.employee.findMany({
       where: { deletedAt: null, status: "ACTIVE", storeId: hcStore?.id },
-      select: { jobGradeRaw: true, position: { select: { name: true } } },
+      select: { jobGradeRaw: true, positionNote: true },
     });
-    const cnt = (pred) => hcEmps.filter((e) => pred(String(e.jobGradeRaw ?? "").trim(), String(e.position?.name ?? "").trim())).length;
+    const cnt = (pred) => hcEmps.filter((e) => pred(String(e.jobGradeRaw ?? "").trim())).length;
+    const cnt2 = (g, n) =>
+      hcEmps.filter(
+        (e) => String(e.jobGradeRaw ?? "").trim() === g && n.includes(String(e.positionNote ?? "").trim())
+      ).length;
     const expSvc = cnt((g) => g === "客服经理");
-    const expMech = cnt((g) => g === "机修");
+    // ⚠️ 「机修现有」含「技术店长」—— Excel 公式 COUNTIFS(工种,{机修,技术店长})（Stage 9.15 修）
+    const expMech = cnt((g) => g === "机修" || g === "技术店长");
     const expBeauty = cnt((g) => g === "美容");
+    const expMaster = cnt2("美容", ["师傅"]);
+    const expJunior = cnt2("美容", ["学徒", "中工"]);
     const dash = (v) => (v === 0 ? "—" : String(v));
+    // 「当前合计人数」= 各列之和 − 技术店长（技术店长已含在机修现有里，Excel J=SUM(C:I)-D）
+    const expTotal =
+      cnt((g) => g === "店长" || g === "代理店长") +
+      cnt((g) => g === "副店长") +
+      expSvc +
+      expMech +
+      expBeauty +
+      cnt((g) => g === "后勤");
     check(
       "S9-53",
-      "编制表数据列与表头对应正确（客服经理/机修现有/美容现有/当前合计）",
+      "编制表数据列与表头对应正确（客服经理/机修现有/美容现有/当前合计，机修含技术店长）",
       hcFirstStore.svc === dash(expSvc) &&
         hcFirstStore.mech === dash(expMech) &&
         hcFirstStore.beauty === dash(expBeauty) &&
-        hcFirstStore.total === String(hcEmps.length),
+        hcFirstStore.total === String(expTotal),
       `${hcFirstStore.name}：客服 ${hcFirstStore.svc}/${dash(expSvc)} 机修 ${hcFirstStore.mech}/${dash(expMech)} ` +
-        `美容 ${hcFirstStore.beauty}/${dash(expBeauty)} 合计 ${hcFirstStore.total}/${hcEmps.length}`
+        `美容 ${hcFirstStore.beauty}/${dash(expBeauty)} 合计 ${hcFirstStore.total}/${expTotal}`
+    );
+
+    // ---------- Stage 9.15：4 处口径回归防线（S9-54 ~ S9-57） ----------
+    // 背景：用户报「现有美容师傅整列都是 -」。根因是代码用 `position.name`（职位字典，
+    // 恒为「美容」）判断是否含「师傅」→ 永远 false → 整列恒 0。
+    // 正确判据是 **`positionNote`（职位备注，Excel 在职表 I 列）**。
+    check(
+      "S9-54",
+      "「现有美容师傅」按 positionNote=师傅 统计（不是 position.name）—— 修复整列为「—」的 bug",
+      hcFirstStore.master === dash(expMaster),
+      `${hcFirstStore.name} 师傅 ${hcFirstStore.master}，期望 ${dash(expMaster)}` +
+        `（positionNote=师傅 ${expMaster} 人；position.name 恒为「美容」，用它判断必然全 0）`
+    );
+    check(
+      "S9-55",
+      "「现有美容中小工」= positionNote ∈ {学徒,中工}（不是「非师傅」），且师傅+中小工 ≤ 美容现有",
+      hcFirstStore.junior === dash(expJunior) && expMaster + expJunior <= expBeauty,
+      `中小工 ${hcFirstStore.junior}/${dash(expJunior)}；师傅 ${expMaster} + 中小工 ${expJunior} ≤ 美容现有 ${expBeauty}`
+    );
+    // 全库合计：必须与 Excel 合计行（第 40 行）完全一致
+    const allActive = await prisma.employee.findMany({
+      where: { deletedAt: null, status: "ACTIVE" },
+      select: { jobGradeRaw: true, positionNote: true },
+    });
+    const ac = (pred) => allActive.filter((e) => pred(String(e.jobGradeRaw ?? "").trim(), String(e.positionNote ?? "").trim())).length;
+    const XL_TOTAL = { beauty: 85, junior: 42, master: 33, mechanic: 151, total: 290 };
+    const gotMaster = ac((g, n) => g === "美容" && n === "师傅");
+    const gotJunior = ac((g, n) => g === "美容" && (n === "学徒" || n === "中工"));
+    const gotBeauty = ac((g) => g === "美容");
+    const gotMech = ac((g) => g === "机修" || g === "技术店长");
+    const gotTotal =
+      ac((g) => g === "店长" || g === "代理店长") +
+      ac((g) => g === "副店长") +
+      ac((g) => g === "客服经理") +
+      gotMech +
+      gotBeauty +
+      ac((g) => g === "后勤");
+    check(
+      "S9-56",
+      "全库合计与 Excel 合计行一致：美容85/师傅33/中小工42/机修151(含技术店长)/合计290",
+      gotBeauty === XL_TOTAL.beauty &&
+        gotJunior === XL_TOTAL.junior &&
+        gotMaster === XL_TOTAL.master &&
+        gotMech === XL_TOTAL.mechanic &&
+        gotTotal === XL_TOTAL.total,
+      `美容 ${gotBeauty}/85 中小工 ${gotJunior}/42 师傅 ${gotMaster}/33 机修 ${gotMech}/151 合计 ${gotTotal}/290`
+    );
+    // 缺编列必须原样显示负数（超编），不能被替换成「—」
+    const hasNegativeGap = await prisma.$queryRawUnsafe(
+      `SELECT 1 AS x WHERE EXISTS (SELECT 1 FROM "StoreHeadcount" WHERE "mechanicFull" IS NOT NULL) LIMIT 1`
+    );
+    const negGapCell = /class="text-sky-600 font-semibold">-\d+<\/span>/.test(hcHtml);
+    check(
+      "S9-57",
+      "缺编明细列原样显示负数（超编，如 -2），不显示「—」",
+      Boolean(hasNegativeGap.length) && negGapCell,
+      `页面存在蓝色负数单元格：${negGapCell}（Excel S/T/U 列共 14 格为负数）`
+    );
+
+    // ---------- Stage 9.15.1：两表「职位备注」一致性（S9-58） ----------
+    // 背景：用户亲自核对 Excel 后指出「骆作豪职位备注不是空的」，我查错表了。
+    // 真相：在职表 I239 是**手填的「师傅」**（非 XLOOKUP 公式），而「数据库」表 R1685 为空。
+    // 而编制表的 COUNTIFS 读的是 **在职!I:I** → 在职表才是权威。
+    // 已在 scripts/fix-positionnote.mjs 修正入库，这里锁死结果防回退。
+    const lzz = await prisma.employee.findFirst({
+      where: { name: "骆作豪", deletedAt: null },
+      select: { employeeId: true, positionNote: true, storeId: true },
+    });
+    const lzzStore = lzz?.storeId;
+    const lzzMaster = lzzStore
+      ? await prisma.employee.count({
+          where: { deletedAt: null, status: "ACTIVE", storeId: lzzStore, jobGradeRaw: "美容", positionNote: "师傅" },
+        })
+      : -1;
+    check(
+      "S9-58",
+      "两表不一致的职位备注已按「在职表」修正（骆作豪=师傅），凤岗碧湖师傅数为 2",
+      lzz?.positionNote === "师傅" && lzzMaster === 2,
+      `${lzz?.employeeId} 职位备注=${JSON.stringify(lzz?.positionNote)}；凤岗碧湖大道店在职美容师傅 ${lzzMaster}/2`
     );
 
     // ---------- 新增员工页 ----------

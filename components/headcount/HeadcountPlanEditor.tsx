@@ -18,11 +18,11 @@ import type { HeadcountRow } from "@/lib/headcount-service";
  */
 
 const FIELDS = [
-  { key: "serviceManagerFull", label: "客服经理满编", short: "serviceManager" },
-  { key: "mechanicFull", label: "机修满编", short: "mechanic" },
-  { key: "beautyFull", label: "美容满编", short: "beauty" },
-  { key: "beautyMasterFull", label: "美容师傅满编", short: "beautyMaster" },
-  { key: "beautyJuniorFull", label: "美容中小工满编", short: "beautyJunior" },
+  { key: "serviceManagerFull", label: "客服经理满编" },
+  { key: "mechanicFull", label: "机修满编" },
+  { key: "beautyFull", label: "美容满编" },
+  { key: "beautyMasterFull", label: "美容师傅满编" },
+  { key: "beautyJuniorFull", label: "美容中小工满编" },
 ] as const;
 
 type FieldKey = (typeof FIELDS)[number]["key"];
@@ -47,36 +47,45 @@ export default function HeadcountPlanEditor({
     beautyJuniorFull: row.full.beautyJunior === null ? "" : String(row.full.beautyJunior),
   });
 
-  async function save(key: FieldKey, raw: string) {
-    const t = raw.trim();
-    if (t !== "" && !/^\d+$/.test(t)) {
-      setErr("只能填 0 或正整数；留空表示「不设该职位满编」");
-      return;
+  /**
+   * 「全部保存」必须**一次请求带上全部 5 个字段**。
+   *
+   * ⚠️ 之前是 for 循环逐个调 save()（每次只带 1 个字段），
+   *    而后端曾用 `data.x ?? null` 全量覆盖 → 每点一次就把另外 4 个字段抹成空，
+   *    实际把多家门店的满编值清空了。现已改为一次 PUT 全量提交。
+   *
+   * 也因此**去掉了失焦自动保存**：失焦时草稿可能与其它字段不同步，
+   * 统一由「全部保存」/ 回车 一次性提交，语义清晰、不会误改。
+   */
+  async function saveAll() {
+    const body: Record<string, number | null> = {};
+    for (const f of FIELDS) {
+      const t = draft[f.key].trim();
+      if (t !== "" && !/^\d+$/.test(t)) {
+        setErr(`「${f.label}」只能填 0 或正整数；留空表示「不设该职位满编」`);
+        return;
+      }
+      body[f.key] = t === "" ? null : Number(t);
     }
-    const value = t === "" ? null : Number(t);
     setErr("");
-    setSaving(key);
+    setSaving("serviceManagerFull");
     try {
       const res = await fetch(`/api/headcount/${storeId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [key]: value }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j?.error ?? `保存失败（HTTP ${res.status}）`);
       }
       startTransition(() => router.refresh());
+      setOpen(false);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setSaving(null);
     }
-  }
-
-  async function saveAll() {
-    for (const f of FIELDS) await save(f.key, draft[f.key]);
-    setOpen(false);
   }
 
   return (
@@ -102,14 +111,10 @@ export default function HeadcountPlanEditor({
                 <input
                   value={draft[f.key]}
                   onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
-                  onBlur={(e) => {
-                    const current = String(row.full[f.short] ?? "");
-                    if (e.target.value !== current) void save(f.key, e.target.value);
-                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      void save(f.key, draft[f.key]);
+                      void saveAll();
                     }
                   }}
                   inputMode="numeric"

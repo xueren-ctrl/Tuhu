@@ -15,7 +15,7 @@
  *
  * 发现问题时以退出码 1 结束，必须处理后再提交。
  */
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 
 const STAGED_ONLY = process.argv.includes("--staged");
@@ -30,6 +30,9 @@ const ALLOWLIST = [
   "13900139000", // 假号
   "13700137000", // 假号（第三阶段验收脚本用于验证敏感字段脱敏）
   "0000123456789012", // 假银行卡号（用于验证前导零保留）
+  // stage9-test.mjs 里新建测试员工用的假号（已核实生产库中不存在任何一条）
+  "13800000001",
+  "13900000002",
 ];
 
 const PATTERNS = [
@@ -96,15 +99,23 @@ function looksLikeRealIdCard(v) {
   return c[sum % 11] === s[17];
 }
 
+/**
+ * 调用 git —— **必须异步**。
+ * ⚠️ 本机上任何同步派生进程都会抛 `spawnSync git EBUSY`（execFileSync /
+ *    spawnSync / cmd.exe 包装全部试过，一样失败），
+ *    且报错发生在读取文件列表之前，检查会直接中断、什么都扫不到 —— 极其隐蔽。
+ *    记忆教训：读外部 exe 一律用异步 execFile。
+ */
 function sh(args, opts = {}) {
-  return execFileSync("git", args, {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    ...opts,
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...opts }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout ?? "");
+    });
   });
 }
 
-function main() {
+async function main() {
   if (!existsSync(".git")) {
     console.error("✗ 当前目录不是 Git 仓库，无法扫描。请先执行 git init。");
     process.exit(1);
@@ -112,10 +123,10 @@ function main() {
 
   if (!STAGED_ONLY) {
     console.log("→ 暂存全部改动（git add -A）…");
-    sh(["add", "-A"]);
+    await sh(["add", "-A"]);
   }
 
-  const files = sh(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
+  const files = (await sh(["diff", "--cached", "--name-only", "--diff-filter=ACMR"]))
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -147,7 +158,7 @@ function main() {
     if (!TEXT_EXT.test(f) && !f.startsWith(".env")) continue;
     let content = "";
     try {
-      content = sh(["show", `:${f}`]);
+      content = await sh(["show", `:${f}`]);
     } catch {
       continue; // 二进制或被删除
     }
@@ -202,4 +213,4 @@ function mask(v) {
   return `${v.slice(0, 4)}${"*".repeat(Math.max(4, v.length - 8))}${v.slice(-4)}`;
 }
 
-main();
+await main();
