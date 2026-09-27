@@ -16,6 +16,16 @@ import { storesOfManyAt } from "./store-period-service";
  *   月初人数   = 1 号在职人数 **且入职时间满 3 个月**
  * ────────────────────────────────────────────────────────────────
  *
+ * ── 店长 / 技术店长 / 副店长 三者的关系（用户确认，重要）────────────
+ *   **店长与技术店长互斥**：店长 = 全职店长；技术店长 = 由机修晋升的店长，
+ *   **职位性质不同**。一家店只填其中一列 —— 这一列本身就说明了「这家店是哪种店」。
+ *   实测 36 家：21 家有店长、13 家有技术店长、**0 家两者都有**、2 家都没有。
+ *   副店长与两者不互斥（可与店长同店并存，此时多出一行单独考核）。
+ *
+ *   「邀约数量」取**该行填了名字的那一列**（与 Excel 公式逐行核对一致）：
+ *   店长行 `$C` / 技术店长行 `$D` / 副店长行 `$E`。
+ * ────────────────────────────────────────────────────────────────
+ *
  * ⚠️ 与 Excel 的两处**有意**差异（均为改进，非 bug）：
  *
  * 1. **「入职满 3 个月」改用真实日期判定**（Excel 靠解析文本列「在职年限」如「3年2个月」取月份数）。
@@ -52,8 +62,13 @@ export interface AttritionRow {
   storeName: string;
   /** 店长行 / 副店长行 */
   role: "STORE_MANAGER" | "DEPUTY_MANAGER";
-  /** 本行对应的管理者姓名 */
+  /**
+   * 本行用于匹配「邀约数量」的姓名：
+   *   店长行 = 店长（没有则技术店长，两者互斥）
+   *   副店长行 = 副店长
+   */
   managerName: string | null;
+  /** 考核指标登记的三个岗位（店长 / 技术店长 互斥，副店长可并存） */
   managers: { storeManager: string | null; techManager: string | null; deputyManager: string | null };
   /** 月初人数：1 号在职 且 入职满 3 个月（按门店计，店长/副店长行相同） */
   monthStartHeadcount: number;
@@ -212,8 +227,7 @@ export async function getAttrition({ month }: MonthParam): Promise<{
       techManager: p.techManager,
       deputyManager: p.deputyManager,
     };
-
-    // 店长行（副店长行沿用同一组人数与流失率）
+    // 店长行与副店长行共用的人数（同一门店的数据）
     const baseRow = {
       sortOrder: p.sortOrder,
       storeName: p.store.name,
@@ -223,13 +237,20 @@ export async function getAttrition({ month }: MonthParam): Promise<{
       monthHired,
       rate,
     };
+
+    // 店长行
+    // ⚠️ 店长 / 技术店长**互斥**（用户确认）：店长 = 全职店长，
+    //    技术店长 = 由机修晋升的店长，**职位性质不同**，
+    //    一家店只会填其中一列。Excel 36 家里 21 家店长 / 13 家技术店长 / 0 家两者都有。
+    //    「邀约数量」取**本格填了名字的那一列**（Excel J 列公式逐一核对过：
+    //    店长行用 $C、技术店长行用 $D、副店长行用 $E）。
+    //    ⛔ 早期版本让「技术店长顶替店长」取邀约，是错的 —— 已修正。
+    const inviteName = p.storeManager ?? p.techManager;
     rows.push({
       ...baseRow,
       role: "STORE_MANAGER",
-      managerName: p.storeManager ?? p.techManager,
-      invites: (p.storeManager ?? p.techManager)
-        ? invites.get(p.storeManager ?? p.techManager!) ?? 0
-        : 0,
+      managerName: inviteName,
+      invites: inviteName ? invites.get(inviteName) ?? 0 : 0,
     });
 
     // 该店有副店长 → 追加一行，人数/流失率相同，只换邀约数量

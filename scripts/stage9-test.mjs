@@ -1223,6 +1223,30 @@ async function main() {
       `AttritionIndicator ${indicators} 条`
     );
 
+    // ---------- Stage 9.20：店长 / 技术店长 互斥（S9-69） ----------
+    // 用户澄清：「店长」代表全职店长，「技术店长」是由机修晋升的店长，**职位性质不同**。
+    // 因此一家店只会填其中一列 —— 这一列本身就说明「这家店是哪种店」。
+    const inds = await prisma.attritionIndicator.findMany({
+      select: { storeManager: true, techManager: true, store: { select: { name: true } } },
+    });
+    const bothFilled = inds.filter((x) => x.storeManager && x.techManager);
+    const sCount = inds.filter((x) => x.storeManager).length;
+    const tCount = inds.filter((x) => x.techManager).length;
+    check(
+      "S9-69",
+      "店长与技术店长互斥（无一家同时填两列），且店长行不把技术店长顶替进「店长」列",
+      bothFilled.length === 0 &&
+        sCount + tCount <= inds.length &&
+        // 页面：店长列与技��店长列的内容必须与库里的两列逐一对应
+        attrStoreRows.every((r) => {
+          const rec = inds.find((i) => i.store.name === r[1]);
+          if (!rec) return false;
+          return (r[2] === "—") === !rec.storeManager && (r[3] === "—") === !rec.techManager;
+        }),
+      `店长 ${sCount} 家 / 技术店长 ${tCount} 家 / 两者都填 ${bothFilled.length} 家` +
+        (bothFilled.length ? `（${bothFilled.map((x) => x.store.name).join("、")}）` : " ✓")
+    );
+
     // ---------- Stage 9.19：任职门店历史（S9-68） ----------
     // 途虎门店之间调动频繁。改门店时必须自动记一段任职历史，
     // 否则「1 号那天他在哪家店」永远算不出来。

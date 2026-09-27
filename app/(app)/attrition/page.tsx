@@ -94,9 +94,14 @@ export default async function AttritionPage({
             <strong>月初人数</strong>是「1 号在职<strong>且入职满 3 个月</strong>」。
           </div>
           <div>
+            <strong>「店长」与「技术店长」是两种不同的店，职位性质不同</strong>：
+            <strong>店长 = 全职店长</strong>；<strong>技术店长 = 由机修晋升的店长</strong>。
+            一家店只会填其中一列 —— 看这一列就知道这家店是哪种店（36 家里 21 家店长、13 家技术店长）。
+            <strong>「邀约数量」取该行填了名字的那一列</strong>：店长取店长、技术店长行取技术店长。
+          </div>
+          <div>
             <strong>有副店长的门店会多出一行</strong>，排法与 Excel 一致：
-            店长行在「店长」列填店长姓名；副店长行<strong>店名重复</strong>、
-            「店长」列留空、只在「副店长」列填副店长姓名。
+            店名重复、<strong>店长/技术店长列留空</strong>、只在「副店长」列填副店长姓名。
             该行的<strong>人数与流失率和上面店长行完全相同</strong>（都是按门店算的），
             只有<strong>「邀约数量」取副店长本人</strong>当月面试的人数 —— 副店长是独立考核对象。
             合计行的人数只按门店算一次，邀约数量两条都计。
@@ -159,9 +164,12 @@ export default async function AttritionPage({
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 font-medium text-slate-700">
                   {r.storeName}
                 </td>
-                {/* 店长：只在本行是「店长行」时显示；副店长行留空（同 Excel R5/R12） */}
+                {/* 店长 / 技术店长：两者互斥（用户确认）
+                    —— 店长 = 全职店长；技术店长 = 由机修晋升的店长，职位性质不同。
+                    一家店只会填其中一列，据此可判断这家店是哪种店。
+                    Excel 原文 36 家里 21 家有店长、13 家有技术店长、0 家两者都有。 */}
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
-                  {r.role === "STORE_MANAGER" ? r.managers.storeManager || r.managers.techManager || "—" : "—"}
+                  {r.role === "STORE_MANAGER" ? r.managers.storeManager || "—" : "—"}
                 </td>
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
                   {r.role === "STORE_MANAGER" ? r.managers.techManager || "—" : "—"}
@@ -229,9 +237,11 @@ export default async function AttritionPage({
         ⚠️ 此口径比 Excel 更准确：Excel 靠解析「在职年限」文本列（如「3年2个月」）判断，
         而那个文本列是<strong>算到今天</strong>的时长，会把「8 月才入职、但到 9 月已满 3 个月」的人
         错误计入 8 月的月初人数。        负数流失率表示当月净流入。
-        「店长 / 技术店长 / 副店长」取自考核指标里登记的姓名（不随员工调岗变动）；
-        「邀约数量」= 招聘面试登记表里当月面试、且招聘人是该行店长的记录数
-        （副店长行取副店长，与 Excel 公式 `COUNTIFS(…,$E5,…)` 一致）。
+        <strong>店长与技术店长互斥</strong>：店长 = 全职店长，技术店长 = 由机修晋升的店长，
+        职位性质不同，一家店只填其中一列；「邀约数量」取该行填了名字的那一列
+        （Excel 公式逐行核对：店长行 <code className="rounded bg-slate-100 px-1">$C</code>、
+        技术店长行 <code className="rounded bg-slate-100 px-1">$D</code>、
+        副店长行 <code className="rounded bg-slate-100 px-1">$E</code>）。
         需要改管理者姓名请到 <Link href="/settings/stores" className="text-brand-600 underline">基础设置</Link> 维护。
       </p>
     </div>
