@@ -348,7 +348,7 @@ async function main() {
       "/employees/views/resigned",
       "/employees/views/stores",
       "/employees/views/departments",
-      "/employees/views/distribution",
+      "/distribution",
       "/settings/departments",
     ];
     for (const v of views) {

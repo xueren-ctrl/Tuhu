@@ -309,7 +309,7 @@ async function main() {
 
     const pages = [
       "/", "/employees", "/employees/views", "/employees/views/active", "/employees/views/resigned",
-      "/employees/views/stores", "/employees/views/departments", "/employees/views/distribution",
+      "/employees/views/stores", "/employees/views/departments", "/distribution",
       `/employees/${empId}`,
     ];
     let allOk = true;

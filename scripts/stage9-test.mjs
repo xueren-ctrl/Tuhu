@@ -1435,6 +1435,93 @@ async function main() {
       `${sepFormulaOk}/36 家公式吻合（分母为快照值）`
     );
 
+    // ---------- Stage 9.23：门店人员分布明细（S9-76 ~ S9-79） ----------
+    // 复刻 Excel「门店人员分布明细」Sheet：逐店列出各工种的全部在职人名。
+    // 实测导入时已逐格对账：36 家 × 7 工种 = 252 组人名与 Excel 缓存完全一致。
+    const distPage = await req("/distribution");
+    const distHtml = (await distPage.text()).replace(/<!--[\s\S]*?-->/g, "");
+    check(
+      "S9-76",
+      "人员分布明细页可访问，10 列与 Excel「门店人员分布明细」完全一致",
+      distPage.status === 200 &&
+        ["序号", "门店", "门店人数", "店长", "副店长", "技术店长", "客服经理", "后勤", "机修", "美容"].every(
+          (c) => distHtml.includes(c)
+        ),
+      `HTTP ${distPage.status}`
+    );
+
+    // 解析表体
+    const distBody = distHtml.slice(distHtml.indexOf("<tbody"));
+    const distRows = [...distBody.matchAll(/<tr[\s\S]*?<\/tr>/g)]
+      .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) => c[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()))
+      .filter((r) => r.length === 10);
+    const distData = distRows.slice(0, -1);
+    const distTotalRow = distRows[distRows.length - 1];
+    check(
+      "S9-77",
+      "分布明细表 = 36 家门店 + 合计行，门店顺序取自编制表",
+      distRows.length === 37 && distData.length === 36 && distTotalRow[1] === "所有门店合计",
+      `行数 ${distRows.length}（36 店 + 1 合计）`
+    );
+
+    // 逐店逐工种与库实时数据对账（含人名内容与顺序无关，只比对集合）
+    const distPlans = await prisma.storeHeadcount.findMany({
+      orderBy: [{ sortOrder: "asc" }, { storeId: "asc" }],
+      include: { store: { select: { id: true, name: true } } },
+    });
+    const distActive = await prisma.employee.findMany({
+      where: { deletedAt: null, status: "ACTIVE", storeId: { not: null } },
+      select: { storeId: true, name: true, jobGradeRaw: true },
+    });
+    const GRADE_COLS = [
+      [3, ["店长", "代理店长"]],
+      [4, ["副店长"]],
+      [5, ["技术店长"]],
+      [6, ["客服经理"]],
+      [7, ["后勤"]],
+      [8, ["机修"]],
+      [9, ["美容"]],
+    ];
+    let nameOk = 0, nameBad = [];
+    for (let i = 0; i < distPlans.length; i++) {
+      const p = distPlans[i];
+      const cell = distData[i];
+      if (!cell || cell[1] !== p.store.name) { nameBad.push(`第${i + 1}行店名不符：页面 ${cell?.[1]} / 库 ${p.store.name}`); continue; }
+      const list = distActive.filter((e) => e.storeId === p.store.id);
+      let rowOk = String(list.length) === cell[2];
+      for (const [col, grades] of GRADE_COLS) {
+        const mine = list
+          .filter((e) => grades.includes(String(e.jobGradeRaw ?? "").trim()))
+          .map((e) => e.name).sort();
+        const shown = cell[col] === "—" ? [] : cell[col].split("、").filter(Boolean).sort();
+        if (mine.length !== shown.length || mine.some((x) => !shown.includes(x))) {
+          rowOk = false;
+          nameBad.push(`${p.store.name} 第${col + 1}列：页面[${shown.join("、")}] vs 库[${mine.join("、")}]`);
+        }
+      }
+      if (rowOk) nameOk++;
+    }
+    check(
+      "S9-78",
+      "逐店逐工种人名与「在职」表实时数据一致（36 家 × 7 工种）",
+      nameBad.length === 0 && nameOk === 36,
+      nameBad.length ? nameBad.slice(0, 3).join("；") : `${nameOk}/36 家全部吻合（含人名集合比对）`
+    );
+
+    // 合计行：人数与工种列都与库实时聚合一致
+    const wantTotal = distActive.length;
+    const gradeTotals = GRADE_COLS.map(([, g]) =>
+      distActive.filter((e) => g.includes(String(e.jobGradeRaw ?? "").trim())).length
+    );
+    check(
+      "S9-79",
+      "合计行的门店人数与 7 个工种人数与库实时聚合一致",
+      distTotalRow[2] === String(wantTotal) &&
+        GRADE_COLS.every(([col], i) => distTotalRow[col] === String(gradeTotals[i])),
+      `合计 人数${distTotalRow[2]}/${wantTotal}；工种 ` +
+        GRADE_COLS.map(([c], i) => `${distTotalRow[c]}/${gradeTotals[i]}`).join(" ")
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();

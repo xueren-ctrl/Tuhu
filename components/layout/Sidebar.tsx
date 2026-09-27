@@ -47,7 +47,7 @@ const NAV: NavGroup[] = [
       { href: "/", label: "首页看板", icon: "▦" },
       { href: "/employees/views", label: "视图总览", icon: "◱" },
       { href: "/employees/views/stores", label: "门店人员查询", icon: "⌂" },
-      { href: "/employees/views/distribution", label: "人员分布统计", icon: "◔" },
+      { href: "/distribution", label: "人员分布明细", icon: "◔" },
       { href: "/attrition", label: "人员流失率", icon: "◐" },
     ],
   },

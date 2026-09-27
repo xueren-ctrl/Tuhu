@@ -59,13 +59,13 @@ export default async function ViewsOverviewPage() {
       desc: "按 Department 查询部门人数与岗位分布。",
     },
     {
-      href: "/employees/views/distribution",
-      title: "人员分布统计",
-      replaces: "Excel「人员分布明细」Sheet",
+      href: "/distribution",
+      title: "人员分布明细",
+      replaces: "Excel「门店人员分布明细」Sheet",
       value: stats.total,
       unit: "人",
       tone: "slate" as const,
-      desc: "总人数 / 各门店 / 各部门 / 岗位数量实时统计。",
+      desc: "逐店列出各工种的全部在职人名，实时统计。",
     },
   ];
 

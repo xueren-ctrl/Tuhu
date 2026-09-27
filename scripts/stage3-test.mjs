@@ -232,8 +232,8 @@ async function main() {
       deptView.status === 200 && deptView.text.includes(T.emp1) && deptView.text.includes(T.emp2),
       `HTTP ${deptView.status}`);
 
-    const distView = await get("/employees/views/distribution");
-    check("2.6", "人员分布统计页同步（HTTP 200 且含部门名）",
+    const distView = await get("/distribution");
+    check("2.6", "人员分布明细页同步（HTTP 200 且含部门名）",
       distView.status === 200 && distView.text.includes(T.dept), `HTTP ${distView.status}`);
 
     // ============================================================
