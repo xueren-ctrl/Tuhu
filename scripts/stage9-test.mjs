@@ -1998,30 +1998,37 @@ async function main() {
     check(
       "S9-97",
       `门店选择全部改为「输入关键词联想」，候选 = 在职表 + 南昌3店（实测 ${scopeList.length} 家）`,
-      allSearchBox && noLegacyOption && scopeList.length === 40,
+      allSearchBox && noLegacyOption && scopeList.length === 39,
       pageReports.join("；") +
         `；范围 ${scopeList.length} 家（在职 ${scopeList.filter((s) => s.activeCount > 0).length} + 南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length}）；` +
         `范围外老门店共 ${outOfScopeStores.length} 家，均未以旧式下拉出现`
     );
 
     // 范围口径：必须等于「在职表门店 ∪ 南昌3店门店」，且每家都带在职人数
+    // ⚠️ 39 = 在职 36 + 南昌3店 3（2026-09-28 用户确认口径；此前 40 是因为
+    //    「东城景湖春天」与「东城景湖春天店」两条记录并存，已合并为一家）。
     const allActiveStores = await prisma.store.count({ where: { status: "ACTIVE" } });
+    // 同名残留检查：范围内不允许出现「A」与「A店」这类互相包含的疑似重复门店
+    const dupPairs = [];
+    for (let i = 0; i < scopeList.length; i++) {
+      for (let j = i + 1; j < scopeList.length; j++) {
+        const a = scopeList[i].name;
+        const b = scopeList[j].name;
+        if (a !== b && (a.includes(b) || b.includes(a))) dupPairs.push(`${a} / ${b}`);
+      }
+    }
     check(
       "S9-98",
-      "门店范围口径正确 = 在职表门店 ∪ 南昌3店门店（而非全部启用门店），每家带在职人数",
-      scopeList.length === 40 &&
+      "门店范围口径正确 = 在职表门店 ∪ 南昌3店门店（而非全部启用门店），每家带在职人数，且无同名重复门店",
+      scopeList.length === 39 &&
         scopeList.length < allActiveStores &&
         scopeList.every((s) => typeof s.activeCount === "number") &&
         scopeList.some((s) => s.nc3Count > 0) &&
-        scopeList.some((s) => s.activeCount > 0),
-      `范围 ${scopeList.length} 家 < 全部启用 ${allActiveStores} 家；` +
+        scopeList.some((s) => s.activeCount > 0) &&
+        dupPairs.length === 0,
+      `范围 ${scopeList.length} 家（在职 ${scopeList.filter((s) => s.activeCount > 0).length} + 南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length}）< 全部启用 ${allActiveStores} 家；` +
         `含南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length} 家；` +
-        `同名可区分示例：${
-          scopeList
-            .filter((s) => s.name.includes("景湖"))
-            .map((s) => `${s.name}(在职${s.activeCount})`)
-            .join("、") || "无"
-        }`
+        `同名重复残留 ${dupPairs.length} 组${dupPairs.length ? "：" + dupPairs.join("、") : ""}`
     );
 
     // ---------- 新增员工页 ----------
