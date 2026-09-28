@@ -14,6 +14,7 @@ import {
 import StorePicker from "@/components/common/StorePicker";
 import PositionPicker from "@/components/common/PositionPicker";
 import PositionNoteSelect from "@/components/common/PositionNoteSelect";
+import YesNoSelect from "@/components/common/YesNoSelect";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 /** Excel 原始字段（除核心字段外的全部 46 列）建在折叠分组里，确保不丢字段 */
@@ -21,6 +22,10 @@ import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 type FormState = Record<string, string>;
 
 type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+
+/** Stage 9.33：受控选项（用户 2026-09-28 定）—— 面试结果 / 文档类字段只允许这几个值 */
+const INTERVIEW_RESULT_OPTIONS = ["通过", "不通过"] as const;
+const YES_NO_OPTIONS = ["是", "否"] as const;
 
 export interface EmployeeFormProps {
   mode: "create" | "edit";
@@ -80,7 +85,6 @@ const TEXT_FIELDS: {
   { key: "docResume", label: "简历表", excel: "AH" },
   { key: "docInterviewEvaluation", label: "面试评估表", excel: "AI" },
   { key: "docOnboardingForm", label: "入职表", excel: "AN" },
-  { key: "docInterviewEvaluation2", label: "面试评估表（重复列）", excel: "AO" },
   { key: "recruiterName", label: "招聘人", excel: "Y" },
   { key: "interviewLocation", label: "面试地点", excel: "AD" },
   { key: "interviewResult", label: "面试结果", excel: "AE" },
@@ -115,15 +119,11 @@ const TEXT_GROUPS: { title: string; keys: string[] }[] = [
       "socialInsuranceAgreement",
       "fireSafetyCommitment",
       "dormitoryWaiver",
-      "docResume",
-      "docInterviewEvaluation",
-      "docOnboardingForm",
-      "docInterviewEvaluation2",
     ],
   },
   {
     title: "招聘 / 面试（第一阶段仅保存字段）",
-    keys: ["recruiterName", "interviewLocation", "interviewResult", "interviewerName", "interviewHired"],
+    keys: ["recruiterName", "interviewerName", "interviewHired"],
   },
   {
     title: "其他字段与导入快照",
@@ -240,6 +240,23 @@ export default function EmployeeForm({
   }, [positionSelected, positionItems]);
   /** 只有「美容」职位有职位备注（师傅/中工/学徒） */
   const isBeautyPosition = positionSelected?.name === "美容";
+
+  /* ---------- 面试地点（Stage 9.33）：就是门店 ---------- */
+  /** 面试地点存的是**店名文本**，不是门店 id，所以回显要从全量门店里按名字找 */
+  const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);
+  const interviewStoreSelected = useMemo(() => {
+    const v = (form.interviewLocation ?? "").trim();
+    if (!v) return null;
+    const hit = allStoreOptions.find((x) => x.name === v) ?? storeScope.find((x) => x.name === v);
+    return hit ?? { id: -1, name: v };
+  }, [form.interviewLocation, allStoreOptions, storeScope]);
+  /** 面试地点写了简称（如「沙湖大道店」，库里实际是「塘厦沙湖大道店」）也必须能选回 */
+  const interviewStoreExtras = useMemo(() => {
+    const cur = (form.interviewLocation ?? "").trim();
+    if (!cur) return [];
+    const exact = allStoreOptions.some((x) => x.name === cur);
+    return exact ? [] : [{ id: -1, name: cur, tag: "已填地点", tagTone: "slate" as const }];
+  }, [form.interviewLocation, allStoreOptions]);
 
   const isResigned = form.status === "RESIGNED";
 
@@ -405,6 +422,59 @@ export default function EmployeeForm({
               />
             </Field>
           ) : null}
+
+          {/* ---------- 招聘 / 面试（Stage 9.33：受控选项，不再是自由文本） ---------- */}
+          <Field
+            label="面试地点"
+            excelColumn="AD"
+            hint="在哪家门店面试的，输入店名搜索"
+          >
+            <StorePicker
+              stores={storeScope}
+              allStores={allStoreOptions}
+              extraStores={interviewStoreExtras}
+              value={interviewStoreSelected}
+              onChange={(s) => {
+                set("interviewLocation")(s ? s.name : "");
+                // 同步门店主数据：面试地点如果确实是一家在营门店，顺带把档案门店对齐
+                // 不会自动改（可能面试店 ≠ 现门店），这里只写原文，不动 storeId。
+              }}
+              placeholder="输入门店名，如：大坪"
+              emptyLabel="（未填写）"
+            />
+          </Field>
+
+          <Field label="面试结果" excelColumn="AE" hint="通过 / 不通过，也可留空（未知）">
+            <YesNoSelect
+              value={form.interviewResult}
+              options={INTERVIEW_RESULT_OPTIONS}
+              onChange={(v) => set("interviewResult")(v)}
+            />
+          </Field>
+
+          <Field label="简历表" excelColumn="AH" hint="是 / 否，也可留空">
+            <YesNoSelect value={form.docResume} options={YES_NO_OPTIONS} onChange={(v) => set("docResume")(v)} />
+          </Field>
+
+          <Field
+            label="面试评估表"
+            excelColumn="AI"
+            hint="是 / 否，也可留空。招聘面试登记表与薪资表原本是同名列，现已合并为一项"
+          >
+            <YesNoSelect
+              value={form.docInterviewEvaluation}
+              options={YES_NO_OPTIONS}
+              onChange={(v) => set("docInterviewEvaluation")(v)}
+            />
+          </Field>
+
+          <Field label="入职表" excelColumn="AN" hint="是 / 否，也可留空">
+            <YesNoSelect
+              value={form.docOnboardingForm}
+              options={YES_NO_OPTIONS}
+              onChange={(v) => set("docOnboardingForm")(v)}
+            />
+          </Field>
 
           <Field
             label="部门"

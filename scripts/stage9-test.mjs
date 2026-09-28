@@ -2122,7 +2122,60 @@ async function main() {
       allPosBox,
       posReports.join("；") +
         `；职位备注实际取值：${noteVals.map((v) => `${v}×${noteRows.find((r) => r.positionNote === v)?._count._all}`).join("、")}` +
-        `（范围外历史值 ${offListNotes.length} 种，原样保留可清除）`
+               `（范围外历史值 ${offListNotes.length} 种，原样保留可清除）`
+    );
+
+    // ---------- Stage 9.33：招聘/面试字段受控化 + 面试评估表合并 ----------
+    // 用户 2026-09-28 要求：
+    //   面试地点 → 门店搜索下拉；面试结果 → 通过/不通过/空；
+    //   简历表/面试评估表/入职表 → 是/否/空；两处「面试评估表」合并成一个。
+    const CLEAN_YESNO = ["是", "否"];
+    const CLEAN_RESULT = ["通过", "不通过"];
+  const fieldReport = [];
+    let allClean = true;
+    for (const field of ["docResume", "docInterviewEvaluation", "docOnboardingForm"]) {
+      const rows = await prisma.employee.groupBy({
+        by: [field],
+        where: { deletedAt: null, [field]: { not: null } },
+        _count: { _all: true },
+      });
+    const vals = rows.map((r) => r[field]);
+    const dirty = vals.filter((v) => !CLEAN_YESNO.includes(String(v)));
+      if (dirty.length) allClean = false;
+      fieldReport.push(`${field}：${vals.join("、") || "（全空）"}${dirty.length ? " ←有脏值" : ""}`);
+    }
+    const resRows = await prisma.employee.groupBy({
+      by: ["interviewResult"],
+      where: { deletedAt: null, interviewResult: { not: null } },
+      _count: { _all: true },
+    });
+    const resVals = resRows.map((r) => r.interviewResult);
+    const resDirty = resVals.filter((v) => !CLEAN_RESULT.includes(String(v)));
+    if (resDirty.length) allClean = false;
+    fieldReport.push(`interviewResult：${resVals.join("、") || "（全空）"}${resDirty.length ? " ←有脏值" : ""}`);
+
+    // 「面试评估表」已合并：重复列 docInterviewEvaluation2 不应再有「主列为空」的人
+    const unmerged = await prisma.employee.count({
+      where: {
+deletedAt: null,
+        docInterviewEvaluation2: { not: null },
+        OR: [{ docInterviewEvaluation: null }, { docInterviewEvaluation: "" }],
+      },
+    });
+    // 界面层：编辑表单不再出现「面试评估表（重复列）」
+    const editHtml2 = (await (await req(`/employees/${editProbe.id}/edit`)).text()).replace(/<!--[\s\S]*?-->/g, "");
+    const noDupField = !editHtml2.includes("面试评估表（重复列）");
+    // 面试地点改成搜索下拉（不再是自由文本框）
+    const hasLocSearch =
+      editHtml2.includes("输入门店名，如：大坪") || /面试地点[\s\S]{0,400}?输入门店名/.test(editHtml2);
+    if (unmerged !== 0 || !noDupField || !hasLocSearch) allClean = false;
+
+    check(
+      "S9-101",
+      "招聘/面试字段受控化：面试结果=通过/不通过，简历表·面试评估表·入职表=是/否，面试评估表已合并为一项",
+      allClean && noDupField && hasLocSearch && unmerged === 0,
+      `${fieldReport.join("；")}；重复列残留未合并 ${unmerged} 人；` +
+        `编辑页无「重复列」字段=${noDupField}；面试地点为门店搜索=${hasLocSearch}`
     );
 
     const newPage = await req("/employees/new");
