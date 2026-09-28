@@ -175,10 +175,12 @@ export interface FieldMeta {
   /**
    * 表单控件类型
    * ⚠️ Stage 9.33：新增两个**受控取值**类型，杜绝自由文本再写进脏值：
-   *   yesno   = 只允许 是 / 否 / 空
+   *   tick    = 只允许 √ / 空（材料类字段：简历表/面试评估表/入职表）
+   │            用户 2026-09-28 更正过一次口径：原为「是/否」，实为「√ 或留空」
+   *   passfail= 只允许 通过 / 不通过 / 空（面试结果）
    *   passfail= 只允许 通过 / 不通过 / 空
    */
-  control?: "text" | "textarea" | "date" | "number" | "select" | "yesno" | "passfail";
+  control?: "text" | "textarea" | "date" | "number" | "select" | "tick" | "passfail";
   /** Excel 原始列（便于对照 docs/excel-analysis.md） */
   excelColumn?: string;
 }
@@ -234,9 +236,9 @@ export const EMPLOYEE_FIELDS: FieldMeta[] = [
   { key: "socialInsuranceAgreement", label: "社保协议", group: "contract", control: "text", excelColumn: "Q 社保协议" },
   { key: "fireSafetyCommitment", label: "消防承诺书", group: "contract", control: "text", excelColumn: "R 消防承诺书" },
   { key: "dormitoryWaiver", label: "宿舍免责协议", group: "contract", control: "text", excelColumn: "S 宿舍免责协议" },
-  { key: "docResume", label: "简历表", group: "contract", control: "yesno", excelColumn: "AH 简历表" },
-  { key: "docInterviewEvaluation", label: "面试评估表", group: "contract", control: "yesno", excelColumn: "AI 面试评估表" },
-  { key: "docOnboardingForm", label: "入职表", group: "contract", control: "yesno", excelColumn: "AN 入职表" },
+  { key: "docResume", label: "简历表", group: "contract", control: "tick", excelColumn: "AH 简历表" },
+  { key: "docInterviewEvaluation", label: "面试评估表", group: "contract", control: "tick", excelColumn: "AI 面试评估表" },
+  { key: "docOnboardingForm", label: "入职表", group: "contract", control: "tick", excelColumn: "AN 入职表" },
   { key: "docInterviewEvaluation2", label: "面试评估表（重复列）", group: "contract", control: "text", excelColumn: "AO 面试评估表" },
 
   // ⑨ 招聘面试

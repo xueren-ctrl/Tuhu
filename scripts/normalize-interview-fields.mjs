@@ -39,6 +39,15 @@ const APPLY = process.argv.includes("--apply");
 const TO_YES = new Set(["√", "是", "Y", "y", "true", "TRUE", "1"]);
 const TO_NO = new Set(["0", "×", "x", "否", "N", "n", "false", "FALSE"]);
 
+function normalizeDoc(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (s === "√" || s === "是" || TO_YES.has(s)) return "√";  // 统一成 √
+  if (TO_NO.has(s)) return null;                                   // 0/否 = 没有 = 留空
+  return s;                                                        // 其他原样保留
+}
+
 function normalize(v) {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();
@@ -50,7 +59,11 @@ function normalize(v) {
   return s; // 原样保留
 }
 
-const FIELDS = ["interviewResult", "docResume", "docInterviewEvaluation", "docOnboardingForm"];
+/** 只允许「√ / 空」的文档三字段（用户 2026-09-28 更正口径） */
+const DOC_FIELDS = ["docResume", "docInterviewEvaluation", "docOnboardingForm"];
+/** 面试结果：只允许 通过 / 不通过 / 空 */
+const RESULT_FIELDS = ["interviewResult"];
+const ALL_FIELDS = [...DOC_FIELDS, ...RESULT_FIELDS];
 
 async function dist(field) {
   return prisma.employee.groupBy({
@@ -64,26 +77,33 @@ async function main() {
   console.log(`\n${APPLY ? "🔴 执行模式" : "🟡 预览模式（加 --apply 才写库）"}\n`);
 
   // ---------- ① 取值归一 ----------
-  console.log("========== ① 归一 √/0/未通过 → 是/否/不通过 ==========");
+  console.log("========== ① 取值归一 ==========");
+  console.log("   文档三字段（简历表/面试评估表/入职表）→ 只允许 √ / 空");
+  console.log("   面试结果 → 只允许 通过 / 不通过 / 空");
   const skipped = [];
-  for (const field of FIELDS) {
+  for (const field of ALL_FIELDS) {
+    const isDoc = DOC_FIELDS.includes(field);
+    const rule = isDoc ? normalizeDoc : normalize;
     const rows = await dist(field);
     const line = [];
     for (const r of rows) {
       const from = r[field];
-      const to = normalize(from);
+      const to = rule(from);
       if (from === to) continue;
-      if (from && TO_YES.has(String(from).trim())) line.push(`√→是 ${r._count._all}`);
-      else if (from && TO_NO.has(String(from).trim())) line.push(`0→否 ${r._count._all}`);
-      else if (from === "未通过") line.push(`未通过→不通过 ${r._count._all}`);
+      if (isDoc) {
+        if (TO_YES.has(String(from ?? "").trim())) line.push(`是→√ ${r._count._all}`);
+        else if (TO_NO.has(String(from ?? "").trim())) line.push(`0/否→留空 ${r._count._all}`);
+        else line.push(`「${from}」→${to === null ? "留空" : to} ${r._count._all}`);
+      } else if (from === "未通过") line.push(`未通过→不通过 ${r._count._all}`);
       else skipped.push({ field, value: String(from), count: r._count._all });
     }
     console.log(`  ${field}：${line.join("，") || "无需改动"}`);
     if (APPLY) {
       for (const r of rows) {
         const from = r[field];
-        const to = normalize(from);
+        const to = rule(from);
         if (from === to) continue;
+        // ⚠️ to 为 null 时要显式写 null（= 留空），不能跳过
         await prisma.employee.updateMany({ where: { [field]: from }, data: { [field]: to } });
       }
     }
@@ -129,7 +149,7 @@ async function main() {
 
   // ---------- 复核 ----------
   console.log("\n========== 复核 ==========");
-  for (const field of [...FIELDS, "docInterviewEvaluation2"]) {
+  for (const field of [...ALL_FIELDS, "docInterviewEvaluation2"]) {
     const rows = await dist(field);
     const top = rows
       .filter((r) => r[field] !== null && String(r[field]).trim() !== "")

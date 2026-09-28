@@ -2129,7 +2129,8 @@ async function main() {
     // 用户 2026-09-28 要求：
     //   面试地点 → 门店搜索下拉；面试结果 → 通过/不通过/空；
     //   简历表/面试评估表/入职表 → 是/否/空；两处「面试评估表」合并成一个。
-    const CLEAN_YESNO = ["是", "否"];
+    // Stage 9.33 更正：文档三字段只允许 √ 或留空（不再是「是/否」）
+    const CLEAN_YESNO = ["√"];
     const CLEAN_RESULT = ["通过", "不通过"];
   const fieldReport = [];
     let allClean = true;
@@ -2172,7 +2173,7 @@ deletedAt: null,
 
     check(
       "S9-101",
-      "招聘/面试字段受控化：面试结果=通过/不通过，简历表·面试评估表·入职表=是/否，面试评估表已合并为一项",
+      "招聘/面试字段受控化：面试结果=通过/不通过，简历表·面试评估表·入职表=√/留空，面试评估表已合并为一项",
       allClean && noDupField && hasLocSearch && unmerged === 0,
       `${fieldReport.join("；")}；重复列残留未合并 ${unmerged} 人；` +
         `编辑页无「重复列」字段=${noDupField}；面试地点为门店搜索=${hasLocSearch}`

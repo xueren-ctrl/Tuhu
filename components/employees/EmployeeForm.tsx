@@ -15,6 +15,7 @@ import StorePicker from "@/components/common/StorePicker";
 import PositionPicker from "@/components/common/PositionPicker";
 import PositionNoteSelect from "@/components/common/PositionNoteSelect";
 import YesNoSelect from "@/components/common/YesNoSelect";
+import MarkSelect from "@/components/common/MarkSelect";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 /** Excel 原始字段（除核心字段外的全部 46 列）建在折叠分组里，确保不丢字段 */
@@ -452,27 +453,27 @@ export default function EmployeeForm({
             />
           </Field>
 
-          <Field label="简历表" excelColumn="AH" hint="是 / 否，也可留空">
-            <YesNoSelect value={form.docResume} options={YES_NO_OPTIONS} onChange={(v) => set("docResume")(v)} />
+          <Field label="简历表" excelColumn="AH" hint="有这份材料就打 √，没有就留空">
+            <MarkSelect value={form.docResume} onChange={(v) => set("docResume")(v)} label="已交" />
           </Field>
 
           <Field
             label="面试评估表"
             excelColumn="AI"
-            hint="是 / 否，也可留空。招聘面试登记表与薪资表原本是同名列，现已合并为一项"
+            hint="有就打 √，没有就留空。招聘面试登记表与薪资表原本是同名列，现已合并为一项"
           >
-            <YesNoSelect
+            <MarkSelect
               value={form.docInterviewEvaluation}
-              options={YES_NO_OPTIONS}
               onChange={(v) => set("docInterviewEvaluation")(v)}
+              label="已交"
             />
           </Field>
 
-          <Field label="入职表" excelColumn="AN" hint="是 / 否，也可留空">
-            <YesNoSelect
+          <Field label="入职表" excelColumn="AN" hint="有这份材料就打 √，没有就留空">
+            <MarkSelect
               value={form.docOnboardingForm}
-              options={YES_NO_OPTIONS}
               onChange={(v) => set("docOnboardingForm")(v)}
+              label="已交"
             />
           </Field>
 
