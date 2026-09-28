@@ -65,6 +65,6 @@ export const config = {
    * 这些文件不含任何业务数据（只是图标和缓存规则），放行是安全的。
    */
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.svg$|.*\\.png$|.*\\.ico$|manifest\\.webmanifest|sw\\.js|offline).*)",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.svg$|.*\\.png$|.*\\.ico$|manifest\\.webmanifest|sw\\.js|offline|repair).*)",
   ],
 };
