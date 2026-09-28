@@ -90,6 +90,7 @@ export default async function NewEmployeePage({
         defaultStatus={meta.defaultStatus}
         stores={options.stores}
         storeScopeRaw={options.storeScope}
+        positionScopeRaw={options.positionScope}
         departments={options.departments}
         positions={options.positions}
         opsDepartmentId={opsDept?.id ?? null}

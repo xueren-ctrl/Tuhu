@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Field, Input, Select } from "@/components/ui";
 import StorePicker from "@/components/common/StorePicker";
+import PositionPicker from "@/components/common/PositionPicker";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 /**
@@ -19,6 +20,8 @@ import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
  *     locked={{ status: "ACTIVE" }}      // 锁定状态为在职（不在界面上暴露，但会写进 URL）
  *   />
  */
+
+type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
 
 export type FilterField =
   | "keyword"
@@ -46,6 +49,8 @@ export interface EmployeeFilterPanelProps {
    * 页面用 `getStoreScopeOptions()` 计算；缺省时联想里不显示在职人数。
    */
   storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
+  positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments?: OptionItem[];
   positions?: OptionItem[];
   /** 展示哪些筛选项，默认：keyword + storeId + departmentId + positionId + status */
@@ -66,6 +71,7 @@ export default function EmployeeFilterPanel({
   basePath,
   stores = [],
   storeScopeRaw = [],
+  positionScopeRaw = { store: [], ops: [] },
   departments = [],
   positions = [],
   fields = ALL_FIELDS,
@@ -125,6 +131,26 @@ export default function EmployeeFilterPanel({
     [stores, storeScopeRaw]
   );
   const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);
+  /* ---------- 职位（Stage 9.32） ---------- */
+  const positionItems = useMemo(
+    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    [positionScopeRaw]
+  );
+  const allPositionOptions = useMemo(() => positions.map((p) => ({ id: p.id, name: p.name })), [positions]);
+  const unassignedPositionPseudo = useMemo(
+    () => [{ id: -1, name: "未分配职位", raw: UNASSIGNED }],
+    []
+  );
+  const positionSelected = useMemo(() => {
+    const v = form.positionId;
+    if (!v) return null;
+    const p = unassignedPositionPseudo.find((x) => x.raw === v);
+    if (p) return p;
+    const id = Number(v);
+    const hit = allPositionOptions.find((x) => x.id === id) ?? positionItems.find((x) => x.id === id);
+    return hit ?? { id, name: `职位#${v}` };
+  }, [form.positionId, allPositionOptions, positionItems, unassignedPositionPseudo]);
+
   const pseudoStores = useMemo(
     () => [{ id: -1, name: "未分配门店", raw: UNASSIGNED }],
     []
@@ -254,22 +280,20 @@ export default function EmployeeFilterPanel({
         ) : null}
 
         {visible("positionId") ? (
-          <Field label="职位" className="w-[180px]">
-            <Select
-              value={form.positionId}
-              onChange={(e) => {
-                set("positionId")(e.target.value);
-                apply({ positionId: e.target.value });
+          <Field label="职位" className="w-[220px]">
+            <PositionPicker
+              items={positionItems}
+              allPositions={allPositionOptions}
+              pseudoItems={unassignedPositionPseudo}
+              value={positionSelected}
+              onChange={(p) => {
+                const v = p ? p.raw ?? String(p.id) : "";
+                set("positionId")(v);
+                apply({ positionId: v });
               }}
-            >
-              <option value="">全部职位</option>
-              {positions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-              <option value={UNASSIGNED}>未分配职位</option>
-            </Select>
+              placeholder="输入职位筛选"
+              emptyLabel="全部职位"
+            />
           </Field>
         ) : null}
 

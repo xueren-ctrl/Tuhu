@@ -12,17 +12,23 @@ import {
   Textarea,
 } from "@/components/ui";
 import StorePicker from "@/components/common/StorePicker";
+import PositionPicker from "@/components/common/PositionPicker";
+import PositionNoteSelect from "@/components/common/PositionNoteSelect";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 /** Excel 原始字段（除核心字段外的全部 46 列）建在折叠分组里，确保不丢字段 */
 
 type FormState = Record<string, string>;
 
+type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+
 export interface EmployeeFormProps {
   mode: "create" | "edit";
   stores: { id: number; name: string }[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
   storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
+  positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: { id: number; name: string }[];
   positions: { id: number; name: string }[];
   initial?: Record<string, unknown> | null;
@@ -93,7 +99,9 @@ const TEXT_GROUPS: { title: string; keys: string[] }[] = [
     title: "联系方式补充",
     keys: ["emergencyContact1", "emergencyPhone1", "emergencyContact2", "emergencyPhone2", "currentAddress"],
   },
-  { title: "职位补充", keys: ["positionNote", "certificateLevel"] },
+  // ⚠️ Stage 9.32：positionNote 已从折叠分组移出（改为「职位」旁边的三选一按钮，
+  //    且只有美容职位才显示），避免同一个字段出现两次。
+  { title: "职位补充", keys: ["certificateLevel"] },
   { title: "入职信息补充", keys: ["dormitory", "mentorName", "onboardingMedical"] },
   { title: "社保（第一阶段仅保存字段）", keys: ["socialInsurancePurchased"] },
   {
@@ -134,6 +142,7 @@ export default function EmployeeForm({
   mode,
   stores,
   storeScopeRaw = [],
+  positionScopeRaw = { store: [], ops: [] },
   departments,
   positions,
   initial,
@@ -203,6 +212,34 @@ export default function EmployeeForm({
     if (storeScope.some((s) => s.id === cur.id)) return [];
     return [{ id: cur.id, name: cur.name, tag: "当前门店", tagTone: "amber" as const }];
   }, [storeSelected, storeScope]);
+
+  /* ---------- 职位（Stage 9.32：搜索下拉，门店 7 种 + 运营部 3 种） ---------- */
+  /** 范围内职位，按门店/运营部分组 */
+  const positionItems = useMemo(
+    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    [positionScopeRaw]
+  );
+  /** 全部职位（筛选/展开用） */
+  const allPositionOptions = useMemo(
+    () => positions.map((p) => ({ id: p.id, name: p.name })),
+    [positions]
+  );
+  const positionSelected = useMemo(() => {
+    const cur = String(form.positionId ?? "");
+    if (!cur) return null;
+    const id = Number(cur);
+    const hit = positionItems.find((p) => p.id === id);
+    return hit ?? { id, name: positions.find((p) => String(p.id) === cur)?.name ?? `职位#${cur}` };
+  }, [positionItems, positions, form.positionId]);
+  /** 当前职位不在 7+3 范围内（如离职人员的「青铜机修技师」）也必须可选，否则会丢数据 */
+  const positionExtras = useMemo(() => {
+    const cur = positionSelected;
+    if (!cur) return [];
+    if (positionItems.some((p) => p.id === cur.id)) return [];
+    return [{ id: cur.id, name: cur.name, tag: "当前职位" }];
+  }, [positionSelected, positionItems]);
+  /** 只有「美容」职位有职位备注（师傅/中工/学徒） */
+  const isBeautyPosition = positionSelected?.name === "美容";
 
   const isResigned = form.status === "RESIGNED";
 
@@ -333,19 +370,41 @@ export default function EmployeeForm({
             />
           </Field>
 
-          <Field label="职位 / 工种" excelColumn="H" hint="优先从职位主数据中选择">
-            <Select
-              value={form.positionId}
-              onChange={(e) => set("positionId")(e.target.value)}
-            >
-              <option value="">未指定 / 保留 Excel 原文</option>
-              {positions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
+          <Field
+            label="职位 / 工种"
+            excelColumn="H"
+            hint="门店 7 种 + 运营部 3 种，输入即可搜索"
+          >
+            <PositionPicker
+              items={positionItems}
+              allPositions={allPositionOptions}
+              extraItems={positionExtras}
+              value={positionSelected}
+              onChange={(p) => {
+                const v = p ? String(p.id) : "";
+                set("positionId")(v);
+                // 同步「工种级别（职位原文）」——编制表/人员分布/流失率都按它判定工种，
+                // 不同步会出现「改了职位但编制表不变」。仍允许用户手动改。
+                if (p) set("jobGradeRaw")(p.name);
+              }}
+              placeholder="输入职位，如：机修"
+              emptyLabel="未指定 / 保留 Excel 原文"
+            />
           </Field>
+
+          {/* 职位备注：只有「美容」才有（师傅/中工/学徒），决定编制表两列口径 */}
+          {isBeautyPosition ? (
+            <Field
+              label="职位备注"
+              excelColumn="I"
+              hint="只有「美容」职位需要填：师傅 / 中工 / 学徒"
+            >
+              <PositionNoteSelect
+                value={form.positionNote}
+                onChange={(v) => set("positionNote")(v)}
+              />
+            </Field>
+          ) : null}
 
           <Field
             label="部门"

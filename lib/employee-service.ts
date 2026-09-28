@@ -521,7 +521,15 @@ export async function updateEmployee(
     const pid = data.positionId as number | null;
     if (pid) {
       const p = await prisma.position.findUnique({ where: { id: pid } });
-      if (p) data.jobGradeRaw = data.jobGradeRaw ?? p.name;
+      // ⚠️ Stage 9.32：原写 `data.jobGradeRaw ?? p.name` **实际不生效** ——
+      //    前端表单总会提交 jobGradeRaw（空串 ""），`"" ?? name` 还是 ""，
+      //    于是「改了职位但工种原文没变」→ 编制表/人员分布/流失率口径不变，
+      //    用户会以为「改了没用」。
+      //    现在规则明确：只在用户**没有主动填**职位原文时才自动带出（即 null/undefined）。
+      //    若要严格跟随职位，用表单侧的联动（见 EmployeeForm 的 onChange）。
+      if (p && (data.jobGradeRaw === null || data.jobGradeRaw === undefined)) {
+        data.jobGradeRaw = p.name;
+      }
     }
   }
   if ("idCardNo" in data && !("gender" in data)) {

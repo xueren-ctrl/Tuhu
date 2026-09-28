@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Alert, Button, Card, Field, Input, Select, Textarea } from "@/components/ui";
 import StorePicker from "@/components/common/StorePicker";
+import PositionPicker from "@/components/common/PositionPicker";
+import PositionNoteSelect from "@/components/common/PositionNoteSelect";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 import type { FormFieldSpec, NewEmployeeKind } from "@/lib/sheet-fields";
 
@@ -18,12 +20,15 @@ import type { FormFieldSpec, NewEmployeeKind } from "@/lib/sheet-fields";
  * 保存后按所选「员工状态」自动出现在对应表里（状态 → 表 的映射见 lib/sheet-fields.ts）。
  */
 
+type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+
 export default function NewEmployeeForm({
   kind,
   fields,
   defaultStatus,
   stores,
   storeScopeRaw = [],
+  positionScopeRaw = { store: [], ops: [] },
   departments,
   positions,
   opsDepartmentId,
@@ -34,6 +39,8 @@ export default function NewEmployeeForm({
   stores: { id: number; name: string }[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
   storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
+  positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: { id: number; name: string }[];
   positions: { id: number; name: string }[];
   opsDepartmentId: number | null;
@@ -58,6 +65,21 @@ export default function NewEmployeeForm({
     const hit = storeScope.find((s) => s.id === id);
     return hit ?? { id, name: stores.find((s) => String(s.id) === cur)?.name ?? `门店#${cur}` };
   }, [storeScope, stores, form.storeId]);
+  /* ---------- 职位（Stage 9.32） ---------- */
+  const positionItems = useMemo(
+    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    [positionScopeRaw]
+  );
+  const positionSelected = useMemo(() => {
+    const cur = String(form.positionId ?? "");
+    if (!cur) return null;
+    const id = Number(cur);
+    const hit = positionItems.find((p) => p.id === id);
+    return hit ?? { id, name: positions.find((p) => String(p.id) === cur)?.name ?? `职位#${cur}` };
+  }, [positionItems, positions, form.positionId]);
+  /** 只有「美容」职位显示职位备注（师傅/中工/学徒） */
+  const isBeautyPosition = positionSelected?.name === "美容";
+
   /** 新员工不该挂到范围外的历史门店，但回显仍要兜住（不静默丢用户已选的值） */
   const storeExtras = useMemo(() => {
     const cur = storeSelected;
@@ -181,17 +203,29 @@ export default function NewEmployeeForm({
                     emptyLabel="（暂不指定）"
                   />
                 ) : f.key === "positionId" ? (
-                  <Select
-                    value={form.positionId ?? ""}
-                    onChange={(e) => set("positionId", e.target.value)}
-                  >
-                    <option value="">（不指定，可稍后补）</option>
-                    {positions.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </Select>
+                  <PositionPicker
+                    items={positionItems}
+                    value={positionSelected}
+                    onChange={(p) => {
+                      set("positionId", p ? String(p.id) : "");
+                      // 同步职位原文（编制表/人员分布/流失率都按它判定工种）
+                      if (p) set("jobGradeRaw", p.name);
+                    }}
+                    placeholder="输入职位，如：机修"
+                    emptyLabel="（不指定，可稍后补）"
+                  />
+                ) : f.key === "positionNote" ? (
+                  // 职位备注：只有「美容」才有意义，其余职位不显示
+                  isBeautyPosition ? (
+                    <PositionNoteSelect
+                      value={form.positionNote ?? ""}
+                      onChange={(v) => set("positionNote", v)}
+                    />
+                  ) : (
+                    <div className="flex h-9 items-center text-[12.5px] text-slate-400">
+                      只有「美容」职位需要填备注
+                    </div>
+                  )
                 ) : f.control === "textarea" ? (
                   <Textarea
                     value={form[f.key] ?? ""}

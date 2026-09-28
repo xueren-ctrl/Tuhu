@@ -4,7 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Alert, Badge, Button, Card, Field, Input, Select } from "@/components/ui";
 import StorePicker from "@/components/common/StorePicker";
+import PositionPicker from "@/components/common/PositionPicker";
 import type { AutoPreview, RuleRow } from "@/lib/department-rule-service";
+
+type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
 
 interface Option {
   id: number;
@@ -15,6 +18,8 @@ interface Props {
   stores: Option[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
   storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
+  positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: Option[];
   positions: Option[];
 }
@@ -28,6 +33,7 @@ interface Props {
 export default function DepartmentAutoPanel({
   stores,
   storeScopeRaw = [],
+  positionScopeRaw = { store: [], ops: [] },
   departments,
   positions,
 }: Props) {
@@ -48,6 +54,20 @@ export default function DepartmentAutoPanel({
     priority: "100",
     remark: "",
   });
+
+  /* ---------- 职位（Stage 9.32） ---------- */
+  const positionItems = useMemo(
+    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    [positionScopeRaw]
+  );
+  const allPositionOptions = useMemo(() => positions.map((p) => ({ id: p.id, name: p.name })), [positions]);
+  const formPositionSelected = useMemo(() => {
+    const v = form.positionId;
+    if (!v) return null;
+    const id = Number(v);
+    const hit = allPositionOptions.find((x) => x.id === id) ?? positionItems.find((x) => x.id === id);
+    return hit ?? { id, name: `职位#${v}` };
+  }, [form.positionId, allPositionOptions, positionItems]);
 
   /* ---------- 门店联想（Stage 9.30） ---------- */
   const storeScope = useMemo(
@@ -300,17 +320,14 @@ export default function DepartmentAutoPanel({
               />
             </Field>
             <Field label="岗位">
-              <Select
-                value={form.positionId}
-                onChange={(e) => setForm((f) => ({ ...f, positionId: e.target.value }))}
-              >
-                <option value="">不限</option>
-                {positions.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
+              <PositionPicker
+                items={positionItems}
+                allPositions={allPositionOptions}
+                value={formPositionSelected}
+                onChange={(p) => setForm((f) => ({ ...f, positionId: p ? String(p.id) : "" }))}
+                placeholder="输入职位筛选"
+                emptyLabel="不限"
+              />
             </Field>
             <Field label="员工类型（工种含）" hint="源数据无独立员工类型字段，按工种原文包含匹配">
               <Input

@@ -66,6 +66,7 @@ export default async function EmployeesPage({
         basePath="/employees"
         stores={options.stores}
         storeScopeRaw={options.storeScope}
+        positionScopeRaw={options.positionScope}
         departments={options.departments}
         positions={options.positions}
         fields={[

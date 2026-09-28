@@ -15,6 +15,9 @@ import {
 } from "@/components/ui";
 import { EMPLOYEE_STATUS_OPTIONS, UNASSIGNED, UNASSIGNED_LABEL } from "@/lib/constants";
 import StorePicker from "@/components/common/StorePicker";
+import PositionPicker from "@/components/common/PositionPicker";
+
+type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
 
 interface Option {
   id: number;
@@ -25,6 +28,8 @@ interface Props {
   stores: Option[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
   storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
+  positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: Option[];
   positions: Option[];
   preset?: string;
@@ -55,7 +60,14 @@ const PRESETS: { key: string; label: string; query: Record<string, string> }[] =
  * 2. 提交后调用 router.refresh()，服务端组件重新查库 → 所有视图立刻同步；
  * 3. 只能改门店 / 部门 / 岗位三个归属字段，状态与身份信息不参与批量修改。
  */
-export default function BatchEditPanel({ stores, storeScopeRaw = [], departments, positions, preset }: Props) {
+export default function BatchEditPanel({
+  stores,
+  storeScopeRaw = [],
+  positionScopeRaw = { store: [], ops: [] },
+  departments,
+  positions,
+  preset,
+}: Props) {
   const router = useRouter();
   const [filters, setFilters] = useState<Record<string, string>>(() => {
     const p = PRESETS.find((x) => x.key === preset);
@@ -96,6 +108,36 @@ export default function BatchEditPanel({ stores, storeScopeRaw = [], departments
     const hit = allStoreOptions.find((x) => x.id === id) ?? storeScope.find((x) => x.id === id);
     return hit ?? { id, name: `门店#${v}` };
   }, [filters.storeId, allStoreOptions, storeScope, unassignedStorePseudo]);
+  /* ---------- 职位（Stage 9.32） ---------- */
+  const positionItems = useMemo(
+    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    [positionScopeRaw]
+  );
+  const allPositionOptions = useMemo(() => positions.map((p) => ({ id: p.id, name: p.name })), [positions]);
+  const unassignedPositionPseudo = useMemo(
+    () => [{ id: -1, name: `${UNASSIGNED_LABEL}（岗位为空）`, raw: UNASSIGNED }],
+    []
+  );
+  const clearPositionPseudo = useMemo(() => [{ id: -2, name: "清空岗位（置空）", raw: "__clear__" }], []);
+  const filterPositionSelected = useMemo(() => {
+    const v = filters.positionId ?? "";
+    if (!v) return null;
+    const p = unassignedPositionPseudo.find((x) => x.raw === v);
+    if (p) return p;
+    const id = Number(v);
+    const hit = allPositionOptions.find((x) => x.id === id) ?? positionItems.find((x) => x.id === id);
+    return hit ?? { id, name: `职位#${v}` };
+  }, [filters.positionId, allPositionOptions, positionItems, unassignedPositionPseudo]);
+  const patchPositionSelected = useMemo(() => {
+    const v = patch.positionId ?? "";
+    if (!v) return null;
+    const p = clearPositionPseudo.find((x) => x.raw === v);
+    if (p) return p;
+    const id = Number(v);
+    const hit = positionItems.find((x) => x.id === id) ?? allPositionOptions.find((x) => x.id === id);
+    return hit ?? { id, name: `职位#${v}` };
+  }, [patch.positionId, positionItems, allPositionOptions, clearPositionPseudo]);
+
   /** 批量改门店：空 = 不修改；__clear__ = 清空；数字 = 具体门店 */
   const patchStoreSelected = useMemo(() => {
     const v = patch.storeId ?? "";
@@ -306,18 +348,17 @@ export default function BatchEditPanel({ stores, storeScopeRaw = [], departments
             </Select>
           </Field>
           <Field label="岗位">
-            <Select
-              value={filters.positionId ?? ""}
-              onChange={(e) => setFilters((f) => ({ ...f, positionId: e.target.value }))}
-            >
-              <option value="">不限</option>
-              <option value={UNASSIGNED}>{UNASSIGNED_LABEL}（岗位为空）</option>
-              {positions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
+            <PositionPicker
+              items={positionItems}
+              allPositions={allPositionOptions}
+              pseudoItems={unassignedPositionPseudo}
+              value={filterPositionSelected}
+              onChange={(p) =>
+                setFilters((f) => ({ ...f, positionId: p ? p.raw ?? String(p.id) : "" }))
+              }
+              placeholder="输入职位筛选"
+              emptyLabel="不限"
+            />
           </Field>
         </div>
 
@@ -444,18 +485,13 @@ export default function BatchEditPanel({ stores, storeScopeRaw = [], departments
                 </Select>
               </Field>
               <Field label="岗位">
-                <Select
-                  value={patch.positionId ?? ""}
-                  onChange={(e) => setPatch((p) => ({ ...p, positionId: e.target.value }))}
-                >
-                  <option value="">不修改</option>
-                  <option value="__clear__">清空岗位</option>
-                  {positions.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </Select>
+                <PositionPicker
+                  items={positionItems}
+                  pseudoItems={clearPositionPseudo}
+                  value={patchPositionSelected}
+                  onChange={(p) => setPatch((x) => ({ ...x, positionId: p ? p.raw ?? String(p.id) : "" }))}
+                  placeholder="不修改"
+                />
               </Field>
             </div>
             <div className="mt-3 grid gap-3 md:grid-cols-3">

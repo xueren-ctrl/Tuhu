@@ -2031,7 +2031,100 @@ async function main() {
         `同名重复残留 ${dupPairs.length} 组${dupPairs.length ? "：" + dupPairs.join("、") : ""}`
     );
 
-    // ---------- 新增员工页 ----------
+    // ---------- Stage 9.32：职位选择改为搜索下拉，范围 = 门店 7 种 + 运营部 3 种 ----------
+    // 用户 2026-09-28 明确给出的口径：
+    //   门店：店长、副店长、后勤、机修、技术店长、客服经理、美容
+    //   运营部：文员、区域经理、人事
+    //   职位备注：只有「美容」才有，分 师傅 / 中工 / 学徒
+    const SCOPE_STORE_POS = ["店长", "副店长", "后勤", "机修", "技术店长", "客服经理", "美容"];
+    const SCOPE_OPS_POS = ["文员", "区域经理", "人事"];
+    const posRows = await prisma.position.findMany({
+      where: { name: { in: [...SCOPE_STORE_POS, ...SCOPE_OPS_POS] }, status: "ACTIVE" },
+      select: { id: true, name: true },
+    });
+    const posNames = posRows.map((p) => p.name);
+    const missingPos = [...SCOPE_STORE_POS, ...SCOPE_OPS_POS].filter((n) => !posNames.includes(n));
+
+    // 在职员工实际用到的职位必须全部落在 7+3 范围内（口径一致性）
+    const activePosIds = (
+      await prisma.employee.groupBy({
+        by: ["positionId"],
+        where: { status: "ACTIVE", positionId: { not: null }, deletedAt: null },
+      })
+    ).map((r) => r.positionId);
+    const scopePosIds = posRows.map((p) => p.id);
+    const outOfScopeActive = activePosIds.filter((id) => !scopePosIds.includes(id));
+    const outNames = (
+      await prisma.position.findMany({ where: { id: { in: outOfScopeActive } }, select: { name: true } })
+    ).map((p) => p.name);
+
+    check(
+      "S9-99",
+      "职位选择范围 = 门店 7 种 + 运营部 3 种（字典齐全，且在职员工职位全部落在范围内）",
+      missingPos.length === 0 && outOfScopeActive.length === 0,
+      `字典命中 ${posRows.length}/10 种（缺：${missingPos.join("、") || "无"}）；` +
+        `在职用到 ${activePosIds.length} 种职位，范围外 ${outOfScopeActive.length} 种${outNames.length ? "：" + outNames.join("、") : ""}`
+    );
+
+    // 职位备注：只允许 师傅/中工/学徒（外加历史脏值原样保留）
+    const noteRows = await prisma.employee.groupBy({
+      by: ["positionNote"],
+      where: { positionNote: { not: null }, deletedAt: null },
+      _count: { _all: true },
+    });
+    const noteVals = noteRows.map((r) => r.positionNote);
+    const offListNotes = noteVals.filter((v) => !["师傅", "中工", "学徒"].includes(v));
+
+    // 页面体检：编辑/新增/批量/筛选/部门规则 5 处都必须是职位搜索框（含「输入职位」文案）
+    // ⚠️ 不用测试临时员工：它在 S9-94 清理阶段已被删，编辑页会 404。
+    //    这里现查一个真实在职员工来访问编辑页。
+    const editProbe = await prisma.employee.findFirst({
+      where: { status: "ACTIVE", deletedAt: null },
+      orderBy: { id: "asc" },
+      select: { id: true },
+    });
+    const posPages = [
+      [`/employees/${editProbe.id}/edit`, "员工档案编辑"],
+      ["/employees/new?kind=STORE", "新增员工"],
+      ["/employees/batch", "批量编辑"],
+      ["/employees", "员工列表筛选"],
+      ["/employees/department-auto", "部门自动归属"],
+    ];
+    const posReports = [];
+    let allPosBox = true;
+    for (const [path, label] of posPages) {
+      const res = await req(path);
+      const html = (await res.text()).replace(/<!--[\s\S]*?-->/g, "");
+      /**
+       * 判断「职位处是搜索组件而不是 <select> 下拉」：
+       *  ⚠️ 不能只找 placeholder 文案 —— 员工**已选中职位**时渲染的是「已选卡片」
+       *    （flex h-9 items-center + 清除按钮），不会出现 placeholder。
+       *    所以两个信号任一命中即算通过：
+       *      ① 出现「输入职位」输入框（未选中时）
+       *      ② 「职位 / 工种」标签后紧跟 h-9 搜索组件（已选中时）
+       */
+      const hasInput = html.includes("输入职位");
+      const hasChip = /职位 \/ 工种[\s\S]{0,300}?flex h-9 items-center/.test(html);
+      const hasPosUI = hasInput || hasChip;
+      // 旧式职位下拉残留：范围外的历史职位名（如「青铜机修技师」）以 <option> 出现
+      const leaked = ["青铜机修技师", "美容学徒", "储备店长", "白银机修技师", "机修主管", "前台"].filter((n) =>
+        new RegExp(`<option[^>]*>\\s*${n}\\s*</option>`).test(html)
+      );
+      if (res.status !== 200 || !hasPosUI || leaked.length) allPosBox = false;
+      posReports.push(
+        `${label} HTTP=${res.status} 搜索组件=${hasPosUI}${hasChip && !hasInput ? "(已选态)" : ""}` +
+          `${leaked.length ? " 旧式下拉残留=" + leaked.join("、") : ""}`
+      );
+    }
+    check(
+      "S9-100",
+      "职位选择全部改为「输入关键词联想」，且职位备注限定 师傅/中工/学徒",
+      allPosBox,
+      posReports.join("；") +
+        `；职位备注实际取值：${noteVals.map((v) => `${v}×${noteRows.find((r) => r.positionNote === v)?._count._all}`).join("、")}` +
+        `（范围外历史值 ${offListNotes.length} 种，原样保留可清除）`
+    );
+
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();
     const newStore = await req("/employees/new?kind=STORE");

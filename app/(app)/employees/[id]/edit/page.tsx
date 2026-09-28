@@ -58,6 +58,7 @@ export default async function EditEmployeePage({
         mode="edit"
         stores={options.stores}
         storeScopeRaw={options.storeScope}
+        positionScopeRaw={options.positionScope}
         departments={options.departments}
         positions={options.positions}
         initial={employee as unknown as Record<string, unknown>}
