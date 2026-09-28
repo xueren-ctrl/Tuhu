@@ -3,6 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Field, Input, Select } from "@/components/ui";
+import StorePicker from "@/components/common/StorePicker";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 /**
@@ -40,6 +41,11 @@ export interface EmployeeFilterPanelProps {
   /** 提交目标路径，如 /employees、/employees/views/resigned */
   basePath: string;
   stores?: OptionItem[];
+  /**
+   * 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及各自在职人数。
+   * 页面用 `getStoreScopeOptions()` 计算；缺省时联想里不显示在职人数。
+   */
+  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
   departments?: OptionItem[];
   positions?: OptionItem[];
   /** 展示哪些筛选项，默认：keyword + storeId + departmentId + positionId + status */
@@ -59,6 +65,7 @@ const ALL_FIELDS: FilterField[] = ["keyword", "storeId", "departmentId", "positi
 export default function EmployeeFilterPanel({
   basePath,
   stores = [],
+  storeScopeRaw = [],
   departments = [],
   positions = [],
   fields = ALL_FIELDS,
@@ -100,6 +107,38 @@ export default function EmployeeFilterPanel({
 
   const set = (k: keyof ReturnType<typeof readFromUrl>) => (v: string) =>
     setForm((f) => ({ ...f, [k]: v }));
+
+  /**
+   * 门店候选（Stage 9.30）：
+   *   `storeScope` = 在职表 + 南昌3店 的门店（服务端算好，带各店在职人数）
+   *   `allStoreOptions` = 全部启用门店，筛离职人员时按「更多门店」展开
+   *   `stores`（props 传入的全量）作为兜底，保证 URL 里的历史门店值能正常回显
+   */
+  const storeScope = useMemo(
+    () =>
+      stores.map((s) => {
+        const hit = (storeScopeRaw as { id: number; name: string; activeCount: number }[]).find(
+          (x) => x.id === s.id
+        );
+        return { id: s.id, name: s.name, activeCount: hit?.activeCount };
+      }),
+    [stores, storeScopeRaw]
+  );
+  const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);
+  const pseudoStores = useMemo(
+    () => [{ id: -1, name: "未分配门店", raw: UNASSIGNED }],
+    []
+  );
+  /** URL 里的 storeId 回显成选中项（找不到就原样显示编号，绝不静默丢筛选条件） */
+  const storeSelected = useMemo(() => {
+    const v = form.storeId;
+    if (!v) return null;
+    const p = pseudoStores.find((x) => x.raw === v);
+    if (p) return p;
+    const id = Number(v);
+    const hit = allStoreOptions.find((x) => x.id === id) ?? storeScope.find((x) => x.id === id);
+    return hit ?? { id, name: `门店#${v}` };
+  }, [form.storeId, allStoreOptions, storeScope, pseudoStores]);
 
   const apply = useCallback(
     (patch?: Partial<ReturnType<typeof readFromUrl>>) => {
@@ -178,22 +217,19 @@ export default function EmployeeFilterPanel({
         ) : null}
 
         {visible("storeId") ? (
-          <Field label="门店" className="w-[190px]">
-            <Select
-              value={form.storeId}
-              onChange={(e) => {
-                set("storeId")(e.target.value);
-                apply({ storeId: e.target.value });
+          <Field label="门店" className="w-[220px]">
+            <StorePicker
+              stores={storeScope}
+              allStores={allStoreOptions}
+              value={storeSelected}
+              onChange={(s) => {
+                const v = s ? s.raw ?? String(s.id) : "";
+                set("storeId")(v);
+                apply({ storeId: v });
               }}
-            >
-              <option value="">全部门店</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-              <option value={UNASSIGNED}>未分配门店</option>
-            </Select>
+              placeholder="输入门店名筛选"
+              emptyLabel="全部门店"
+            />
           </Field>
         ) : null}
 

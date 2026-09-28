@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Alert, Button, Card, Field, Input, Select, Textarea } from "@/components/ui";
+import StorePicker from "@/components/common/StorePicker";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 import type { FormFieldSpec, NewEmployeeKind } from "@/lib/sheet-fields";
 
@@ -22,6 +23,7 @@ export default function NewEmployeeForm({
   fields,
   defaultStatus,
   stores,
+  storeScopeRaw = [],
   departments,
   positions,
   opsDepartmentId,
@@ -30,6 +32,8 @@ export default function NewEmployeeForm({
   fields: FormFieldSpec[];
   defaultStatus: string;
   stores: { id: number; name: string }[];
+  /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
+  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
   departments: { id: number; name: string }[];
   positions: { id: number; name: string }[];
   opsDepartmentId: number | null;
@@ -41,6 +45,26 @@ export default function NewEmployeeForm({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  /** 门店候选（Stage 9.30）：只在 40 家（在职 37 + 南昌3店 3）里选 */
+  const storeScope = useMemo(
+    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    [storeScopeRaw]
+  );
+  const storeSelected = useMemo(() => {
+    const cur = String(form.storeId ?? "");
+    if (!cur) return null;
+    const id = Number(cur);
+    const hit = storeScope.find((s) => s.id === id);
+    return hit ?? { id, name: stores.find((s) => String(s.id) === cur)?.name ?? `门店#${cur}` };
+  }, [storeScope, stores, form.storeId]);
+  /** 新员工不该挂到范围外的历史门店，但回显仍要兜住（不静默丢用户已选的值） */
+  const storeExtras = useMemo(() => {
+    const cur = storeSelected;
+    if (!cur) return [];
+    if (storeScope.some((s) => s.id === cur.id)) return [];
+    return [{ id: cur.id, name: cur.name, tag: "当前选择", tagTone: "amber" as const }];
+  }, [storeSelected, storeScope]);
 
   // 运营部员工不需要选门店（固定挂在运营部）
   const visibleFields = useMemo(
@@ -148,14 +172,14 @@ export default function NewEmployeeForm({
                     ))}
                   </Select>
                 ) : f.key === "storeId" ? (
-                  <Select value={form.storeId ?? ""} onChange={(e) => set("storeId", e.target.value)}>
-                    <option value="">请选择门店…</option>
-                    {stores.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </Select>
+                  <StorePicker
+                    stores={storeScope}
+                    extraStores={storeExtras}
+                    value={storeSelected}
+                    onChange={(s) => set("storeId", s ? String(s.id) : "")}
+                    placeholder="输入门店名，如：大坪"
+                    emptyLabel="（暂不指定）"
+                  />
                 ) : f.key === "positionId" ? (
                   <Select
                     value={form.positionId ?? ""}

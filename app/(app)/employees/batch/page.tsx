@@ -31,6 +31,7 @@ export default async function BatchEditPage({ searchParams }: Props) {
       </Alert>
       <BatchEditPanel
         stores={options.stores}
+        storeScopeRaw={options.storeScope}
         departments={options.departments}
         positions={options.positions}
         preset={preset}

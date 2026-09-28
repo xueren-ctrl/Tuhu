@@ -1930,6 +1930,100 @@ async function main() {
         `页面含「调往门店（当前：」提示位`
     );
 
+    // ---------- Stage 9.30：门店下拉全部改为「输入关键词联想」 ----------
+    // 口径：候选 = 在职表 37 家 + 南昌3店 3 家 = 40 家（不是全部 67 家启用门店）
+    // ⚠️ 本文件是纯 .mjs，**不能 import TS 模块**（ERR_MODULE_NOT_FOUND），
+    //    所以这里直接用 prisma 复算口径，不复用 lib/store-scope-service。
+    const scopeRows = await prisma.employee.groupBy({
+      by: ["storeId", "status"],
+      where: { status: { in: ["ACTIVE", "NC3"] }, storeId: { not: null }, deletedAt: null },
+      _count: { _all: true },
+    });
+    const activeByStore = new Map();
+    for (const r of scopeRows) {
+      const cur = activeByStore.get(r.storeId) ?? { activeCount: 0, nc3Count: 0 };
+      if (r.status === "ACTIVE") cur.activeCount += r._count._all;
+      else cur.nc3Count += r._count._all;
+      activeByStore.set(r.storeId, cur);
+    }
+    const scopeIds = [...activeByStore.keys()];
+    const scopeStoreRows = await prisma.store.findMany({
+      where: { id: { in: scopeIds }, status: "ACTIVE" },
+      select: { id: true, name: true },
+    });
+    // 页面实际渲染的候选（= lib/store-scope-service 的输出，应与此完全一致）
+    const scopeList = scopeStoreRows
+      .map((s) => ({ id: s.id, name: s.name, ...activeByStore.get(s.id) }))
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+
+    // 逐页体检：
+    //  ① 门店选择处必须是搜索框（含「输入门店名」placeholder）
+    //  ② **范围外的老门店不得再以旧式 <option> 下拉出现**。
+    //     ⚠️ 不能用「有没有 <option value=数字>」判断 —— 部门/职位下拉的 value 也是数字，会误报。
+    //     正确做法：取「全部启用门店 − 40 家范围」里的真实店名，逐个确认页面里没有它的 <option>。
+    const outOfScopeStores = (
+      await prisma.store.findMany({
+        where: { status: "ACTIVE", id: { notIn: scopeList.map((s) => s.id) } },
+        select: { name: true },
+        orderBy: { name: "asc" },
+      })
+    )
+      .map((s) => s.name)
+      // ⚠️ 排除过短的名字：范围外有一家门店就叫「其他」，
+      //    而状态筛选下拉里也有 <option>其他</option>，会误报成"门店泄漏"。
+      .filter((n) => n.length >= 4);
+
+    const storePages = [
+      ["/employees", "员工列表筛选"],
+      ["/employees/new?kind=STORE", "新增员工"],
+      ["/employees/batch", "批量编辑"],
+      ["/employees/department-auto", "部门自动归属"],
+      ["/transfers", "调店登记"],
+    ];
+    const pageReports = [];
+    let allSearchBox = true;
+    let noLegacyOption = true;
+    for (const [path, label] of storePages) {
+      const res = await req(path);
+      const html = (await res.text()).replace(/<!--[\s\S]*?-->/g, "");
+      const hasBox = html.includes("输入门店名");
+      // 范围外店名若出现在 <option> 里 = 还有旧式下拉
+      const leaked = outOfScopeStores.filter((n) =>
+        new RegExp(`<option[^>]*>\\s*${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*</option>`).test(html)
+      );
+      if (!hasBox) allSearchBox = false;
+      if (leaked.length) noLegacyOption = false;
+      pageReports.push(`${label} 搜索框=${hasBox} 范围外门店泄漏=${leaked.length}`);
+    }
+    check(
+      "S9-97",
+      `门店选择全部改为「输入关键词联想」，候选 = 在职表 + 南昌3店（实测 ${scopeList.length} 家）`,
+      allSearchBox && noLegacyOption && scopeList.length === 40,
+      pageReports.join("；") +
+        `；范围 ${scopeList.length} 家（在职 ${scopeList.filter((s) => s.activeCount > 0).length} + 南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length}）；` +
+        `范围外老门店共 ${outOfScopeStores.length} 家，均未以旧式下拉出现`
+    );
+
+    // 范围口径：必须等于「在职表门店 ∪ 南昌3店门店」，且每家都带在职人数
+    const allActiveStores = await prisma.store.count({ where: { status: "ACTIVE" } });
+    check(
+      "S9-98",
+      "门店范围口径正确 = 在职表门店 ∪ 南昌3店门店（而非全部启用门店），每家带在职人数",
+      scopeList.length === 40 &&
+        scopeList.length < allActiveStores &&
+        scopeList.every((s) => typeof s.activeCount === "number") &&
+        scopeList.some((s) => s.nc3Count > 0) &&
+        scopeList.some((s) => s.activeCount > 0),
+      `范围 ${scopeList.length} 家 < 全部启用 ${allActiveStores} 家；` +
+        `含南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length} 家；` +
+        `同名可区分示例：${
+          scopeList
+            .filter((s) => s.name.includes("景湖"))
+            .map((s) => `${s.name}(在职${s.activeCount})`)
+            .join("、") || "无"
+        }`
+    );
+
     // ---------- 新增员工页 ----------
     const newPage = await req("/employees/new");
     const newHtml = await newPage.text();

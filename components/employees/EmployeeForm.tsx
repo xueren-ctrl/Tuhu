@@ -11,6 +11,7 @@ import {
   Select,
   Textarea,
 } from "@/components/ui";
+import StorePicker from "@/components/common/StorePicker";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 /** Excel 原始字段（除核心字段外的全部 46 列）建在折叠分组里，确保不丢字段 */
@@ -20,6 +21,8 @@ type FormState = Record<string, string>;
 export interface EmployeeFormProps {
   mode: "create" | "edit";
   stores: { id: number; name: string }[];
+  /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
+  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
   departments: { id: number; name: string }[];
   positions: { id: number; name: string }[];
   initial?: Record<string, unknown> | null;
@@ -130,6 +133,7 @@ const TEXT_GROUPS: { title: string; keys: string[] }[] = [
 export default function EmployeeForm({
   mode,
   stores,
+  storeScopeRaw = [],
   departments,
   positions,
   initial,
@@ -174,6 +178,31 @@ export default function EmployeeForm({
   const [saved, setSaved] = useState("");
 
   const set = (k: string) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  /**
+   * 门店候选（Stage 9.30）：在职表 + 南昌3店 的 40 家。
+   * ⚠️ **当前门店不在范围内时，通过 extraStores 额外带上并标「当前门店」**：
+   *    已离职员工的门店往往不在 40 家内，如果下拉里选不到，
+   *    用户只改个手机号就会把门店**悄悄换掉** = 丢数据。
+   */
+  const storeScope = useMemo(
+    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    [storeScopeRaw]
+  );
+  const storeSelected = useMemo(() => {
+    const cur = String(form.storeId ?? "");
+    if (!cur) return null;
+    const id = Number(cur);
+    const hit = storeScope.find((s) => s.id === id);
+    return hit ?? { id, name: stores.find((s) => String(s.id) === cur)?.name ?? `门店#${cur}` };
+  }, [storeScope, stores, form.storeId]);
+  /** 当前门店不在 40 家内时，在候选列表里加一条「当前门店」标记项 */
+  const storeExtras = useMemo(() => {
+    const cur = storeSelected;
+    if (!cur) return [];
+    if (storeScope.some((s) => s.id === cur.id)) return [];
+    return [{ id: cur.id, name: cur.name, tag: "当前门店", tagTone: "amber" as const }];
+  }, [storeSelected, storeScope]);
 
   const isResigned = form.status === "RESIGNED";
 
@@ -277,15 +306,19 @@ export default function EmployeeForm({
             />
           </Field>
 
-          <Field label="门店" excelColumn="B" hint="优先从门店主数据中选择">
-            <Select value={form.storeId} onChange={(e) => set("storeId")(e.target.value)}>
-              <option value="">未指定 / 保留 Excel 原文</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </Select>
+          <Field
+            label="门店"
+            excelColumn="B"
+            hint="优先从门店主数据中选择（在职表 + 南昌3店 共 40 家；输入店名搜索）"
+          >
+            <StorePicker
+              stores={storeScope}
+              extraStores={storeExtras}
+              value={storeSelected}
+              onChange={(s) => set("storeId")(s ? String(s.id) : "")}
+              placeholder="输入门店名，如：大坪"
+              emptyLabel="未指定 / 保留 Excel 原文"
+            />
           </Field>
 
           <Field

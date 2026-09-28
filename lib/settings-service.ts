@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { getStoreScopeOptions } from "./store-scope-service";
 
 /**
  * 基础设置 —— 门店 / 职位 / 部门
@@ -304,9 +305,16 @@ export async function setDepartmentStatus(
   return d;
 }
 
-/** 门店 / 部门 / 职位 下拉选项（表单与筛选组件用） */
+/**
+ * 门店 / 部门 / 职位 下拉选项（表单与筛选组件用）
+ *
+ * ⚠️ Stage 9.30 起额外返回 `storeScope`：
+ *   **门店选择范围 = 在职表 37 家 + 南昌3店 3 家**（不是全部 67 家启用门店），
+ *   带各店在职人数（同名门店只能靠人数区分，见 store-scope-service 注释）。
+ *   `stores` 仍保留全量启用门店：筛选/查看场景要能按历史门店查。
+ */
 export async function getSelectOptions() {
-  const [stores, departments, positions] = await Promise.all([
+  const [stores, departments, positions, storeScope] = await Promise.all([
     prisma.store.findMany({
       where: { status: "ACTIVE" },
       orderBy: { name: "asc" },
@@ -322,6 +330,7 @@ export async function getSelectOptions() {
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: { id: true, name: true, category: true, level: true },
     }),
+    getStoreScopeOptions(),
   ]);
-  return { stores, departments, positions };
+  return { stores, departments, positions, storeScope: storeScope.stores };
 }

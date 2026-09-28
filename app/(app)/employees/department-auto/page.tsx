@@ -30,6 +30,7 @@ export default async function DepartmentAutoPage() {
       </Alert>
       <DepartmentAutoPanel
         stores={options.stores}
+        storeScopeRaw={options.storeScope}
         departments={options.departments}
         positions={options.positions}
       />

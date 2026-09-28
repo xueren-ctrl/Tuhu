@@ -109,6 +109,7 @@ export default async function PersonnelListView({
       <EmployeeFilterPanel
         basePath={basePath}
         stores={options.stores}
+        storeScopeRaw={options.storeScope}
         departments={options.departments}
         positions={options.positions}
         locked={locked}

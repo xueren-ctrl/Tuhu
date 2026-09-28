@@ -14,6 +14,7 @@ import {
   StatusBadge,
 } from "@/components/ui";
 import { EMPLOYEE_STATUS_OPTIONS, UNASSIGNED, UNASSIGNED_LABEL } from "@/lib/constants";
+import StorePicker from "@/components/common/StorePicker";
 
 interface Option {
   id: number;
@@ -22,6 +23,8 @@ interface Option {
 
 interface Props {
   stores: Option[];
+  /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
+  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
   departments: Option[];
   positions: Option[];
   preset?: string;
@@ -52,7 +55,7 @@ const PRESETS: { key: string; label: string; query: Record<string, string> }[] =
  * 2. 提交后调用 router.refresh()，服务端组件重新查库 → 所有视图立刻同步；
  * 3. 只能改门店 / 部门 / 岗位三个归属字段，状态与身份信息不参与批量修改。
  */
-export default function BatchEditPanel({ stores, departments, positions, preset }: Props) {
+export default function BatchEditPanel({ stores, storeScopeRaw = [], departments, positions, preset }: Props) {
   const router = useRouter();
   const [filters, setFilters] = useState<Record<string, string>>(() => {
     const p = PRESETS.find((x) => x.key === preset);
@@ -66,6 +69,43 @@ export default function BatchEditPanel({ stores, departments, positions, preset 
   const [msg, setMsg] = useState<{ tone: "ok" | "err" | "warn"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [operator, setOperator] = useState("");
+
+  /* ---------- 门店联想（Stage 9.30） ---------- */
+  /** 候选：默认在职表 + 南昌3店 的 40 家，附各店在职人数 */
+  const storeScope = useMemo(
+    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    [storeScopeRaw]
+  );
+  /** 全部门店（筛选时可展开，查历史/离职门店用） */
+  const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);
+  const unassignedStorePseudo = useMemo(
+    () => [{ id: -1, name: `${UNASSIGNED_LABEL}（门店为空）`, raw: UNASSIGNED }],
+    []
+  );
+  const clearStorePseudo = useMemo(
+    () => [{ id: -2, name: "清空门店（置空）", raw: "__clear__" }],
+    []
+  );
+  /** 把筛选值（数字 id / __none__）还原成选中项；找不到就原样显示编号，不静默丢失条件 */
+  const filterStoreSelected = useMemo(() => {
+    const v = filters.storeId ?? "";
+    if (!v) return null;
+    const p = unassignedStorePseudo.find((x) => x.raw === v);
+    if (p) return p;
+    const id = Number(v);
+    const hit = allStoreOptions.find((x) => x.id === id) ?? storeScope.find((x) => x.id === id);
+    return hit ?? { id, name: `门店#${v}` };
+  }, [filters.storeId, allStoreOptions, storeScope, unassignedStorePseudo]);
+  /** 批量改门店：空 = 不修改；__clear__ = 清空；数字 = 具体门店 */
+  const patchStoreSelected = useMemo(() => {
+    const v = patch.storeId ?? "";
+    if (!v) return null;
+    const p = clearStorePseudo.find((x) => x.raw === v);
+    if (p) return p;
+    const id = Number(v);
+    const hit = storeScope.find((x) => x.id === id) ?? allStoreOptions.find((x) => x.id === id);
+    return hit ?? { id, name: `门店#${v}` };
+  }, [patch.storeId, storeScope, allStoreOptions, clearStorePseudo]);
 
   const queryString = useMemo(() => {
     const qs = new URLSearchParams();
@@ -239,18 +279,17 @@ export default function BatchEditPanel({ stores, departments, positions, preset 
             />
           </Field>
           <Field label="门店">
-            <Select
-              value={filters.storeId ?? ""}
-              onChange={(e) => setFilters((f) => ({ ...f, storeId: e.target.value }))}
-            >
-              <option value="">不限</option>
-              <option value={UNASSIGNED}>{UNASSIGNED_LABEL}（门店为空）</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </Select>
+            <StorePicker
+              stores={storeScope}
+              allStores={allStoreOptions}
+              pseudoStores={unassignedStorePseudo}
+              value={filterStoreSelected}
+              onChange={(s) =>
+                setFilters((f) => ({ ...f, storeId: s ? s.raw ?? String(s.id) : "" }))
+              }
+              placeholder="输入门店名筛选"
+              emptyLabel="不限"
+            />
           </Field>
           <Field label="部门">
             <Select
@@ -380,18 +419,15 @@ export default function BatchEditPanel({ stores, departments, positions, preset 
           <Card title="③ 设置要改成什么（留空表示不修改该字段）">
             <div className="grid gap-3 md:grid-cols-3">
               <Field label="门店">
-                <Select
-                  value={patch.storeId ?? ""}
-                  onChange={(e) => setPatch((p) => ({ ...p, storeId: e.target.value }))}
-                >
-                  <option value="">不修改</option>
-                  <option value="__clear__">清空门店</option>
-                  {stores.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
+                <StorePicker
+                  stores={storeScope}
+                  pseudoStores={clearStorePseudo}
+                  value={patchStoreSelected}
+                  onChange={(s) =>
+                    setPatch((p) => ({ ...p, storeId: s ? s.raw ?? String(s.id) : "" }))
+                  }
+                  placeholder="不修改"
+                />
               </Field>
               <Field label="部门">
                 <Select

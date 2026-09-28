@@ -4,6 +4,7 @@ import { foldRoundTrips } from "@/lib/transfer-fold";
 import { formatDateTime } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { STATUS_LABEL } from "@/lib/transfer-order-service";
+import { getStoreScopeOptions } from "@/lib/store-scope-service";
 import TransferOrderPanel from "@/components/transfers/TransferOrderPanel";
 import { Card, Alert, Button } from "@/components/ui";
 
@@ -88,7 +89,7 @@ export default async function TransfersPage({
 
   // 调店单 + 门店候选（Stage 9.29：员工改为「手动输入 + 联想搜索」，
   // 走 /api/employees?keyword=… 按需查，**不再全量拉 500 条**）
-  const [orders, storeOpts] = await Promise.all([
+  const [orders, storeOpts, storeScope] = await Promise.all([
     prisma.transferOrder.findMany({
       orderBy: [{ status: "asc" }, { effectiveDate: "desc" }],
       include: {
@@ -102,6 +103,8 @@ export default async function TransfersPage({
       select: { id: true, name: true },
       orderBy: { name: "asc" },
     }),
+    // Stage 9.30：默认候选只给「在职 37 + 南昌3店 3」，其余可在面板里展开
+    getStoreScopeOptions(),
   ]);
 
   const pendingCount = orders.filter((o) => o.status === "PENDING").length;
@@ -149,6 +152,7 @@ export default async function TransfersPage({
             reversedBy: o.reversedBy,
           }))}
           stores={storeOpts}
+          storeScopeRaw={storeScope.stores}
         />
       </div>
 

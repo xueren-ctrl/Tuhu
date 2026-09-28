@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useTransition, useEffect, useRef } from "react";
+import { useMemo, useState, useTransition, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import StorePicker from "@/components/common/StorePicker";
 
 /**
  * 调店单操作区（Stage 9.28 / 9.29）
@@ -241,113 +242,15 @@ function EmpSearch({
   );
 }
 
-/** 门店联想输入框（同样从下拉改为手动输入） */
-function StoreSearch({
-  all,
-  value,
-  onPick,
-  placeholder,
-}: {
-  all: { id: number; name: string }[];
-  value: { id: number; name: string } | null;
-  onPick: (s: { id: number; name: string } | null) => void;
-  placeholder?: string;
-}) {
-  const [kw, setKw] = useState("");
-  const [open, setOpen] = useState(false);
-  const [hi, setHi] = useState(0);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, []);
-
-  // ⚠️ 同 EmpSearch：条件 return 必须在所有 Hook 之后，否则选中门店即崩。
-  const list = all.filter((s) => !kw.trim() || s.name.includes(kw.trim()));
-
-  // ---- 以下不再有任何 Hook ----
-  if (value) {
-    return (
-      <div className="flex h-[30px] w-[210px] items-center gap-1.5 rounded border border-slate-300 bg-slate-50 px-2 text-[12.5px]">
-        <span className="font-medium text-slate-800">{value.name}</span>
-        <button
-          type="button"
-          onClick={() => onPick(null)}
-          className="ml-auto text-[11px] text-slate-400 hover:text-rose-600"
-        >
-          更换
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div ref={ref} className="relative w-[210px]">
-      <input
-        value={kw}
-        onChange={(e) => {
-          setKw(e.target.value);
-          setOpen(true);
-          setHi(0);
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={(e) => {
-          if (!open || list.length === 0) return;
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            setHi((h) => (h + 1) % list.length);
-          } else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            setHi((h) => (h - 1 + list.length) % list.length);
-          } else if (e.key === "Enter") {
-            e.preventDefault();
-            onPick(list[hi]);
-            setKw("");
-            setOpen(false);
-          } else if (e.key === "Escape") {
-            setOpen(false);
-          }
-        }}
-        placeholder={placeholder ?? "输入门店名，如：大坪"}
-        className="h-[30px] w-full rounded border border-slate-300 px-2 text-[12.5px] outline-none focus:border-brand-500"
-      />
-      {open ? (
-        <div className="absolute left-0 top-full z-40 mt-0.5 max-h-[260px] w-[240px] overflow-y-auto rounded border border-slate-200 bg-white shadow-lg">
-          {list.length === 0 ? (
-            <div className="px-2 py-2 text-[12px] text-slate-400">没有匹配的门店</div>
-          ) : (
-            list.map((s, i) => (
-              <button
-                key={s.id}
-                type="button"
-                onMouseEnter={() => setHi(i)}
-                onClick={() => {
-                  onPick(s);
-                  setKw("");
-                  setOpen(false);
-                }}
-                className={`block w-full px-2 py-1.5 text-left text-[12.5px] ${i === hi ? "bg-brand-50" : ""}`}
-              >
-                {s.name}
-              </button>
-            ))
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export default function TransferOrderPanel({
   orders,
   stores,
+  storeScopeRaw = [],
 }: {
   orders: Order[];
   stores: { id: number; name: string }[];
+  /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
+  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -363,6 +266,16 @@ export default function TransferOrderPanel({
   // 作废/撤销弹窗
   const [act, setAct] = useState<{ order: Order; kind: "cancel" | "reverse" } | null>(null);
   const [actReason, setActReason] = useState("");
+
+  /**
+   * 调往门店的候选（Stage 9.30）。
+   * ⚠️ 调去一家**只有离职人员**的老店是合法业务（如接手遗留人员），
+   *    所以额外提供「更多门店」入口；但默认只给在职 37 + 南昌3店 3 家。
+   */
+  const storeScope = useMemo(
+    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    [storeScopeRaw]
+  );
 
   const reload = () => startTransition(() => router.refresh());
 
@@ -481,7 +394,14 @@ export default function TransferOrderPanel({
             <label className="text-[11px] text-slate-500">
               调往门店（当前：{emp?.storeName ?? "—"}）
             </label>
-            <StoreSearch all={stores} value={toStore} onPick={setToStore} />
+            <StorePicker
+              stores={storeScope}
+              allStores={stores}
+              value={toStore}
+              onChange={setToStore}
+              placeholder="输入门店名，如：大坪"
+              className="w-[240px]"
+            />
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-slate-500">生效日期（留空 = 立即生效）</label>

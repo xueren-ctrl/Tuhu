@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Alert, Badge, Button, Card, Field, Input, Select } from "@/components/ui";
+import StorePicker from "@/components/common/StorePicker";
 import type { AutoPreview, RuleRow } from "@/lib/department-rule-service";
 
 interface Option {
@@ -12,6 +13,8 @@ interface Option {
 
 interface Props {
   stores: Option[];
+  /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
+  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
   departments: Option[];
   positions: Option[];
 }
@@ -22,7 +25,12 @@ interface Props {
  * 流程：配置规则 → 预览「将修改多少员工」→ 确认后批量更新。
  * 预览与执行走同一套规则匹配，且预览是只读的（可反复点）。
  */
-export default function DepartmentAutoPanel({ stores, departments, positions }: Props) {
+export default function DepartmentAutoPanel({
+  stores,
+  storeScopeRaw = [],
+  departments,
+  positions,
+}: Props) {
   const router = useRouter();
   const [rules, setRules] = useState<RuleRow[]>([]);
   const [preview, setPreview] = useState<AutoPreview | null>(null);
@@ -40,6 +48,20 @@ export default function DepartmentAutoPanel({ stores, departments, positions }: 
     priority: "100",
     remark: "",
   });
+
+  /* ---------- 门店联想（Stage 9.30） ---------- */
+  const storeScope = useMemo(
+    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    [storeScopeRaw]
+  );
+  const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);
+  const formStoreSelected = useMemo(() => {
+    const v = form.storeId;
+    if (!v) return null;
+    const id = Number(v);
+    const hit = allStoreOptions.find((x) => x.id === id) ?? storeScope.find((x) => x.id === id);
+    return hit ?? { id, name: `门店#${v}` };
+  }, [form.storeId, allStoreOptions, storeScope]);
 
   const loadRules = useCallback(async () => {
     const r = await fetch("/api/department-rules");
@@ -268,17 +290,14 @@ export default function DepartmentAutoPanel({ stores, departments, positions }: 
               </Select>
             </Field>
             <Field label="门店">
-              <Select
-                value={form.storeId}
-                onChange={(e) => setForm((f) => ({ ...f, storeId: e.target.value }))}
-              >
-                <option value="">不限</option>
-                {stores.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </Select>
+              <StorePicker
+                stores={storeScope}
+                allStores={allStoreOptions}
+                value={formStoreSelected}
+                onChange={(s) => setForm((f) => ({ ...f, storeId: s ? String(s.id) : "" }))}
+                placeholder="输入门店名筛选"
+                emptyLabel="不限"
+              />
             </Field>
             <Field label="岗位">
               <Select

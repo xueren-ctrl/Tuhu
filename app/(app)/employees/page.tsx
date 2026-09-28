@@ -65,6 +65,7 @@ export default async function EmployeesPage({
       <EmployeeFilterPanel
         basePath="/employees"
         stores={options.stores}
+        storeScopeRaw={options.storeScope}
         departments={options.departments}
         positions={options.positions}
         fields={[
