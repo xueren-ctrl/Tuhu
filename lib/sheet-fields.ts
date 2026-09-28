@@ -225,7 +225,7 @@ const SALARY_COLUMNS: SheetColumnSpec[] = [
   col("姓名", "name"),
   col("工种级别", COMPUTED.POSITION),
   col("首月保障", "firstMonthGuarantee"),
-  col("备注", "remark"),
+  // ⚠️ Stage 9.35：原「备注」列已并入「薪资待遇」（用户确认薪资表第一列备注=薪资待遇），不再重复显示
   col("招聘人", "recruiterName"),
   col("带教人", "mentorName"),
   col("入职表", "docOnboardingForm"),
@@ -273,7 +273,7 @@ const DATABASE_COLUMNS: SheetColumnSpec[] = [
   col("面试评估表", "docInterviewEvaluation"),
   col("在职年限（离职）", COMPUTED.RESIGNED_TENURE),
   col("首月保障", "firstMonthGuarantee"),
-  col("备注", "remark"),
+  // ⚠️ Stage 9.35：同上，「备注」已并入「薪资待遇」
   col("带教人", "mentorName"),
   col("入职表", "docOnboardingForm"),
   col("证书级别", "certificateLevel"),

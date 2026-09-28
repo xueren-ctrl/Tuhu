@@ -242,22 +242,33 @@ export default function EmployeeForm({
   /** 只有「美容」职位有职位备注（师傅/中工/学徒） */
   const isBeautyPosition = positionSelected?.name === "美容";
 
-  /* ---------- 面试地点（Stage 9.33）：就是门店 ---------- */
-  /** 面试地点存的是**店名文本**，不是门店 id，所以回显要从全量门店里按名字找 */
+  /* ---------- 面试地点（Stage 9.35）：门店搜索，范围=在职 36 家 + 南昌3店 3 家 ---------- */
+  /**
+   * ⚠️ 面试地点存的是**店名文本**而不是门店 id，所以回显要从门店名反查。
+   * 用户 2026-09-28 明确：面试地点就是「在职表和南昌3店里的门店」，
+   * 因此**不提供「更多门店」展开**（与档案门店选择范围保持一致）。
+   * 已填了范围外简称的（如「沙湖大道店」，库里实际叫「塘厦沙湖大道店」）
+   * 通过 extraStores 标「已填地点」保留，可清除但不会被静默改写。
+   */
   const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);
   const interviewStoreSelected = useMemo(() => {
     const v = (form.interviewLocation ?? "").trim();
     if (!v) return null;
-    const hit = allStoreOptions.find((x) => x.name === v) ?? storeScope.find((x) => x.name === v);
+    // 先在 39 家范围内按名精确匹配，匹配不到再落到全量（保证老数据能显示）
+    const hit = storeScope.find((x) => x.name === v) ?? allStoreOptions.find((x) => x.name === v);
     return hit ?? { id: -1, name: v };
-  }, [form.interviewLocation, allStoreOptions, storeScope]);
-  /** 面试地点写了简称（如「沙湖大道店」，库里实际是「塘厦沙湖大道店」）也必须能选回 */
+  }, [form.interviewLocation, storeScope, allStoreOptions]);
+  /** 范围外的已填地点（简称 / 已停业店）也必须能选回，不能被静默清掉 */
   const interviewStoreExtras = useMemo(() => {
     const cur = (form.interviewLocation ?? "").trim();
     if (!cur) return [];
-    const exact = allStoreOptions.some((x) => x.name === cur);
-    return exact ? [] : [{ id: -1, name: cur, tag: "已填地点", tagTone: "slate" as const }];
-  }, [form.interviewLocation, allStoreOptions]);
+    const inScope = storeScope.some((x) => x.name === cur);
+    if (inScope) return [];
+    const known = allStoreOptions.some((x) => x.name === cur);
+    return [
+      { id: -1, name: cur, tag: known ? "已填地点" : "已填（非在营门店）", tagTone: "slate" as const },
+    ];
+  }, [form.interviewLocation, storeScope, allStoreOptions]);
 
   const isResigned = form.status === "RESIGNED";
 
@@ -432,14 +443,9 @@ export default function EmployeeForm({
           >
             <StorePicker
               stores={storeScope}
-              allStores={allStoreOptions}
               extraStores={interviewStoreExtras}
               value={interviewStoreSelected}
-              onChange={(s) => {
-                set("interviewLocation")(s ? s.name : "");
-                // 同步门店主数据：面试地点如果确实是一家在营门店，顺带把档案门店对齐
-                // 不会自动改（可能面试店 ≠ 现门店），这里只写原文，不动 storeId。
-              }}
+              onChange={(s) => set("interviewLocation")(s ? s.name : "")}
               placeholder="输入门店名，如：大坪"
               emptyLabel="（未填写）"
             />
