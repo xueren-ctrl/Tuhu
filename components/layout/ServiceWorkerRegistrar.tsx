@@ -18,7 +18,16 @@ export default function ServiceWorkerRegistrar() {
     if (!("serviceWorker" in navigator)) return;
     // 生产环境才注册，避免开发时缓存干扰调试
     if (process.env.NODE_ENV !== "production") return;
-    navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => undefined);
+    // ⚠️ Stage 9.34：updateViaCache:/none/ —— 浏览器默认会缓存 sw.js 本身最长 24 小时，
+    //    导致新的缓存策略（尤其"不再缓存 chunk"这条）迟迟不生效。
+    //    这里显式绕过 HTTP 缓存，保证每次打开都能拿到最新 SW。
+    navigator.serviceWorker
+      .register("/sw.js", { scope: "/", updateViaCache: "none" })
+      .then((reg) => {
+        // 顺便主动检查一次更新（移动端切回页面时才不会用到过期 SW）
+        reg.update().catch(() => undefined);
+      })
+      .catch(() => undefined);
   }, []);
 
   return null;

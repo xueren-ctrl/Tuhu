@@ -13,7 +13,8 @@
  * 但业务页面本身仍走「网络优先」，保证改完数据刷新就能看到。
  */
 
-const VERSION = "tuhu-hr-v1";
+// ⚠️ Stage 9.34 升到 v2：强制清掉 v1 缓存（里面存着已删除的旧 chunk，会导致白屏）
+const VERSION = "tuhu-hr-v2";
 const SHELL_CACHE = `${VERSION}-shell`;
 const ASSET_CACHE = `${VERSION}-assets`;
 
@@ -74,8 +75,21 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // ② 静态资源：缓存优先
-  if (url.pathname.startsWith("/_next/static/") || url.pathname.startsWith("/icons/")) {
+  // ② 静态资源
+  //
+  // ⚠️⚠️ Stage 9.34 重大修正（2026-09-28）：
+  //    **`/_next/static/` 绝不能缓存优先**。
+  //    Next 的 chunk 文件名里带内容哈希（`5845-8b1d76...js`），一旦重新 build，
+  //    旧 HTML 引用的旧 chunk 会立刻消失；而 SW 缓存里还留着旧 chunk，
+  //    浏览器去缓存里找一个已被删除的文件 → 页面直接崩：
+  //      「Loading chunk 5845 failed」
+  //    这类"缓存优先"对哈希资源是**有害的**：缓存命中反而给出过期/已删除的内容。
+  //
+  //    正确分工：
+  //      · 带哈希的 chunk 由浏览器 HTTP 缓存负责（响应头已带 immutable 一年）
+  //      · SW 一律**网络优先**（不额外缓存），失败再回退到缓存
+  if (url.pathname.startsWith("/icons/")) {
+    // 图标文件名不带哈希，缓存优先没问题（离线也能显示）
     event.respondWith(
       caches.match(req).then(
         (hit) =>
@@ -87,6 +101,12 @@ self.addEventListener("fetch", (event) => {
           })
       )
     );
+    return;
+  }
+
+  if (url.pathname.startsWith("/_next/static/")) {
+    // 网络优先，不写入缓存：让浏览器的 HTTP 缓存（immutable）去管
+    event.respondWith(fetch(req).catch(() => caches.match(req).then((r) => r || new Response("", { status: 504 }))));
     return;
   }
 

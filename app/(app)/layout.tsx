@@ -1,4 +1,5 @@
 import AppShell from "@/components/layout/AppShell";
+import ChunkReloadGuard from "@/components/layout/ChunkReloadGuard";
 import { requirePageUser } from "@/lib/auth";
 
 /**
@@ -17,5 +18,11 @@ export default async function AppLayout({
   children: React.ReactNode;
 }) {
   await requirePageUser();
-  return <AppShell>{children}</AppShell>;
+  return (
+    <AppShell>
+      {/* Stage 9.34：chunk 加载失败（build 后旧缓存）时自动强制刷新一次，避免整页崩 */}
+      <ChunkReloadGuard />
+      {children}
+    </AppShell>
+  );
 }
