@@ -225,7 +225,17 @@ const SALARY_COLUMNS: SheetColumnSpec[] = [
   col("姓名", "name"),
   col("工种级别", COMPUTED.POSITION),
   col("首月保障", "firstMonthGuarantee"),
-  // ⚠️ Stage 9.35：原「备注」列已并入「薪资待遇」（用户确认薪资表第一列备注=薪资待遇），不再重复显示
+  /**
+   * ⚠️ Stage 9.35 更正：这一列**必须保留**（用户 2026-09-28 明确纠正过）。
+   * 薪资表里确实有**两列备注**，它们是：
+   *   · 本列「备注」      = 薪资待遇（与在职表里的「薪资待遇」是**同一份数据**，
+   *                        只是在薪资表里列名叫「备注」）
+   *   · 「备注（重复列）」= 另一份人事记录（内容是「已劝退」「重新入职的」等）
+   * 所以这里**列名保持 Excel 原样叫「备注」，数据源指向 `salaryTerms`**，
+   * 同一份数据在「在职」表里显示为「薪资待遇」、在「薪资」表里显示为「备注」。
+   * 编辑员工表单里只填**一个**「薪资待遇」框，不会重复。
+   */
+  col("备注", "salaryTerms"),
   col("招聘人", "recruiterName"),
   col("带教人", "mentorName"),
   col("入职表", "docOnboardingForm"),
@@ -273,7 +283,8 @@ const DATABASE_COLUMNS: SheetColumnSpec[] = [
   col("面试评估表", "docInterviewEvaluation"),
   col("在职年限（离职）", COMPUTED.RESIGNED_TENURE),
   col("首月保障", "firstMonthGuarantee"),
-  // ⚠️ Stage 9.35：同上，「备注」已并入「薪资待遇」
+  // ⚠️ Stage 9.35：在职表里这一列就叫「薪资待遇」（上方已定义，数据源同为 salaryTerms）；
+  //    薪资表里同一份数据的列名叫「备注」。这里**不再重复出现一列「备注」**。
   col("带教人", "mentorName"),
   col("入职表", "docOnboardingForm"),
   col("证书级别", "certificateLevel"),

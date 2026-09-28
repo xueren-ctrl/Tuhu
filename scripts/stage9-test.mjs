@@ -2189,9 +2189,10 @@ deletedAt: null,
     });
     const salWithMerged = salRows.filter((r) => r.salaryTerms.includes("（原备注："));
     const salPeople = salRows.reduce((s, r) => s + r._count._all, 0);
-    // 「备注」列（remark）已不该再作为独立列出现在薪资表/在职表
+    // 薪资表**必须仍有**「备注」列（列名沿用 Excel 原样），数据源是 salaryTerms；
     const salaryHtml = (await (await req("/sheets/薪资表")).text()).replace(/<!--[\s\S]*?-->/g, "");
-const remarkColGone = !salaryHtml.includes(">备注<");
+// 薪资表里「备注」列必须存在（它是薪资待遇在薪资表里的列名）
+    const remarkColPresent = />备注</.test(salaryHtml);
     // 地址更正：王思晗的薪资待遇应已是薪资，地址应已搬到现居住地址
     const wang = await prisma.employee.findFirst({
       where: { employeeId: "THHR2026001397" },
@@ -2204,10 +2205,10 @@ const remarkColGone = !salaryHtml.includes(">备注<");
       String(wang.currentAddress ?? "").includes("南门一街");
     check(
       "S9-102",
-      "薪资表第一列备注已并入薪资待遇（补空/两段保留），第二列备注不动，地址已更正到现居住地址",
-      salPeople >= 468 && salWithMerged.reduce((a, r) => a + r._count._all, 0) === 58 && remarkColGone && addrFixed,
+      "薪资表仍保留两列备注（第一列备注=薪资待遇数据、第二列不动），地址已更正到现居住地址",
+      salPeople >= 468 && salWithMerged.reduce((a, r) => a + r._count._all, 0) === 58 && remarkColPresent && addrFixed,
       `薪资待遇非空 ${salPeople} 人（含两段保留 ${salWithMerged.reduce((s, r) => s + r._count._all, 0)} 人）；` +
-        `薪资表已无独立「备注」列=${remarkColGone}；` +
+        `薪资表仍有「备注」列=${remarkColPresent}；` +
         `王思晗：薪资待遇=「${wang?.salaryTerms ?? "-"}」，现居住地址=「${wang?.currentAddress ?? "-"}」`
     );
 
