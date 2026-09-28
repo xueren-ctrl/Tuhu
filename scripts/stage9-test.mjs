@@ -2179,6 +2179,52 @@ deletedAt: null,
         `编辑页无「重复列」字段=${noDupField}；面试地点为门店搜索=${hasLocSearch}`
     );
 
+    // ---------- Stage 9.36：新增员工表单同样受控（用户第三次强调）----------
+    // 教训：之前只改了「编辑员工」表单，**新增员工**表单里这三项仍是自由文本框，
+    // 用户从「新增员工 → 门店员工」入口走时看到的还是老样子 → 判定"没改好"。
+    // 本断言专门盯「新增员工」入口，防止以后只改一处。
+    const newEmpHtml = (
+      await (await req("/employees/new?kind=STORE")).text()
+    ).replace(/<!--[\s\S]*?-->/g, "");
+
+    // ① 面试地点：必须是门店搜索框（placeholder），不是 <input type=text> 裸框
+    const newHasLocSearch = newEmpHtml.includes('placeholder="输入门店名，如：大坪"');
+    // ② 面试结果：必须出现「通过」「不通过」两个可点选项，且**不能**有「未通过/待定」
+    const newHasResultBtns = newEmpHtml.includes(">通过<") && newEmpHtml.includes(">不通过<");
+    const noBadResult = !newEmpHtml.includes(">未通过<") && !newEmpHtml.includes(">待定<");
+    // ③ 材料三字段：必须是 √ 按钮
+    const newHasMark = newEmpHtml.includes(">√<") || newEmpHtml.includes("√</span>");
+    const newHasClearHint = newEmpHtml.includes("留空 = 没有或还没交");
+    // ④ 三个 label 都不该再配一个自由文本框 —— 只数真正的 <label> 元素
+    //    ⚠️ 不能用整页 count：Next 会把字段定义序列化进 RSC payload
+    //    （"label":"面试地点","control":"storeSearch"），那不是重复渲染。
+    const labelCount = (t) =>
+      (newEmpHtml.match(new RegExp(`<label[^>]*>${t}</label>`, "g")) || []).length;
+    const noDupRender = ["面试地点", "面试结果", "简历表", "面试评估表", "入职表"].every(
+      (t) => labelCount(t) === 1
+    );
+    // 附加：字段定义本身必须带正确的 control（RSC payload 里的声明才是源头）
+    //    ⚠️ HTML 里的 JSON 是**转义**的（\"key\"），正则要能同时匹配转义/未转义两种形态。
+    const hasCtrl = (key, ctrl) => {
+      const re = new RegExp(`\\\\?"key\\\\?":\\\\?"${key}\\\\?"[^{}]*?\\\\?"control\\\\?":\\\\?"${ctrl}\\\\?"`);
+      return re.test(newEmpHtml);
+    };
+    const ctrlOk =
+      hasCtrl("interviewLocation", "storeSearch") &&
+      hasCtrl("interviewResult", "passfail") &&
+      hasCtrl("docResume", "tick") &&
+      hasCtrl("docInterviewEvaluation", "tick") &&
+      hasCtrl("docOnboardingForm", "tick");
+
+    check(
+      "S9-103",
+      "新增员工表单：面试地点=门店搜索下拉、面试结果=通过/不通过/空、材料三字段=√/空（与编辑页口径一致）",
+      newHasLocSearch && newHasResultBtns && noBadResult && newHasMark && newHasClearHint && noDupRender && ctrlOk,
+      `面试地点搜索框=${newHasLocSearch}；通过/不通过按钮=${newHasResultBtns}；` +
+        `无「未通过/待定」=${noBadResult}；√按钮=${newHasMark}；留空提示=${newHasClearHint}；` +
+        `各字段只渲染一个 label=${noDupRender}；字段声明 control 正确=${ctrlOk}`
+    );
+
     // ---------- Stage 9.35：薪资表「第一列备注」并入「薪资待遇」 ----------
     // 用户 2026-09-28 确认：薪资表 2 列备注里，**第一列就是薪资待遇**，
     // 与「⑤ 银行卡与薪资」的薪资待遇合并；第二列（已劝退/重新入职的 6 人）暂时不管。

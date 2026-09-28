@@ -6,6 +6,8 @@ import { Alert, Button, Card, Field, Input, Select, Textarea } from "@/component
 import StorePicker from "@/components/common/StorePicker";
 import PositionPicker from "@/components/common/PositionPicker";
 import PositionNoteSelect from "@/components/common/PositionNoteSelect";
+import YesNoSelect from "@/components/common/YesNoSelect";
+import MarkSelect from "@/components/common/MarkSelect";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 import type { FormFieldSpec, NewEmployeeKind } from "@/lib/sheet-fields";
 
@@ -21,6 +23,9 @@ import type { FormFieldSpec, NewEmployeeKind } from "@/lib/sheet-fields";
  */
 
 type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+
+/** Stage 9.36：面试结果固定选项（用户 2026-09-29 定：通过 / 不通过 / 留空） */
+const INTERVIEW_RESULT_OPTIONS = ["通过", "不通过"] as const;
 
 export default function NewEmployeeForm({
   kind,
@@ -94,6 +99,16 @@ export default function NewEmployeeForm({
     [fields, kind]
   );
 
+  /* ---------- 面试地点（Stage 9.36）----------
+   * 面试地点存的是**店名文本**（不是门店 id），所以回显要从门店名反查。
+   * 范围与「门店」一致：在职 36 家 + 南昌3店 3 家 = 39 家。
+   */
+  const interviewLocationSelected = useMemo(() => {
+    const v = (form.interviewLocation ?? "").trim();
+    if (!v) return null;
+    const hit = storeScope.find((s) => s.name === v);
+    return hit ?? { id: -1, name: v };
+  }, [form.interviewLocation, storeScope]);
   const sections = useMemo(() => {
     const map = new Map<string, FormFieldSpec[]>();
     for (const f of visibleFields) {
@@ -226,6 +241,28 @@ export default function NewEmployeeForm({
                       只有「美容」职位需要填备注
                     </div>
                   )
+                ) : f.control === "storeSearch" || f.key === "interviewLocation" ? (
+                  /* ---------- 面试地点（Stage 9.36）：门店搜索，范围=在职 36 + 南昌3店 3 ---------- */
+                  <StorePicker
+                    stores={storeScope}
+                    value={interviewLocationSelected}
+                    onChange={(s) => set("interviewLocation", s ? s.name : "")}
+                    placeholder="输入门店名，如：大坪"
+                    emptyLabel="（未填写）"
+                  />
+                ) : f.control === "passfail" || f.key === "interviewResult" ? (
+                  /* ---------- 面试结果（Stage 9.36）：通过 / 不通过 / 留空 ---------- */
+                  <YesNoSelect
+                    value={form[f.key] ?? ""}
+                    options={INTERVIEW_RESULT_OPTIONS}
+                    onChange={(v) => set(f.key, v)}
+                  />
+                ) : f.control === "tick" ||
+                  f.key === "docResume" ||
+                  f.key === "docInterviewEvaluation" ||
+                  f.key === "docOnboardingForm" ? (
+                  /* ---------- 材料三字段（Stage 9.36）：√ / 留空 ---------- */
+                  <MarkSelect value={form[f.key] ?? ""} onChange={(v) => set(f.key, v)} label="已交" />
                 ) : f.control === "textarea" ? (
                   <Textarea
                     value={form[f.key] ?? ""}

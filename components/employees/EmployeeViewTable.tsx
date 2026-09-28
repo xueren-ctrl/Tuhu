@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Badge, StatusBadge } from "@/components/ui";
 import { formatDate } from "@/lib/format";
 import YesNoCell from "@/components/employees/YesNoCell";
+import ControlledFieldCell from "@/components/employees/ControlledFieldCell";
 import type { EmployeeListRow } from "@/lib/employee-service";
 
 /**
@@ -56,7 +57,6 @@ export type ViewColumnKey =
   | "docResume"
   | "docInterviewEvaluation"
   | "docOnboardingForm"
-  | "docInterviewEvaluation2"
   | "resignDateRaw"
   | "recruiterName"
   | "interviewDate"
@@ -149,7 +149,6 @@ const COLUMNS: Record<ViewColumnKey, ColumnDef> = {
   docResume: { key: "docResume", label: "简历", className: "w-[62px]" },
   docInterviewEvaluation: { key: "docInterviewEvaluation", label: "面试评价", className: "w-[84px]" },
   docOnboardingForm: { key: "docOnboardingForm", label: "入职表", className: "w-[72px]" },
-  docInterviewEvaluation2: { key: "docInterviewEvaluation2", label: "面试评价2", className: "w-[84px]" },
   resignDateRaw: { key: "resignDateRaw", label: "离职日期(原文)", className: "w-[116px]" },
   recruiterName: { key: "recruiterName", label: "招聘人", className: "w-[84px]" },
   interviewDate: { key: "interviewDate", label: "面试日期", className: "w-[104px]" },
@@ -329,7 +328,27 @@ export default function EmployeeViewTable({
         if (key === "bankAccountNo" || key === "emergencyPhone1" || key === "emergencyPhone2") {
           return <span className="font-mono text-[11.5px] text-slate-600">{String(v)}</span>;
         }
-        if (key === "interviewHired" || key === "docResume" || key === "docInterviewEvaluation" || key === "docOnboardingForm" || key === "docInterviewEvaluation2") {
+        if (key === "interviewResult") {
+          return (
+            <ControlledFieldCell
+              employeeId={r.id}
+              field={key}
+              value={(r as unknown as Record<string, string | null>)[key]}
+              kind="passfail"
+            />
+          );
+        }
+        if (key === "docResume" || key === "docInterviewEvaluation" || key === "docOnboardingForm") {
+          return (
+            <ControlledFieldCell
+              employeeId={r.id}
+              field={key}
+              value={(r as unknown as Record<string, string | null>)[key]}
+              kind="tick"
+            />
+          );
+        }
+        if (key === "interviewHired") {
           const s = String(v);
           if (s === "是") return <span className="text-emerald-600">是</span>;
           if (s === "否") return <span className="text-slate-400">否</span>;

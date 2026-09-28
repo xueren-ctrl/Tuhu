@@ -385,7 +385,15 @@ export interface FormFieldSpec {
   key: string;
   label: string;
   section: string;
-  control: "text" | "textarea" | "date" | "number" | "select";
+  /**
+   * 表单控件类型
+   * - text/textarea/date/number：普通输入
+   * - select：用 `options` 里的固定选项渲染下拉
+   * - storeSearch：门店搜索联想（候选=在职 36 + 南昌3店 3，见 store-scope-service）
+   * - passfail：通过 / 不通过 / 留空（面试结果）
+   * - tick：√ / 留空（材料类：简历表 / 面试评估表 / 入职表）
+   */
+  control: "text" | "textarea" | "date" | "number" | "select" | "storeSearch" | "passfail" | "tick";
   /** select 的固定选项；为空则用系统下拉（门店 / 职位） */
   options?: string[];
   sensitive?: boolean;
@@ -442,6 +450,17 @@ function controlOf(source: string): FormFieldSpec["control"] {
   if (source === "hireDate" || source === "resignDate" || source === "interviewDate") return "date";
   if (source === "age") return "number";
   if (source === "salaryTerms" || source === "remark" || source === "remark3") return "textarea";
+  // ⚠️ Stage 9.36（用户 2026-09-29 第三次强调）：**新增员工**表单里这三个也必须受控。
+  //   之前只改了「编辑员工」表单，新增表单仍把它们当自由文本 → 用户填什么都进得去。
+  //   面试地点 = 门店搜索下拉；面试结果 = 通过/不通过/空；材料三字段 = √/空。
+  if (source === "interviewLocation") return "storeSearch";
+  if (source === "interviewResult") return "passfail";
+  if (
+    source === "docResume" ||
+    source === "docInterviewEvaluation" ||
+    source === "docOnboardingForm"
+  )
+    return "tick";
   if (
     [
       "dormitory",
@@ -472,7 +491,9 @@ function optionsOf(source: string): string[] | undefined {
   )
     return ["是", "否"];
   if (source === "interviewHired") return ["是", "否"];
-  if (source === "interviewResult") return ["通过", "未通过", "待定"];
+  // ⚠️ 原为 ["通过","未通过","待定"] —— 用户 2026-09-29 明确口径是「通过 / 不通过 / 留空」，
+  //   「未通过」用词不对、「待定」也不是用户要的（留空才是）。
+  if (source === "interviewResult") return ["通过", "不通过"];
   return undefined;
 }
 
