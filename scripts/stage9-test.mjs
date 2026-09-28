@@ -1674,15 +1674,26 @@ async function main() {
       .map((m) => [...m[0].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].length)
       .filter((n) => n === 7).length;
     const trfInDb = await prisma.employeeHistory.count({ where: { fieldName: "storeId" } });
+    // ⚠️ 页面**有意**设了 300 条显示上限（超过会显式提示「已显示前 300 条…」，
+    //    引导用筛选缩小范围），不是静默丢数据。2026-09-28 库里已 316 条，触到上限。
+    //    断言随之改成：展开视图 = min(库内条数, 300)，且一旦超限**必须能看到提示**。
+    const TRF_PAGE_LIMIT = 300;
+    const trfExpected = Math.min(trfInDb, TRF_PAGE_LIMIT);
+    const trfTruncated = /已显示前\s*300\s*条/.test(trfRaw);
     check(
       "S9-87",
       `调店记录逐行完整（${trfRows.length} 行）：门店列全部为店名，无裸数字 ID，无空单元格`,
       trfRows.length > 0 &&
         bareId.length === 0 &&
         incomplete.length === 0 &&
-        trfRows.length <= trfInDb &&
-        trfRawRows === trfInDb,
-      `折叠视图 ${trfRows.length} 行 / 展开视图 ${trfRawRows} 行 / 库 ${trfInDb} 条（差 ${trfInDb - trfRows.length} = 被折叠的往返）；` +
+        trfRows.length <= trfRawRows &&
+        trfRawRows === trfExpected &&
+        (trfInDb <= TRF_PAGE_LIMIT || trfTruncated),
+      `折叠视图 ${trfRows.length} 行 / 展开视图 ${trfRawRows} 行 / 库 ${trfInDb} 条` +
+        (trfInDb > TRF_PAGE_LIMIT
+          ? `（页面显示上限 ${TRF_PAGE_LIMIT}，已出截断提示=${trfTruncated}）`
+          : "") +
+        `；差 ${trfInDb - trfRows.length} = 被折叠的往返；` +
         `裸 ID ${bareId.length} 处（应 0）；空单元格 ${incomplete.length} 处（应 0）`
     );
 

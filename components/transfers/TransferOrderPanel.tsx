@@ -110,10 +110,37 @@ function EmpSearch({
   //     → 整页 Application error。改动此处请跑：npm run check:hooks
   if (value) {
     return (
-      <div className="flex h-[30px] w-[260px] items-center gap-1.5 rounded border border-slate-300 bg-slate-50 px-2 text-[12.5px]">
-        <span className="font-medium text-slate-800">{value.name}</span>
-        <span className="text-[11px] text-slate-400">{value.employeeId}</span>
-        <span className="text-[11px] text-emerald-700">当前：{value.storeName ?? "未挂门店"}</span>
+      // 已选中：两行分层显示，避免「姓名 工号 当前门店」挤成一团
+      //   第 1 行：姓名（粗） · 工号（等宽小字） · 职位/状态标签
+      //   第 2 行：「当前门店」小标签 + 店名（绿色，超长省略号）
+      <div className="flex w-[300px] items-center gap-2 rounded border border-slate-300 bg-slate-50 px-2 py-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 leading-tight">
+            <span className="truncate text-[13px] font-medium text-slate-800">{value.name}</span>
+            <span className="shrink-0 rounded bg-white px-1 font-mono text-[10.5px] text-slate-500">
+              {value.employeeId}
+            </span>
+            {value.jobGradeRaw ? (
+              <span className="shrink-0 text-[11px] text-slate-400">{value.jobGradeRaw}</span>
+            ) : null}
+            {value.status !== "ACTIVE" ? (
+              <span className="shrink-0 rounded bg-slate-200 px-1 text-[10.5px] text-slate-600">
+                {STATUS_TEXT[value.status] ?? value.status}
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-1 flex items-center gap-1.5 leading-tight">
+            <span className="shrink-0 text-[11px] text-slate-400">当前门店</span>
+            <span
+              className={`truncate text-[11.5px] font-medium ${
+                value.storeName ? "text-emerald-700" : "text-slate-400"
+              }`}
+              title={value.storeName ?? "未挂门店"}
+            >
+              {value.storeName ?? "未挂门店"}
+            </span>
+          </div>
+        </div>
         <button
           type="button"
           onClick={() => {
@@ -121,7 +148,7 @@ function EmpSearch({
             setKw("");
             setHits([]);
           }}
-          className="ml-auto text-[11px] text-slate-400 hover:text-rose-600"
+          className="shrink-0 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-500 hover:border-rose-300 hover:text-rose-600"
           title="重新选择"
         >
           更换
@@ -131,7 +158,7 @@ function EmpSearch({
   }
 
   return (
-    <div ref={boxRef} className="relative w-[260px]">
+    <div ref={boxRef} className="relative w-[300px]">
       <input
         value={kw}
         autoFocus={autoFocus}
@@ -180,19 +207,31 @@ function EmpSearch({
                   setHits([]);
                   setOpen(false);
                 }}
-                className={`flex w-full items-center gap-2 px-2 py-1.5 text-left text-[12.5px] ${
+                className={`flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[12.5px] ${
                   i === hi ? "bg-brand-50" : ""
                 }`}
               >
-                <span className="font-medium text-slate-800">{h.name}</span>
-                <span className="text-[11px] text-slate-400">{h.employeeId}</span>
-                <span className="text-[11px] text-emerald-700">当前：{h.storeName ?? "未挂门店"}</span>
-                {h.jobGradeRaw ? <span className="text-[11px] text-slate-400">· {h.jobGradeRaw}</span> : null}
+                <span className="shrink-0 font-medium text-slate-800">{h.name}</span>
+                <span className="shrink-0 font-mono text-[10.5px] text-slate-400">{h.employeeId}</span>
+                {h.jobGradeRaw ? (
+                  <span className="shrink-0 text-[11px] text-slate-400">{h.jobGradeRaw}</span>
+                ) : null}
                 {h.status !== "ACTIVE" ? (
-                  <span className="ml-auto rounded bg-slate-100 px-1 text-[10.5px] text-slate-500">
+                  <span className="shrink-0 rounded bg-slate-100 px-1 text-[10.5px] text-slate-500">
                     {STATUS_TEXT[h.status] ?? h.status}
                   </span>
                 ) : null}
+                {/* 门店单独做成右侧标签，与姓名/工号在视觉上分开 */}
+                <span
+                  className={`ml-auto max-w-[150px] shrink-0 truncate rounded px-1.5 py-px text-[11px] ${
+                    h.storeName
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-slate-100 text-slate-400"
+                  }`}
+                  title={h.storeName ?? "未挂门店"}
+                >
+                  {h.storeName ?? "未挂门店"}
+                </span>
               </button>
             ))
           )}
