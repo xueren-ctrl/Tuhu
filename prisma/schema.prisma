@@ -50,6 +50,10 @@ model Store {
   transfersOut TransferOrder[] @relation("TransferFrom")
   /// 作为「调入」方的调店单（Stage 9.28）
   transfersIn  TransferOrder[] @relation("TransferTo")
+  /// 该门店的社保参保人员（Stage 9.37）
+  socialInsuranceEntries SocialInsuranceEntry[]
+  /// 指向该门店的社保名单门店名映射（Stage 9.37）
+  socialInsuranceStoreMappings SocialInsuranceStoreMapping[]
 
   @@index([status])
 }
@@ -466,6 +470,8 @@ model Employee {
   histories EmployeeHistory[]
   transferOrders TransferOrder[] // 该员工的调店单（Stage 9.28）
   storePeriods EmployeeStorePeriod[] // 该员工的任职门店历史（Stage 9.19）
+  /// 该员工的社保参保记录（Stage 9.37，可能为 0 条或多条）
+  socialInsuranceEntries SocialInsuranceEntry[]
 
   /** 该员工的数据质量工单（第四阶段新增） */
   qualityIssues QualityIssue[]
@@ -830,4 +836,103 @@ model SheetRowEmployeeLink {
   @@unique([sheet, rowNo])
   @@index([sheet])
   @@index([employeeId])
+}
+
+/**
+ * 社保参保名单（Stage 9.37）
+ *
+ * 来源：Excel「社保总名单」Sheet（67 行，7 列：序号/门店/姓名/参保日期/缴费基数/备注）。
+ * 用途：**按这份名单给职工买社保**。所以本表的语义是「当前是否参保」，
+ *      而不是员工档案的派生属性 —— 员工离职了可以先停保再办离职，也可以还在保。
+ *
+ * 设计要点（都是 2026-09-29 问过用户后定的）：
+ *  ① 已离职员工也**全部保留**（用户决定），由 `insured` 开关控制是否参保，不靠人是否在职。
+ *  ② 查不到员工档案的也**全部保留**（用户决定），`employeeId` 留空，页面高亮提醒去关联。
+ *  ③ 参保日期 Excel 里有 5 种写法混用（Excel 序列号/标准日期/只到月/`202510月`），
+ *     只到月的按**当月 1 号**存，并置 `datePrecision="MONTH"` 标记提醒（用户决定），
+ *     `dateRaw` 一律保留 Excel 原值，**原始证据不删**。
+ *
+ * `employeeId` / `storeId` 允许为空 —— 这是"宁可留空也不猜"原则的延续：
+ * 有歧义时页面明确提示人工确认，而不是悄悄挂到某个人身上。
+ */
+model SocialInsuranceEntry {
+  id Int @id @default(autoincrement())
+
+  /// Excel 原始行号（社保总名单 Sheet 的行号，用于溯源与幂等重导）
+  sourceRowNo Int
+
+  /// 姓名（名单原文，**不因关联员工而改写**）
+  name String
+
+  /// Excel「序号」列（注意：原表里是门店分组序号，不是逐人递增序号，故为可空）
+  seqNo Int?
+
+  /// 门店：文本原文 + 关联（两者都留，文本用于对不上时也不丢信息）
+  storeNameRaw String?
+  storeId Int?
+  store Store? @relation(fields: [storeId], references: [id])
+
+  /// 关联的员工档案（可能为空：名单上有但库中查无此人 / 重名无法确定）
+  employeeId Int?
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  /// 参保日期（纯日期 → UTC 零点；只写到月时为当月 1 号）
+  insuredDate DateTime?
+  /// DAY | MONTH | UNKNOWN —— MONTH 表示原表只写到月，页面要提示
+  datePrecision String @default("DAY")
+  /// Excel 原值（如 `45352` / `2025/5月` / `202510月`），**原样保留**
+  dateRaw String?
+
+  /// 缴费基数（用户：多数是 5510，名单上原表有 1 人是 `/`）
+  baseAmount String?
+  /// 原表「备注」（如「田心做饭的阿姨」「康总的太太」「无法购买」）
+  note String?
+
+  /// **是否参保**（用户 2026-09-29 决定：已离职的人也保留在名单里，用这个开关控制）
+  insured Boolean @default(true)
+
+  /// 停保 / 复保留痕
+  insuredChangedAt DateTime?
+  insuredChangedBy String?
+  insuredNote String?
+
+  /// 新增/修改留痕
+  createdBy String?
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourceRowNo])
+  @@index([insured])
+  @@index([employeeId])
+  @@index([storeId])
+  @@index([name])
+}
+
+/// 社保名单的门店名 → 门店主数据的**人工确认**映射（Stage 9.37）
+///
+/// 30 家里只有 15 家能精确匹配，其余名字略有差异（`塘厦林村新阳店` vs `塘厦林村新阳路店`）。
+/// 候选由系统自动生成，但**必须由用户逐条确认后才生效**（用户 2026-09-29 决定），
+/// 绝不自动挂靠 —— 挂错门店 = 买错人的社保。
+model SocialInsuranceStoreMapping {
+  id Int @id @default(autoincrement())
+
+  /// 名单里的门店原文（如 `塘厦林村新阳店`）
+  rawName String @unique
+  /// 确认后关联的门店；null = 确认「这家不对应任何门店」或尚未确认
+  storeId Int?
+  store Store? @relation(fields: [storeId], references: [id])
+
+  /// PENDING 待确认 / CONFIRMED 已确认 / REJECTED 确认不对应
+  status String @default("PENDING")
+  /// 系统生成的候选（JSON 数组，运营决策不依赖它，只做参考）
+  candidatesJson String?
+  /// 用户确认时写的原因（如「少了路字」「是老店已停用」）
+  note String?
+  decidedBy String?
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
 }

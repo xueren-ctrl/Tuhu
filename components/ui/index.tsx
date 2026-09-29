@@ -250,10 +250,13 @@ export function EmptyState({
 
 export function Alert({
   tone = "info",
+  title,
   children,
   className = "",
 }: {
   tone?: "info" | "warn" | "error" | "success";
+  /** 可选标题（Stage 9.37 起加；不传则与之前行为完全一致） */
+  title?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -267,6 +270,7 @@ export function Alert({
     <div
       className={`rounded-md border px-3 py-2 text-[12.5px] leading-relaxed ${map[tone]} ${className}`}
     >
+      {title ? <div className="mb-1 font-medium">{title}</div> : null}
       {children}
     </div>
   );

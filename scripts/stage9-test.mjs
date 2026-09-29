@@ -2225,6 +2225,98 @@ deletedAt: null,
         `各字段只渲染一个 label=${noDupRender}；字段声明 control 正确=${ctrlOk}`
     );
 
+    // ---------- Stage 9.37：社保参保名单 ----------
+    // 业务前提：这份名单是**买保险时对着看的**，所以「是否参保」必须与在职状态解耦，
+    // 且名单上的人一个都不能丢（离职的、家属、库中查无档案的都得在）。
+    const siAll = await prisma.socialInsuranceEntry.findMany({
+      include: {
+        store: { select: { name: true } },
+        employee: { select: { employeeId: true, name: true, status: true } },
+      },
+      orderBy: { sourceRowNo: "asc" },
+    });
+    // Excel 原表 66 人（表头 1 行 + 数据 66 行）
+    check(
+      "S9-104",
+      "社保名单人数与 Excel「社保总名单」一致（导入无遗漏、无重复）",
+      siAll.length === 66 &&
+        new Set(siAll.map((r) => r.sourceRowNo)).size === 66 &&
+        siAll.every((r) => r.name.trim().length > 0),
+      `库内 ${siAll.length} 人（Excel 应为 66）；sourceRowNo 唯一=${new Set(siAll.map((r) => r.sourceRowNo)).size === 66}`
+    );
+
+    // 「是否参保」与在职状态解耦：已离职的也必须保留在名单里（不能被过滤掉）
+    const resignedStillIn = siAll.filter((r) => r.employee?.status === "RESIGNED");
+    const linkedOk = siAll.filter((r) => r.employeeId !== null).length;
+    check(
+      "S9-105",
+      "已离职员工仍在名单内（不因离职被剔除），参保开关独立于在职状态",
+      siAll.length >= 66 &&
+        siAll.every((r) => typeof r.insured === "boolean") &&
+        resignedStillIn.every((r) => r.insured === true),
+      `名单 ${siAll.length} 人；已关联员工档案 ${linkedOk} 人；` +
+        `库中已离职但仍在名单 ${resignedStillIn.length} 人（${resignedStillIn.map((r) => r.name).join("、")}）`
+    );
+
+    // 未关联员工档案的人（家属 / 未建档）必须保留 + 空 employeeId，绝不静默丢弃
+    const unlinked = siAll.filter((r) => r.employeeId === null);
+    check(
+      "S9-106",
+      "查无员工档案的人（家属等）也保留在名单，employeeId 留空并在页面提醒",
+      unlinked.length > 0 && unlinked.every((r) => r.employee === null),
+      `未关联 ${unlinked.length} 人：${unlinked.map((r) => `${r.name}${r.note ? `(${r.note})` : ""}`).join("、")}`
+    );
+
+    // 日期：只到月的必须标 MONTH + 保留 Excel 原值
+    const monthOnly = siAll.filter((r) => r.datePrecision === "MONTH");
+    const rawKept = siAll.filter((r) => r.dateRaw !== null);
+    const dayRows = siAll.filter((r) => r.datePrecision === "DAY" && r.insuredDate);
+    const tzOk = dayRows.every((r) => {
+      const d = r.insuredDate;
+      return d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
+    });
+    check(
+      "S9-107",
+      `参保日期：只到月的按当月 1 号存并标 MONTH（${monthOnly.length} 人），Excel 原值全部保留（${rawKept.length} 人）`,
+      monthOnly.length > 0 &&
+        monthOnly.every((r) => r.insuredDate !== null && r.insuredDate.getUTCDate() === 1) &&
+        monthOnly.every((r) => r.dateRaw !== null) &&
+        tzOk,
+      `MONTH ${monthOnly.length} 人（均为当月 1 号）；保留原值 ${rawKept.length} 人；` +
+        `DAY 行均为 UTC 零点=${tzOk}`
+    );
+
+    // 门店映射：待确认的必须有候选或明确「找不到」，绝不能自动挂靠到错的门店
+    const mapAll = await prisma.socialInsuranceStoreMapping.findMany();
+    const pending = mapAll.filter((m) => m.status === "PENDING");
+    const confirmed = mapAll.filter((m) => m.status === "CONFIRMED");
+    const pendingNoAuto = pending.every((m) => m.storeId === null);
+    check(
+      "S9-108",
+      `门店名映射：${confirmed.length} 家完全一致自动关联，${pending.length} 家待人工确认（未自动挂靠）`,
+      mapAll.length > 0 && pendingNoAuto && confirmed.every((m) => m.storeId !== null),
+      `映射 ${mapAll.length} 家；已确认 ${confirmed.length}；待确认 ${pending.length}（storeId 均为空=${pendingNoAuto}）`
+    );
+
+    // 页面与接口
+    const siPage = await req("/social-insurance");
+    const siHtml = (await siPage.text()).replace(/<!--[\s\S]*?-->/g, "");
+    const siApi = await req("/api/social-insurance?stats=1");
+    const siApiJson = await siApi.json();
+    const siStats = siApiJson?.data ?? {};
+    check(
+      "S9-109",
+      "社保名单页面可访问，统计接口返回一致的人数",
+      siPage.status === 200 &&
+        siApi.status === 200 &&
+        siApiJson.ok === true &&
+        siStats.total === siAll.length &&
+        siHtml.includes("社保参保名单"),
+      `页面 HTTP=${siPage.status}；接口 HTTP=${siApi.status}；` +
+        `统计 total=${siStats.total}（库内 ${siAll.length}）；参保中=${siStats.insured}；` +
+        `已离职仍在保=${siStats.resignedStillInsured?.length}；未关联=${siStats.unlinked}`
+    );
+
     // ---------- Stage 9.35：薪资表「第一列备注」并入「薪资待遇」 ----------
     // 用户 2026-09-28 确认：薪资表 2 列备注里，**第一列就是薪资待遇**，
     // 与「⑤ 银行卡与薪资」的薪资待遇合并；第二列（已劝退/重新入职的 6 人）暂时不管。

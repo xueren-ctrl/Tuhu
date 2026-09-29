@@ -44,6 +44,8 @@ const NAV: NavGroup[] = [
       { href: "/distribution", label: "人员分布明细", icon: "◔" },
       { href: "/attrition", label: "人员流失率", icon: "◐" },
       { href: "/transfers", label: "调店记录", icon: "⇄" },
+      // 社保名单是「买保险」用的操作台，不是统计报表，故同组放在最后
+      { href: "/social-insurance", label: "社保参保名单", icon: "⛨" },
     ],
   },
   {

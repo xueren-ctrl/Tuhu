@@ -20,6 +20,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_DIR = join(ROOT, "logs");
 const LOG = join(LOG_DIR, "autostart.log");
 const PID_FILE = join(LOG_DIR, "autostart.pid");
+/** 服务进程（next start）自己的 pid —— 供 scripts/stop-server.mjs 一键停服务 */
+const SERVER_PID_FILE = join(LOG_DIR, "server.pid");
 const PORT = Number(process.env.PORT ?? 3000);
 const CHECK_EVERY_MS = 15_000;
 const NEXT_LOG_AT = 60 * 60 * 1000; // 每小时最多记一次「仍在运行」，免得日志疯长
@@ -70,9 +72,14 @@ function startServer(reason) {
   const prefix = (s) => `  [服务] ${s}`;
   child.stdout.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => log(prefix(l))));
   child.stderr.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => log(prefix(l))));
+  // 记录**服务进程**的 pid（Stage 9.37）：prisma generate / next build 需要独占
+  // query_engine dll 与 .next/trace，被服务占着会 EPERM。scripts/stop-server.mjs
+  // 读这个文件来一键停服务，不用再去猜端口或遍历进程。
+  writeFileSync(SERVER_PID_FILE, String(child.pid ?? ""), "utf8");
   child.on("exit", (code, sig) => {
     log(`服务已退出（code=${code} signal=${sig}），${CHECK_EVERY_MS / 1000} 秒后重试`);
     child = null;
+    if (existsSync(SERVER_PID_FILE)) writeFileSync(SERVER_PID_FILE, "");
   });
 }
 
