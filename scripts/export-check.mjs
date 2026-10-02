@@ -30,6 +30,8 @@ export async function runExportChecks(check, req) {
   // ② 走接口下载，逐 Sheet 比对结构
   let structOk = false;
   let structDetail = "";
+  let liveOk = false;
+  let liveDetail = "";
   let size = 0;
   try {
     const res = await req("/api/export/excel");
@@ -65,11 +67,33 @@ export async function runExportChecks(check, req) {
         issues.length > 0
           ? issues.slice(0, 4).join("；")
           : `${wbOut.worksheets.length} 个 Sheet 的列数与合并单元格数全部一致；文件 ${(size / 1024 / 1024).toFixed(2)} MB`;
+
+      // ---------- Stage 9.39：所有表都必须是实时数据（用户 2026-10-03 要求） ----------
+      // 「人员流失率」「门店人员分布明细」以前是"库里不落库 → 导出保留原样"，
+      // 用户明确要求「所有表都要跟软件里实时更新」→ 现在改成实时计算后写值。
+      // 这里验证：这 4 张原本"不写"的表**确实写进去了**（不再是原样的旧值）。
+      const report = await (await req("/api/export/excel?report=1")).json();
+      const statOf = (name) => (report?.data?.stats ?? []).find((s) => s.sheet === name);
+      const liveSheets = ["门店人员编制", "门店人员分布明细", "人员流失率", "招聘面试登记表", "薪资表"];
+      const notWritten = liveSheets.filter((n) => (statOf(n)?.written ?? 0) === 0);
+      const stillBlank = liveSheets.filter((n) => (statOf(n)?.note ?? "").includes("保留原表原样"));
+      liveOk = notWritten.length === 0 && stillBlank.length === 0;
+      liveDetail =
+        `实时写入 ${liveSheets.length - notWritten.length}/${liveSheets.length} 张：` +
+        liveSheets.map((n) => `${n}=${statOf(n)?.written ?? 0}格`).join("，") +
+        (stillBlank.length ? `；仍标注保留原样：${stillBlank.join("、")}` : "") +
+        (notWritten.length ? `；⚠️ 未写入：${notWritten.join("、")}` : "");
     }
   } catch (e) {
     structDetail = `导出接口调用失败：${String(e.message).slice(0, 100)}`;
   }
   check("S9-111", "导出文件与原文件结构一致（Sheet 数 / 列数 / 合并单元格）", structOk, structDetail);
+  check(
+    "S9-114",
+    "统计表与名单表也是**实时数据**（流失率/分布明细/编制/招聘面试/薪资，不再是原样旧值）",
+    liveOk,
+    liveDetail
+  );
 
   const sha2 = createHash("sha256").update(readFileSync("途虎HR人员登记.xlsx")).digest("hex");
   check(
