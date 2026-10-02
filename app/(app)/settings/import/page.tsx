@@ -4,6 +4,7 @@ import path from "node:path";
 import { prisma } from "@/lib/prisma";
 import { Alert, Badge, Button, Card } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
+import ExportExcelButton from "@/components/export/ExportExcelButton";
 
 export const dynamic = "force-dynamic";
 
@@ -170,6 +171,26 @@ export default async function ImportReportPage() {
         本页内容来自 <code>docs/import-report.md</code>（由导入脚本自动生成）与数据库中的导入批次记录。
         原始 Excel 文件位于项目根目录，程序<strong>只读</strong>，绝不写入或覆盖。
       </Alert>
+
+      <Card>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="max-w-[760px]">
+            <div className="text-[14px] font-medium text-slate-800">导出 Excel</div>
+            <p className="mt-1 text-[12.5px] leading-relaxed text-slate-600">
+              下载的文件<strong>以你原始那份 Excel 为底模</strong>，只把软件里的最新数据填回对应单元格 ——
+              表头位置、列顺序、合并单元格、样式、公式全部原样保留。
+              差异只体现在数据上：改过的字段是最新值，新入职/新离职的人会体现在行数变化。
+            </p>
+            <ul className="mt-2 space-y-1 text-[12px] text-slate-500">
+              <li>· 共 12 个 Sheet：在职 / 离职 / 南昌3店 / 运营部 / 运营部离职 / 招聘面试登记表 / 薪资表 / 数据库 / 门店人员编制 / 社保总名单 / 人员流失率 / 门店人员分布明细</li>
+              <li>· <strong>原文件 <code>途虎HR人员登记.xlsx</code> 只读</strong>，导出永远是生成一份新文件，绝不覆盖</li>
+              <li>· 「人员流失率」「门店人员分布明细」在软件里是实时算的，导出文件里保留原表原样（不写死数据），要看最新数值请在软件里看</li>
+              <li>· 「在职」「南昌3店」的数据列原本是 Excel 公式，会自动从「数据库」表取值；「数据库」表已整表更新，所以公式结果也是新的</li>
+            </ul>
+          </div>
+          <ExportExcelButton />
+        </div>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2" title="导入批次历史（来自数据库）" bodyClassName="p-0">

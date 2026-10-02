@@ -2383,13 +2383,34 @@ deletedAt: null,
     // ---------- 非法状态被拒 ----------
     const bad = await changeStatus([empId], "NOT_A_STATUS");
     check("S9-19", "非法状态被拒绝（400）", bad.status === 400, `status=${bad.status}`);
+    // ---------- Stage 9.38：导出 Excel ----------
+    // 用户要求「导出后跟 Excel 一模一样，只是数据更新了」。
+    // 三条断言：原文件只读（SHA 不变）/ 结构一致（Sheet·列数·合并单元格）/ 入口可达。
+    {
+      const { runExportChecks } = await import("./export-check.mjs");
+      await runExportChecks(check, req);
+
+      // ⚠️ 测试账号是 HR 角色：/settings/* 页面仅 ADMIN 可见（HR 被 307 重定向，属预期），
+      //    但**导出接口本身对 HR 也开放**（HR 是日常要用导出的人）—— 这里断言这点。
+      const expPage = await req("/settings/import");
+      const expApi = await req("/api/export/excel?report=1");
+      const expJson = await expApi.json().catch(() => ({}));
+      check(
+        "S9-112",
+        "导出接口对 HR 账号开放（页面入口在 ADMIN 的导入与报告页，HR 访问被重定向属预期）",
+        expApi.status === 200 && expJson.ok === true && typeof expJson.data?.filename === "string",
+        `导出接口 HTTP=${expApi.status}；页面 HTTP=${expPage.status}（HR 访问 /settings/* → 307 属预期）；` +
+          `文件名=${expJson.data?.filename ?? "-"}；回填统计 ${expJson.data?.stats?.length ?? 0} 个 Sheet`
+      );
+    }
+
+
   } finally {
     const removed = await cleanup();
     check("S9-20", "测试员工与临时账号已清理（生产零残留）", removed >= 1, `删除 ${removed} 名测试员工 + 临时账号`);
     void user;
     await prisma.$disconnect();
   }
-
   const pass = results.filter((r) => r.ok).length;
   console.log(`\n======= 通过 ${pass}/${results.length} =======`);
   if (pass !== results.length) {

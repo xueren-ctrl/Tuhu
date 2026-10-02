@@ -45,7 +45,8 @@
     "import:headcount": "node scripts/import-headcount.mjs",
     "import:attrition:baseline": "node scripts/import-attrition-baseline.mjs",
     "snapshot:attrition:baseline": "node scripts/snapshot-attrition-baseline.mjs",
-    "transfers:run-due": "tsx scripts/run-due-transfers.mjs"
+    "transfers:run-due": "tsx scripts/run-due-transfers.mjs",
+    "export:excel": "tsx scripts/export-excel.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
