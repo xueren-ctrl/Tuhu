@@ -3,13 +3,22 @@ import { readFileSync } from "node:fs";
 import ExcelJS from "exceljs";
 
 /**
- * Stage 9.38 导出断言（被 stage9-test.mjs 在末尾 import 调用）
+ * Stage 9.38 / 9.40 导出断言（被 stage9-test.mjs 在末尾 import 调用）
  *
- * 用户要求：「导出后跟 Excel 一模一样，只是数据更新了」。
- * 锁死三件事：
- *  ① 原始 Excel **只读** —— SHA256 必须与基准一致（导出绝不覆盖原文件）
- *  ② 走真实 HTTP 接口下载到的文件，结构与原文件一致（Sheet 数 / 列数 / 合并单元格）
- *  ③ 导出流程跑完后原文件仍未变
+ * 锁死五件事：
+ *  ① 原始 Excel **只读** —— SHA256 必须与基准一致（导出绝不覆盖原文件）  [S9-110]
+ *  ② 走真实 HTTP 接口下载到的文件，结构与原文件一致（Sheet 数 / 列数 / 合并单元格）[S9-111]
+ *  ③ 导出流程跑完后原文件仍未变                [S9-113]
+ *  ④ 导出接口对 HR 开放                [S9-112]
+ *  ⑤ 统计表与名单表是实时数据（不是原样旧值）        [S9-114]
+ *  ⑥ **纯数据**：全表 0 公式、0 处「没找到」             [S9-115]
+ *
+ * ⑥ 是用户 2026-10-03 明确要求并报过的问题：
+ *   > 「导出来的表就不要带公式了，我要纯数据」
+ *   > 「导出来在职都是没找到」
+ * 原表 6 万多个格子全是 XLOOKUP / COUNTIFS / TEXTJOIN / LET；
+ * 在职表每列都是 `XLOOKUP(1,(数据库!$E:$E=$E3)*(数据库!$C:$C=$C3),…)`，
+ * 一旦「数据库」表的入职日期被写成文本而非日期，匹配就全失败 → 满屏「没找到」。
  *
  * ⚠️ 两个踩过的坑：
  *  - `.mjs` **不能 import TS 模块**（ERR_MODULE_NOT_FOUND）
@@ -32,6 +41,8 @@ export async function runExportChecks(check, req) {
   let structDetail = "";
   let liveOk = false;
   let liveDetail = "";
+  let pureOk = false;
+  let pureDetail = "";
   let size = 0;
   try {
     const res = await req("/api/export/excel");
@@ -44,6 +55,47 @@ export async function runExportChecks(check, req) {
       await wbOut.xlsx.load(buf);
       const wbSrc = new ExcelJS.Workbook();
       await wbSrc.xlsx.readFile("途虎HR人员登记.xlsx");
+
+      // ---------- Stage 9.40：必须是「纯数据」，0 公式、无「没找到」 ----------
+      // 用户 2026-10-03 明确要求：「导出来的表就不要带公式了，我要纯数据」，
+      // 并报「导出来在职都是没找到」。
+      // 两条硬断言：
+      //  ① 全工作簿 **0 个公式格**（原表有 6 万+ 个 XLOOKUP/COUNTIFS/TEXTJOIN）
+      //  ② 全工作簿 **0 处「没找到」**（XLOOKUP 匹配失败留下的字面量）
+      //     —— 在职表靠「姓名+入职时间」去数据库表匹配，日期格式不一致就满屏这句话
+      const isF = (v) => {
+        if (!v || typeof v !== "object") return false;
+        return v.formula !== undefined || v.sharedFormula !== undefined;
+      };
+      const tOf = (v) => {
+        if (v === null || v === undefined) return "";
+        if (v instanceof Date) return "";
+        if (typeof v === "object") {
+          if (Array.isArray(v.richText)) return v.richText.map((x) => x.text).join("");
+          if (v.text !== undefined) return String(v.text);
+          return "";
+        }
+        return String(v).trim();
+      };
+      let formulaCount = 0;
+      let notFoundCount = 0;
+      const formulaBySheet = [];
+      for (const ws of wbOut.worksheets) {
+        let n = 0;
+        ws.eachRow({ includeEmpty: false }, (row) => {
+          row.eachCell({ includeEmpty: false }, (cell) => {
+            if (isF(cell.value)) n++;
+            if (tOf(cell.value) === "没找到") notFoundCount++;
+          });
+        });
+        if (n > 0) formulaBySheet.push(`${ws.name}=${n}`);
+        formulaCount += n;
+      }
+      pureOk = formulaCount === 0 && notFoundCount === 0;
+      pureDetail =
+        `公式残留 ${formulaCount} 个` +
+        (formulaBySheet.length ? `（${formulaBySheet.slice(0, 4).join("，")}${formulaBySheet.length > 4 ? "…" : ""}）` : "（全表 0 公式，纯数据）") +
+        `；「没找到」${notFoundCount} 处`;
 
       const issues = [];
       if (wbOut.worksheets.length !== wbSrc.worksheets.length) {
@@ -88,6 +140,12 @@ export async function runExportChecks(check, req) {
     structDetail = `导出接口调用失败：${String(e.message).slice(0, 100)}`;
   }
   check("S9-111", "导出文件与原文件结构一致（Sheet 数 / 列数 / 合并单元格）", structOk, structDetail);
+  check(
+    "S9-115",
+    "导出是**纯数据**：全表 0 公式、无「没找到」（在职表不再匹配失败）",
+    pureOk,
+    pureDetail
+  );
   check(
     "S9-114",
     "统计表与名单表也是**实时数据**（流失率/分布明细/编制/招聘面试/薪资，不再是原样旧值）",

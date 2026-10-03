@@ -3,18 +3,21 @@
 import { useState } from "react";
 
 /**
- * 导出 Excel 按钮（Stage 9.38）
+ * 导出 Excel 按钮（Stage 9.38 / 9.40）
  *
- * 导出的是**以原始 Excel 为底模 + 回填最新数据**的完整工作簿，
- * 所以下载到的文件跟原表一模一样，只是数据变新了。
+ * 导出的是「以原始 Excel 为底模 + 纯数据回填」的完整工作簿：
+ * 表头 / 列顺序 / 合并单元格 / 样式与原表一致，**但 0 个公式、全是算好的数值**。
+ * 这样手机打开、微信转发都不会出现「没找到」或公式重算出不同值。
  */
 export default function ExportExcelButton({ className = "" }: { className?: string }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [done, setDone] = useState("");
 
   async function run() {
     setBusy(true);
     setErr("");
+    setDone("");
     try {
       // 先取回文件名（顺便校验服务端能成功生成）
       const probe = await fetch("/api/export/excel?report=1", { cache: "no-store" });
@@ -37,6 +40,17 @@ export default function ExportExcelButton({ className = "" }: { className?: stri
       a.remove();
       // 立刻 revoke 会让部分浏览器下载失败，延后释放
       setTimeout(() => URL.revokeObjectURL(url), 20_000);
+
+      // 告诉用户压掉了多少公式 —— 「纯数据」这件事要看得见
+      const f = pj.data.flattened?.total ?? 0;
+      const cells = (pj.data.stats ?? []).reduce(
+        (a: number, s: { written: number }) => a + s.written,
+        0
+      );
+      setDone(
+        `已导出 ${(blob.size / 1024 / 1024).toFixed(2)} MB · 纯数据 0 公式` +
+          `（已把 ${f.toLocaleString()} 个公式替换成数值）· 写入 ${cells.toLocaleString()} 格`
+      );
     } catch (e) {
       setErr((e as Error).message);
     } finally {

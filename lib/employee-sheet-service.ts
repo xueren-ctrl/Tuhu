@@ -89,7 +89,7 @@ type EmployeeLite = {
   position: { name: string } | null;
 } & Record<string, unknown>;
 
-const EMPLOYEE_SELECT = {
+export const EMPLOYEE_SELECT = {
   id: true,
   employeeId: true,
   status: true,
