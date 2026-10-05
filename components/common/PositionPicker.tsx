@@ -23,6 +23,13 @@ export interface PositionItem {
   name: string;
   /** store=门店职位 / ops=运营部职位，仅用于分组显示 */
   group?: "store" | "ops";
+  /**
+   * 分层（Stage 9.41）：用户指定的常用 7+3 排前面；
+   * `other` = 其余 ACTIVE 职位（含职位管理里新建的），排在后面但**必须能选到**。
+   */
+  tier?: "common" | "other";
+  /** `tier=other` 时：该职位有多少在职/南昌3店/运营部员工在用（区分「新职位」与「历史细分」） */
+  inUse?: number;
   /** 伪选项专用：写入表单/URL 的原始值（如「未分配岗位」= `__none__`，非真实职位 id） */
   raw?: string;
 }
@@ -67,8 +74,12 @@ export default function PositionPicker({
   const [showAll, setShowAll] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  /** 分组后的候选：伪选项 → 范围外当前职位 → 门店 → 运营部（或展开后的全部） */
-  const groups = useMemo(() => {
+  /**
+   * 分组后的候选：伪选项 → 范围外当前职位 → 常用职位 → 其余职位
+   * Stage 9.41：加了「常用职位 / 其他职位」两段，
+   * 让职位管理里新建的职位（`tier=other`）在列表里能直接看到并选中。
+   */
+  const groups = useMemo<{ title: string; hint?: string; list: PositionItem[] }[]>(() => {
     const s = kw.trim();
     const match = (n: string) => !s || n.includes(s);
     const extras: PositionItem[] = extraItems
@@ -78,13 +89,37 @@ export default function PositionPicker({
     if (allPositions && showAll) {
       return [{ title: "全部职位", list: allPositions.filter((p) => match(p.name)) }];
     }
-    const store = items.filter((i) => i.group === "store" && match(i.name));
-    const ops = items.filter((i) => i.group === "ops" && match(i.name));
-    const out: { title: string; list: PositionItem[] }[] = [];
+    // 常用排前（common 优先），其余在后
+    const byTier = (list: PositionItem[]) =>
+      [...list.filter((i) => (i.tier ?? "common") === "common"), ...list.filter((i) => i.tier === "other")];
+
+    const store = byTier(items.filter((i) => i.group === "store" && match(i.name)));
+    const ops = byTier(items.filter((i) => i.group === "ops" && match(i.name)));
+    const out: { title: string; hint?: string; list: PositionItem[] }[] = [];
     if (pseudo.length) out.push({ title: "", list: pseudo });
     if (extras.length) out.push({ title: "", list: extras });
-    if (store.length) out.push({ title: "门店职位", list: store });
-    if (ops.length) out.push({ title: "运营部职位", list: ops });
+
+    // 有关键词时合并展示（搜索结果不该被分组割裂）
+    if (s) {
+      const merged = [...store, ...ops];
+      if (merged.length) out.push({ title: "", list: merged });
+      return out;
+    }
+
+    const storeCommon = store.filter((i) => (i.tier ?? "common") === "common");
+    const storeOther = store.filter((i) => i.tier === "other");
+    const opsCommon = ops.filter((i) => (i.tier ?? "common") === "common");
+    const opsOther = ops.filter((i) => i.tier === "other");
+    if (storeCommon.length) out.push({ title: "常用职位", list: storeCommon });
+    if (storeOther.length) {
+      out.push({
+        title: `其他职位（含新建 · ${storeOther.length} 种）`,
+        hint: "职位管理里新增的职位在这里",
+        list: storeOther,
+      });
+    }
+    if (opsCommon.length) out.push({ title: "运营部常用职位", list: opsCommon });
+    if (opsOther.length) out.push({ title: `运营部其他职位（${opsOther.length} 种）`, list: opsOther });
     return out;
   }, [kw, items, allPositions, showAll, extraItems, pseudoItems, value?.id]);
 
@@ -189,13 +224,17 @@ export default function PositionPicker({
               {groups.map((g, gi) => (
                 <div key={`${g.title}-${gi}`}>
                   {g.title ? (
-                    <div className="bg-slate-50 px-2.5 py-1 text-[10.5px] font-medium text-slate-400">
+                    <div className="flex items-baseline gap-1.5 bg-slate-50 px-2.5 py-1 text-[10.5px] font-medium text-slate-400">
                       {g.title}
+                      {g.hint ? (
+                        <span className="font-normal text-emerald-600">{g.hint}</span>
+                      ) : null}
                     </div>
                   ) : null}
                   {g.list.map((p) => {
                     const idx = flat.indexOf(p);
                     const extra = extraItems.find((e) => e.id === p.id);
+                    const isOther = p.tier === "other";
                     return (
                       <button
                         key={`${g.title}-${p.id}`}
@@ -210,10 +249,16 @@ export default function PositionPicker({
                           idx === hi ? "bg-brand-50" : ""
                         }`}
                       >
-                        <span className="truncate text-slate-800">{p.name}</span>
+                        <span className={`truncate ${isOther ? "text-slate-500" : "text-slate-800"}`}>
+                          {p.name}
+                        </span>
                         {extra?.tag ? (
                           <span className="shrink-0 rounded bg-amber-50 px-1 text-[10.5px] text-amber-700">
                             {extra.tag}
+                          </span>
+                        ) : isOther ? (
+                          <span className="shrink-0 text-[11px] text-slate-400">
+                            {p.inUse && p.inUse > 0 ? `在用 ${p.inUse} 人` : "新职位"}
                           </span>
                         ) : null}
                       </button>

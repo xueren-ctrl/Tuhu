@@ -32,6 +32,13 @@ export interface PickerStore {
   /** 在职人数，仅用于列表里区分同名门店，可缺省 */
   activeCount?: number;
   /**
+   * 分层（Stage 9.41）：有人在职的门店排前面；`empty` = 一个在职员工都没有
+   * （含刚新建的门店）。**必须能选到 empty** —— 否则新建门店后无法录第一个人。
+   */
+  tier?: "inScope" | "empty";
+  /** 该店历史总人数（含离职），用于给「无人店」提示 */
+  historyCount?: number;
+  /**
    * 伪选项专用：写入 URL/表单的原始值。
    * 例：「未分配门店」不是真实门店，原始值是字符串 `__none__` 而不是数字 id。
    * 调用方取值用 `s?.raw ?? String(s?.id)`。
@@ -82,7 +89,11 @@ export default function StorePicker({
   const [showAll, setShowAll] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  /** 候选列表 = 伪选项 + 范围内门店（按关键词过滤） + 额外必选项 */
+  /**
+   * 候选列表（扁平，供键盘上下键走）= 伪选项 + 额外必选项 + 范围内门店
+   * Stage 9.41：门店候选已包含「ACTIVE 但无人的门店」（新建的店），
+   * 由 `lib/store-scope-service.ts` 排序保证有人的在前。
+   */
   const list = useMemo<PickerStore[]>(() => {
     const s = kw.trim();
     const match = (n: string) => !s || n.includes(s);
@@ -94,6 +105,39 @@ export default function StorePicker({
     const pseudo = pseudoStores.filter((p) => match(p.name));
     return [...pseudo, ...extras, ...base];
   }, [kw, stores, allStores, showAll, extraStores, pseudoStores, value?.id]);
+
+  /**
+   * 渲染用的分组结构（Stage 9.41）
+   * 「有人在职的门店」与「暂无在职员工的门店（含新建）」分成两段，
+   * 这样用户能一眼看出哪个是新开的店，不会误选别名店。
+   */
+  const sections = useMemo(() => {
+    const s = kw.trim();
+    const pseudo = list.filter((x) => x.raw !== undefined);
+    const extras = list.filter((x) => extraStores.some((e) => e.id === x.id));
+    const real = list.filter((x) => x.raw === undefined && !extras.some((e) => e.id === x.id));
+    const out: { title: string; hint?: string; list: PickerStore[] }[] = [];
+    if (pseudo.length) out.push({ title: "", list: pseudo });
+    if (extras.length) out.push({ title: "", list: extras });
+    // 已有关键词时不再分组（搜索结果混在一起更好用）
+    if (s) {
+      if (real.length) out.push({ title: "", list: real });
+      return out;
+    }
+    const inScope = real.filter((x) => (x.activeCount ?? 0) > 0 || (x.tier ?? "inScope") === "inScope");
+    const empty = real.filter((x) => (x.activeCount ?? 0) === 0 && x.tier === "empty");
+    if (inScope.length) {
+      out.push({ title: `在职门店（${inScope.length} 家）`, list: inScope });
+    }
+    if (empty.length) {
+      out.push({
+        title: `暂无在职员工 · 含新开门店（${empty.length} 家）`,
+        hint: "新开的门店在这里，录第一个人时选它",
+        list: empty,
+      });
+    }
+    return out;
+  }, [list, extraStores]);
 
   // 点外部关闭
   useEffect(() => {
@@ -190,44 +234,67 @@ export default function StorePicker({
 
           {list.length === 0 ? (
             <div className="px-2.5 py-2 text-[12.5px] text-slate-400">
-              没有匹配的门店{allStores && !showAll ? "（可展开「更多门店」查找）" : ""}
+              没有匹配的门店
+              {allStores && !showAll ? "（可展开「更多门店」查找）" : ""}
             </div>
           ) : (
             <>
-              {list.map((s, i) => {
-                const extra: StoreExtra | undefined = extraStores.find((e) => e.id === s.id);
-                const cnt: number | undefined = stores.find((x) => x.id === s.id)?.activeCount;
-                return (
-                  <button
-                    key={`${s.id}-${i}`}
-                    type="button"
-                    onMouseEnter={() => setHi(i)}
-                    onClick={() => {
-                      onChange(s);
-                      setKw("");
-                      setOpenBoth(false);
-                    }}
-                    className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] ${
-                      i === hi ? "bg-brand-50" : ""
-                    }`}
-                  >
-                    <span className="truncate text-slate-800">{s.name}</span>
-                    {extra?.tag ? (
-                      <span
-                        className={`shrink-0 rounded px-1 text-[10.5px] ${
-                          extra.tagTone === "slate"
-                            ? "bg-slate-100 text-slate-500"
-                            : "bg-amber-50 text-amber-700"
+              {sections.map((sec, si) => (
+                <div key={`sec-${si}`}>
+                  {sec.title ? (
+                    <div className="flex items-baseline gap-1.5 bg-slate-50 px-2.5 py-1 text-[10.5px] font-medium text-slate-400">
+                      {sec.title}
+                      {sec.hint ? (
+                        <span className="font-normal text-emerald-600">{sec.hint}</span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {sec.list.map((s) => {
+                    const i = list.indexOf(s);
+                    const extra: StoreExtra | undefined = extraStores.find((e) => e.id === s.id);
+                    const cnt: number | undefined = stores.find((x) => x.id === s.id)?.activeCount;
+                    const isEmpty = (cnt ?? 0) === 0 && s.tier === "empty";
+                    return (
+                      <button
+                        key={`${s.id}-${si}`}
+                        type="button"
+                        onMouseEnter={() => setHi(i)}
+                        onClick={() => {
+                          onChange(s);
+                          setKw("");
+                          setOpenBoth(false);
+                        }}
+                        className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] ${
+                          i === hi ? "bg-brand-50" : ""
                         }`}
                       >
-                        {extra.tag}
-                      </span>
-                    ) : cnt !== undefined ? (
-                      <span className="shrink-0 text-[11px] text-slate-400">在职 {cnt} 人</span>
-                    ) : null}
-                  </button>
-                );
-              })}
+                        <span className={`truncate ${isEmpty ? "text-slate-500" : "text-slate-800"}`}>
+                          {s.name}
+                        </span>
+                        {extra?.tag ? (
+                          <span
+                            className={`shrink-0 rounded px-1 text-[10.5px] ${
+                              extra.tagTone === "slate"
+                                ? "bg-slate-100 text-slate-500"
+                                : "bg-amber-50 text-amber-700"
+                            }`}
+                          >
+                            {extra.tag}
+                          </span>
+                        ) : isEmpty ? (
+                          <span className="shrink-0 text-[11px] text-slate-400">
+                            {s.historyCount && s.historyCount > 0
+                              ? `历史 ${s.historyCount} 人`
+                              : "新开门店"}
+                          </span>
+                        ) : cnt !== undefined ? (
+                          <span className="shrink-0 text-[11px] text-slate-400">在职 {cnt} 人</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
 
               {allStores && !showAll ? (
                 <button
@@ -238,7 +305,7 @@ export default function StorePicker({
                   }}
                   className="w-full border-t border-slate-100 px-2.5 py-1.5 text-left text-[11.5px] text-brand-700 hover:bg-brand-50"
                 >
-                  更多门店（历史/停用，共 {allStores.length} 家）⌄
+                  更多门店（含已停用，共 {allStores.length} 家）⌄
                 </button>
               ) : null}
             </>

@@ -22,7 +22,19 @@ import type { FormFieldSpec, NewEmployeeKind } from "@/lib/sheet-fields";
  * 保存后按所选「员工状态」自动出现在对应表里（状态 → 表 的映射见 lib/sheet-fields.ts）。
  */
 
-type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+/**
+ * 范围项的透传类型（Stage 9.41）
+ * ⚠️ `tier` / `inUse` / `historyCount` **必须一起透传**到 Picker ——
+ *    否则「常用 / 新开门店」分组显示会失效（Picker 靠 tier 分段）。
+ */
+type ScopePos = {
+  id: number;
+  name: string;
+  group: "store" | "ops";
+  hasNote: boolean;
+  tier?: "common" | "other";
+  inUse?: number;
+};
 
 /** Stage 9.36：面试结果固定选项（用户 2026-09-29 定：通过 / 不通过 / 留空） */
 const INTERVIEW_RESULT_OPTIONS = ["通过", "不通过"] as const;
@@ -43,7 +55,13 @@ export default function NewEmployeeForm({
   defaultStatus: string;
   stores: { id: number; name: string }[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
-  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  storeScopeRaw?: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
   /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
   positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: { id: number; name: string }[];
@@ -60,7 +78,14 @@ export default function NewEmployeeForm({
 
   /** 门店候选（Stage 9.30）：只在 40 家（在职 37 + 南昌3店 3）里选 */
   const storeScope = useMemo(
-    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    () =>
+      storeScopeRaw.map((s) => ({
+        id: s.id,
+        name: s.name,
+        activeCount: s.activeCount,
+        tier: s.tier,
+        historyCount: s.historyCount,
+      })),
     [storeScopeRaw]
   );
   const storeSelected = useMemo(() => {
@@ -72,7 +97,14 @@ export default function NewEmployeeForm({
   }, [storeScope, stores, form.storeId]);
   /* ---------- 职位（Stage 9.32） ---------- */
   const positionItems = useMemo(
-    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    () =>
+      [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({
+        id: p.id,
+        name: p.name,
+        group: p.group,
+        tier: p.tier,
+        inUse: p.inUse,
+      })),
     [positionScopeRaw]
   );
   const positionSelected = useMemo(() => {

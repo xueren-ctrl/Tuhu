@@ -7,7 +7,14 @@ import StorePicker from "@/components/common/StorePicker";
 import PositionPicker from "@/components/common/PositionPicker";
 import type { AutoPreview, RuleRow } from "@/lib/department-rule-service";
 
-type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+type ScopePos = {
+  id: number;
+  name: string;
+  group: "store" | "ops";
+  hasNote: boolean;
+  tier?: "common" | "other";
+  inUse?: number;
+};
 
 interface Option {
   id: number;
@@ -17,7 +24,13 @@ interface Option {
 interface Props {
   stores: Option[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
-  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  storeScopeRaw?: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
   /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
   positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: Option[];
@@ -57,7 +70,14 @@ export default function DepartmentAutoPanel({
 
   /* ---------- 职位（Stage 9.32） ---------- */
   const positionItems = useMemo(
-    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    () =>
+      [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({
+        id: p.id,
+        name: p.name,
+        group: p.group,
+        tier: p.tier,
+        inUse: p.inUse,
+      })),
     [positionScopeRaw]
   );
   const allPositionOptions = useMemo(() => positions.map((p) => ({ id: p.id, name: p.name })), [positions]);
@@ -71,7 +91,14 @@ export default function DepartmentAutoPanel({
 
   /* ---------- 门店联想（Stage 9.30） ---------- */
   const storeScope = useMemo(
-    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    () =>
+      storeScopeRaw.map((s) => ({
+        id: s.id,
+        name: s.name,
+        activeCount: s.activeCount,
+        tier: s.tier,
+        historyCount: s.historyCount,
+      })),
     [storeScopeRaw]
   );
   const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);

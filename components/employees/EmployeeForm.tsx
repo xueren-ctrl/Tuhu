@@ -22,7 +22,14 @@ import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
 type FormState = Record<string, string>;
 
-type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+type ScopePos = {
+  id: number;
+  name: string;
+  group: "store" | "ops";
+  hasNote: boolean;
+  tier?: "common" | "other";
+  inUse?: number;
+};
 
 /** Stage 9.33：受控选项（用户 2026-09-28 定）—— 面试结果 / 文档类字段只允许这几个值 */
 const INTERVIEW_RESULT_OPTIONS = ["通过", "不通过"] as const;
@@ -32,7 +39,13 @@ export interface EmployeeFormProps {
   mode: "create" | "edit";
   stores: { id: number; name: string }[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
-  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  storeScopeRaw?: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
   /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
   positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: { id: number; name: string }[];
@@ -196,7 +209,14 @@ export default function EmployeeForm({
    *    用户只改个手机号就会把门店**悄悄换掉** = 丢数据。
    */
   const storeScope = useMemo(
-    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    () =>
+      storeScopeRaw.map((s) => ({
+        id: s.id,
+        name: s.name,
+        activeCount: s.activeCount,
+        tier: s.tier,
+        historyCount: s.historyCount,
+      })),
     [storeScopeRaw]
   );
   const storeSelected = useMemo(() => {
@@ -217,7 +237,14 @@ export default function EmployeeForm({
   /* ---------- 职位（Stage 9.32：搜索下拉，门店 7 种 + 运营部 3 种） ---------- */
   /** 范围内职位，按门店/运营部分组 */
   const positionItems = useMemo(
-    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    () =>
+      [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({
+        id: p.id,
+        name: p.name,
+        group: p.group,
+        tier: p.tier,
+        inUse: p.inUse,
+      })),
     [positionScopeRaw]
   );
   /** 全部职位（筛选/展开用） */

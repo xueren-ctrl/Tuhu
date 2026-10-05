@@ -17,7 +17,14 @@ import { EMPLOYEE_STATUS_OPTIONS, UNASSIGNED, UNASSIGNED_LABEL } from "@/lib/con
 import StorePicker from "@/components/common/StorePicker";
 import PositionPicker from "@/components/common/PositionPicker";
 
-type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+type ScopePos = {
+  id: number;
+  name: string;
+  group: "store" | "ops";
+  hasNote: boolean;
+  tier?: "common" | "other";
+  inUse?: number;
+};
 
 interface Option {
   id: number;
@@ -27,7 +34,13 @@ interface Option {
 interface Props {
   stores: Option[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
-  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  storeScopeRaw?: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
   /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
   positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: Option[];
@@ -85,7 +98,14 @@ export default function BatchEditPanel({
   /* ---------- 门店联想（Stage 9.30） ---------- */
   /** 候选：默认在职表 + 南昌3店 的 40 家，附各店在职人数 */
   const storeScope = useMemo(
-    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    () =>
+      storeScopeRaw.map((s) => ({
+        id: s.id,
+        name: s.name,
+        activeCount: s.activeCount,
+        tier: s.tier,
+        historyCount: s.historyCount,
+      })),
     [storeScopeRaw]
   );
   /** 全部门店（筛选时可展开，查历史/离职门店用） */
@@ -110,7 +130,14 @@ export default function BatchEditPanel({
   }, [filters.storeId, allStoreOptions, storeScope, unassignedStorePseudo]);
   /* ---------- 职位（Stage 9.32） ---------- */
   const positionItems = useMemo(
-    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    () =>
+      [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({
+        id: p.id,
+        name: p.name,
+        group: p.group,
+        tier: p.tier,
+        inUse: p.inUse,
+      })),
     [positionScopeRaw]
   );
   const allPositionOptions = useMemo(() => positions.map((p) => ({ id: p.id, name: p.name })), [positions]);

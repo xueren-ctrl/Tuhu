@@ -75,7 +75,13 @@ export default function SocialInsurancePanel({
   storeScope,
   initialStats,
 }: {
-  storeScope: { id: number; name: string; activeCount: number }[];
+  storeScope: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
   initialStats: SiStats;
 }) {
   const router = useRouter();
@@ -882,7 +888,13 @@ function AddEntryForm({
   storeScope,
   onDone,
 }: {
-  storeScope: { id: number; name: string; activeCount: number }[];
+  storeScope: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
   onDone: () => Promise<void>;
 }) {
   const [name, setName] = useState("");

@@ -28,52 +28,94 @@ export interface StoreScopeItem {
   activeCount: number;
   /** 该店南昌3店人数（status=NC3），在职表口径为 0 */
   nc3Count: number;
+  /**
+   * 分层（Stage 9.41，用户 2026-10-05 选「常用在前 + 完整可搜」）：
+   * - `inScope` = 在职表/南昌3店里有人的门店 —— **排在最前**
+   * - `empty`   = ACTIVE 但**一个在职员工都没有**的门店（含刚新建的）—— 排在后面，
+   *   但**必须能选到**，否则新建门店后没法给第一个人录进去，形成死循环
+   */
+  tier: "inScope" | "empty";
+  /** 该店历史总人数（含离职），用于给「空店」一个可信度提示 */
+  historyCount: number;
 }
 
 export interface StoreScopeOptions {
-  /** 在职 + 南昌3店 的门店（按名称排序） */
+  /** 候选门店：有人的在前，无人的在后（均按名称拼音排） */
   stores: StoreScopeItem[];
   /** 门店主数据里启用门店总数（页面用来提示「还有更多历史门店」） */
   allStoreCount: number;
 }
 
+/**
+ * 候选门店 = 在职/南昌3店里有人的（在前） + ACTIVE 但无人的（在后）
+ *
+ * ══════════════════════════════════════════════════════════════════
+ * Stage 9.41（2026-10-05）修：新建的门店在「新增员工」表单里选不到
+ * ══════════════════════════════════════════════════════════════════
+ * 用户反馈：「我新增了一个门店，也选不了」。
+ *
+ * **根因是死循环**：范围 =「有在职或南昌3店员工的门店」，
+ * 而新建的门店**一个人都没有** → 进不了范围 → 表单选不了 →
+ * 没法给第一个人录员工 → 这个店永远没人 → 永远进不了范围。
+ * 也就是「**开了一家新店，软件就再也录不进人了**」，比职位那个更严重。
+ *
+ * 用户选择的方案（2026-10-05 确认）：**常用在前 + 完整可搜**
+ *   · 有人的门店（39 家）排在最前，带「在职 N 人」
+ *   · ACTIVE 但无人的门店（实测 28 家，含新建的）排在后面，同样可选
+ *   · INACTIVE（停用）仍然排除 —— 停用的店不该出现在录入表单
+ *
+ * ⚠️ 实测（2026-10-05）：ACTIVE 67 家，其中 39 家在范围内、**28 家一个人都没有**。
+ *    那28 家大多是「同一商圈的别名店」（如 `惠州水云居` / `惠州水云居店`），
+ *    列表变长是已知代价；相比「开新店录不进人」，这个代价可以接受。
+ *    ⚠️ 别名重复问题由S9-98 单独盯（有名字互相包含的会报错），不在这里合并。
+ */
 export async function getStoreScopeOptions(): Promise<StoreScopeOptions> {
+  // ⚠️ Stage 9.41 改：查**全部** ACTIVE 门店（不再只查「有人的」），
+  //    否则新建的门店永远进不了候选。
+  const allActive = await prisma.store.findMany({
+    where: { status: "ACTIVE" },
+    select: { id: true, name: true },
+  });
+
+  // 按门店 × 状态统计人数（含离职，用于给「空店」提示历史规模）
   const rows = await prisma.employee.groupBy({
     by: ["storeId", "status"],
-    where: { status: { in: ["ACTIVE", "NC3"] }, storeId: { not: null }, deletedAt: null },
+    where: { storeId: { not: null }, deletedAt: null },
     _count: { _all: true },
   });
 
-  // 汇总到 storeId 维度
-  const acc = new Map<number, StoreScopeItem>();
+  const acc = new Map<number, { activeCount: number; nc3Count: number; historyCount: number }>();
   for (const r of rows) {
     if (r.storeId === null) continue;
-    const cur = acc.get(r.storeId) ?? { id: r.storeId, name: "", activeCount: 0, nc3Count: 0 };
+    const cur = acc.get(r.storeId) ?? { activeCount: 0, nc3Count: 0, historyCount: 0 };
     if (r.status === "ACTIVE") cur.activeCount += r._count._all;
-    else cur.nc3Count += r._count._all;
+    else if (r.status === "NC3") cur.nc3Count += r._count._all;
+    cur.historyCount += r._count._all;
     acc.set(r.storeId, cur);
   }
 
-  // 取门店名（可能存在 storeId 指向已删除 Store 的脏数据 → 直接丢弃，不给用户选）
-  const ids = [...acc.keys()];
-  const stores = ids.length
-    ? await prisma.store.findMany({
-        where: { id: { in: ids }, status: "ACTIVE" },
-        select: { id: true, name: true },
-      })
-    : [];
-  const nameById = new Map(stores.map((s) => [s.id, s.name]));
-
   const list: StoreScopeItem[] = [];
-  for (const item of acc.values()) {
-    const name = nameById.get(item.id);
-    if (!name) continue; // 门店已停用/删除 → 不进选择范围
-    list.push({ ...item, name });
+  for (const s of allActive) {
+    const cur = acc.get(s.id);
+    const activeCount = cur?.activeCount ?? 0;
+    const nc3Count = cur?.nc3Count ?? 0;
+    list.push({
+      id: s.id,
+      name: s.name,
+      activeCount,
+      nc3Count,
+      tier: activeCount > 0 || nc3Count > 0 ? "inScope" : "empty",
+      historyCount: cur?.historyCount ?? 0,
+    });
   }
-  list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
 
-  const allStoreCount = await prisma.store.count({ where: { status: "ACTIVE" } });
-  return { stores: list, allStoreCount };
+  // 有人在职的排前面（各组内按名称拼音排）
+  list.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier === "inScope" ? -1 : 1;
+    return a.name.localeCompare(b.name, "zh-Hans-CN");
+  });
+
+  return { stores: list, allStoreCount: allActive.length };
 }
 
 /**

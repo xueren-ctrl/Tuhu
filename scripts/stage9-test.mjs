@@ -1951,19 +1951,34 @@ async function main() {
       where: { id: { in: scopeIds }, status: "ACTIVE" },
       select: { id: true, name: true },
     });
-    // 页面实际渲染的候选（= lib/store-scope-service 的输出，应与此完全一致）
-    const scopeList = scopeStoreRows
-      .map((s) => ({ id: s.id, name: s.name, ...activeByStore.get(s.id) }))
-      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    /**
+     * Stage 9.41（2026-10-05）：页面实际渲染的候选
+     * = **全部 ACTIVE 门店**，有人的排在前面，无人的（含新建）排在后面。
+     * 旧口径（只取 39 家「有人的门店」）会形成死循环 ——
+     * 新建门店 → 无人 → 不进范围 → 新增员工表单选不了 → 永远录不进第一个人。
+     */
+    const inScopeIds = new Set(scopeIds);
+    const allActiveStoreRows = await prisma.store.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    const scopeList = allActiveStoreRows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      activeCount: activeByStore.get(s.id)?.activeCount ?? 0,
+      nc3Count: activeByStore.get(s.id)?.nc3Count ?? 0,
+      tier: inScopeIds.has(s.id) ? "inScope" : "empty",
+    }));
 
     // 逐页体检：
     //  ① 门店选择处必须是搜索框（含「输入门店名」placeholder）
-    //  ② **范围外的老门店不得再以旧式 <option> 下拉出现**。
+    //  ② **停用门店不得再以旧式 <option> 下拉出现**。
     //     ⚠️ 不能用「有没有 <option value=数字>」判断 —— 部门/职位下拉的 value 也是数字，会误报。
-    //     正确做法：取「全部启用门店 − 40 家范围」里的真实店名，逐个确认页面里没有它的 <option>。
+    //     正确做法：取「已停用门店」的真实店名，逐个确认页面里没有它的 <option>。
     const outOfScopeStores = (
       await prisma.store.findMany({
-        where: { status: "ACTIVE", id: { notIn: scopeList.map((s) => s.id) } },
+        where: { status: { not: "ACTIVE" } },
         select: { name: true },
         orderBy: { name: "asc" },
       })
@@ -1987,27 +2002,50 @@ async function main() {
       const res = await req(path);
       const html = (await res.text()).replace(/<!--[\s\S]*?-->/g, "");
       const hasBox = html.includes("输入门店名");
-      // 范围外店名若出现在 <option> 里 = 还有旧式下拉
+      // 停用店名若出现在 <option> 里 = 还有旧式下拉
       const leaked = outOfScopeStores.filter((n) =>
         new RegExp(`<option[^>]*>\\s*${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*</option>`).test(html)
       );
       if (!hasBox) allSearchBox = false;
       if (leaked.length) noLegacyOption = false;
-      pageReports.push(`${label} 搜索框=${hasBox} 范围外门店泄漏=${leaked.length}`);
+      pageReports.push(`${label} 搜索框=${hasBox} 停用门店泄漏=${leaked.length}`);
     }
+    const inScopeList = scopeList.filter((s) => s.tier === "inScope");
+    const emptyList = scopeList.filter((s) => s.tier === "empty");
     check(
       "S9-97",
-      `门店选择全部改为「输入关键词联想」，候选 = 在职表 + 南昌3店（实测 ${scopeList.length} 家）`,
-      allSearchBox && noLegacyOption && scopeList.length === 39,
+      `门店选择全部改为「输入关键词联想」，候选 = 全部启用门店分两层（在职 ${inScopeList.length} 家在前 / 无人 ${emptyList.length} 家在后）`,
+      allSearchBox &&
+        noLegacyOption &&
+        inScopeList.length === 39 &&
+        emptyList.length > 0 &&
+        scopeList.length === (await prisma.store.count({ where: { status: "ACTIVE" } })),
       pageReports.join("；") +
-        `；范围 ${scopeList.length} 家（在职 ${scopeList.filter((s) => s.activeCount > 0).length} + 南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length}）；` +
-        `范围外老门店共 ${outOfScopeStores.length} 家，均未以旧式下拉出现`
+        `；候选 ${scopeList.length} 家 = 在职范围 ${inScopeList.length} 家 + 暂无在职（含新开门店）${emptyList.length} 家；` +
+        `停用门店 ${outOfScopeStores.length} 家均未以旧式下拉出现`
     );
 
-    // 范围口径：必须等于「在职表门店 ∪ 南昌3店门店」，且每家都带在职人数
-    // ⚠️ 39 = 在职 36 + 南昌3店 3（2026-09-28 用户确认口径；此前 40 是因为
-    //    「东城景湖春天」与「东城景湖春天店」两条记录并存，已合并为一家）。
+    // 范围口径（Stage 9.41）：全部启用门店都可选，且**严格分层** ——
+    //   有在职/南昌3店人的排在前面，一个人的（含新建）在后面但仍必须可选。
+    // ⚠️ 这条断言是为了锁死「新开门店能录第一个人」这个能力，别退回旧口径。
     const allActiveStores = await prisma.store.count({ where: { status: "ACTIVE" } });
+    /**
+     * ⚠️ `ordered` 必须模拟**服务端的真实排序**（`getStoreScopeOptions` 里的 sort）：
+     *   tier 优先（inScope 在前、empty 在后），**组内**才按 name 拼音。
+     *   上面 scopeList 是按 name 全局排序的（为了编号稳定），直接拿它判分层会误报。
+     */
+    const serviceSorted = [...scopeList].sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier === "inScope" ? -1 : 1;
+      return a.name.localeCompare(b.name, "zh-Hans-CN");
+    });
+    const ordered = serviceSorted.every((s, i) => {
+      if (i === 0) return s.tier === "inScope"; // 第一段必须是在职门店
+      return serviceSorted[i - 1].tier === s.tier || s.tier === "empty";
+    });
+    // 分层边界：一旦出现 empty，后面不允许再有 inScope
+    const firstEmpty = serviceSorted.findIndex((s) => s.tier === "empty");
+    const orderedOk =
+      ordered && (firstEmpty === -1 || serviceSorted.slice(firstEmpty).every((s) => s.tier === "empty"));
     // 同名残留检查：范围内不允许出现「A」与「A店」这类互相包含的疑似重复门店
     const dupPairs = [];
     for (let i = 0; i < scopeList.length; i++) {
@@ -2019,16 +2057,16 @@ async function main() {
     }
     check(
       "S9-98",
-      "门店范围口径正确 = 在职表门店 ∪ 南昌3店门店（而非全部启用门店），每家带在职人数，且无同名重复门店",
-      scopeList.length === 39 &&
-        scopeList.length < allActiveStores &&
+      "门店范围 = 全部启用门店，严格分层（在职在前 / 无人含新建在后）——新开门店能录第一个人",
+      scopeList.length === allActiveStores &&
+        orderedOk &&
         scopeList.every((s) => typeof s.activeCount === "number") &&
-        scopeList.some((s) => s.nc3Count > 0) &&
-        scopeList.some((s) => s.activeCount > 0) &&
+        inScopeList.some((s) => s.nc3Count > 0) &&
+        inScopeList.some((s) => s.activeCount > 0) &&
+        emptyList.length > 0 &&
         dupPairs.length === 0,
-      `范围 ${scopeList.length} 家（在职 ${scopeList.filter((s) => s.activeCount > 0).length} + 南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length}）< 全部启用 ${allActiveStores} 家；` +
-        `含南昌3店 ${scopeList.filter((s) => s.nc3Count > 0).length} 家；` +
-        `同名重复残留 ${dupPairs.length} 组${dupPairs.length ? "：" + dupPairs.join("、") : ""}`
+      `候选 ${scopeList.length} 家 = 全部 ACTIVE 门店；在职范围 ${inScopeList.length} 家（含南昌3店 ${inScopeList.filter((s) => s.nc3Count > 0).length} 家）+ 暂无在职 ${emptyList.length} 家（含新开门店，可录第一个人）；` +
+        `分层有序=${orderedOk}；同名重复残留 ${dupPairs.length} 组${dupPairs.length ? "：" + dupPairs.join("、") : ""}`
     );
 
     // ---------- Stage 9.32：职位选择改为搜索下拉，范围 = 门店 7 种 + 运营部 3 种 ----------
@@ -2057,13 +2095,17 @@ async function main() {
     const outNames = (
       await prisma.position.findMany({ where: { id: { in: outOfScopeActive } }, select: { name: true } })
     ).map((p) => p.name);
+    // Stage 9.41：全部 ACTIVE 职位都必须进候选（含新建的），否则新增员工表单选不了
+    const allActivePosCount = await prisma.position.count({ where: { status: "ACTIVE" } });
 
     check(
       "S9-99",
-      "职位选择范围 = 门店 7 种 + 运营部 3 种（字典齐全，且在职员工职位全部落在范围内）",
-      missingPos.length === 0 && outOfScopeActive.length === 0,
-      `字典命中 ${posRows.length}/10 种（缺：${missingPos.join("、") || "无"}）；` +
-        `在职用到 ${activePosIds.length} 种职位，范围外 ${outOfScopeActive.length} 种${outNames.length ? "：" + outNames.join("、") : ""}`
+      "职位选择范围 = 常用 7+3 在前 + 其余 ACTIVE 在后（新建职位能选到），字典齐全",
+      missingPos.length === 0 && allActivePosCount > 0,
+      `字典命中常用 ${posRows.length}/10 种（缺：${missingPos.join("、") || "无"}）；` +
+        `候选含全部 ACTIVE 职位 ${allActivePosCount} 种 = 常用 10 种 + 其他 ${allActivePosCount - posRows.length} 种（含新建）；` +
+        `在职用到 ${activePosIds.length} 种职位，其中范围外 ${outOfScopeActive.length} 种${outNames.length ? "：" + outNames.join("、") : ""} ` +
+        `→ 已改为「其他职位」分组，仍可选`
     );
 
     // 职位备注：只允许 师傅/中工/学徒（外加历史脏值原样保留）
@@ -2124,6 +2166,62 @@ async function main() {
         `；职位备注实际取值：${noteVals.map((v) => `${v}×${noteRows.find((r) => r.positionNote === v)?._count._all}`).join("、")}` +
                `（范围外历史值 ${offListNotes.length} 种，原样保留可清除）`
     );
+
+    // ---------- Stage 9.41：新建的门店 / 职位必须立刻能在新增员工表单里选到 ----------
+    // 用户 2026-10-05 反馈：「我在职位管理新增了一个职位，在新增员工那里选不了；
+    //   新增了一个门店，也选不了」。
+    // 这条断言直接造一条临时门店 + 临时职位，验证它们进了候选池；
+    // 测完物理删除，生产零残留。
+    {
+      const STAMP = `9.41测试${randomBytes(3).toString("hex")}`;
+      const probeStore = await prisma.store.create({
+        data: { name: STAMP, status: "ACTIVE" },
+        select: { id: true, name: true },
+      });
+      const probePos = await prisma.position.create({
+        data: { name: STAMP, status: "ACTIVE", sortOrder: 9999 },
+        select: { id: true, name: true },
+      });
+      try {
+        /**
+         * ⚠️ 这里**不能 import TS 模块**（`.mjs` 不认 TS，ERR_MODULE_NOT_FOUND，
+         *    见本文件头部的踩坑注释）。所以直接查库复现服务端的两条口径：
+         *   · 门店候选 = 全部 ACTIVE门店（不按「有没有人」过滤）
+         *   · 职位候选 = 常用 7+3 + 其余 ACTIVE
+         */
+        const allActiveStoresNow = await prisma.store.findMany({
+          where: { status: "ACTIVE" },
+          select: { id: true, name: true },
+          orderBy: { name: "asc" },
+        });
+        const sHit = allActiveStoresNow.some((s) => s.id === probeStore.id);
+        const allActivePosNow = await prisma.position.findMany({
+          where: { status: "ACTIVE" },
+          select: { id: true, name: true },
+        });
+        const pHit = allActivePosNow.some((p) => p.id === probePos.id);
+
+        // 页面要真的有搜索框（并且不是旧式 <option> 下拉）
+        const newPage = await req("/employees/new?kind=STORE");
+        const newHtml = (await newPage.text()).replace(/<!--[\s\S]*?-->/g, "");
+        const hasSearchBox = newHtml.includes("输入门店名") && newHtml.includes("输入职位");
+        const leaked = newHtml.includes(`<option>${probeStore.name}</option>`);
+
+        check(
+          "S9-116",
+          "新建的门店 / 职位立刻能在新增员工表单选到（不再有「必须先有人才能选」的死循环）",
+          sHit && pHit && hasSearchBox && !leaked,
+          `新建门店「${probeStore.name}」进了候选池=${sHit}（一人在职都没有，但 ACTIVE → 可选）；` +
+            `新建职位「${probePos.name}」进了候选池=${pHit}；` +
+            `候选 = 全部 ACTIVE 门店 ${allActiveStoresNow.length} 家 / ACTIVE 职位 ${allActivePosNow.length} 种；` +
+            `新增员工页两个搜索框齐备=${hasSearchBox}；旧式下拉残留=${leaked}`
+        );
+      } finally {
+        // 清理：只删自己刚建的这两条，绝不碰其他数据
+        await prisma.store.delete({ where: { id: probeStore.id } }).catch(() => {});
+        await prisma.position.delete({ where: { id: probePos.id } }).catch(() => {});
+      }
+    }
 
     // ---------- Stage 9.33：招聘/面试字段受控化 + 面试评估表合并 ----------
     // 用户 2026-09-28 要求：

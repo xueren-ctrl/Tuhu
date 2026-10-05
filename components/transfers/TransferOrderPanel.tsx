@@ -250,7 +250,13 @@ export default function TransferOrderPanel({
   orders: Order[];
   stores: { id: number; name: string }[];
   /** 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及在职人数 */
-  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  storeScopeRaw?: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -273,7 +279,14 @@ export default function TransferOrderPanel({
    *    所以额外提供「更多门店」入口；但默认只给在职 37 + 南昌3店 3 家。
    */
   const storeScope = useMemo(
-    () => storeScopeRaw.map((s) => ({ id: s.id, name: s.name, activeCount: s.activeCount })),
+    () =>
+      storeScopeRaw.map((s) => ({
+        id: s.id,
+        name: s.name,
+        activeCount: s.activeCount,
+        tier: s.tier,
+        historyCount: s.historyCount,
+      })),
     [storeScopeRaw]
   );
 

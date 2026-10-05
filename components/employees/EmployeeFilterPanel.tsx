@@ -21,7 +21,14 @@ import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
  *   />
  */
 
-type ScopePos = { id: number; name: string; group: "store" | "ops"; hasNote: boolean };
+type ScopePos = {
+  id: number;
+  name: string;
+  group: "store" | "ops";
+  hasNote: boolean;
+  tier?: "common" | "other";
+  inUse?: number;
+};
 
 export type FilterField =
   | "keyword"
@@ -48,7 +55,13 @@ export interface EmployeeFilterPanelProps {
    * 门店选择范围（Stage 9.30）：在职表 + 南昌3店 的门店及各自在职人数。
    * 页面用 `getStoreScopeOptions()` 计算；缺省时联想里不显示在职人数。
    */
-  storeScopeRaw?: { id: number; name: string; activeCount: number }[];
+  storeScopeRaw?: {
+    id: number;
+    name: string;
+    activeCount: number;
+    tier?: "inScope" | "empty";
+    historyCount?: number;
+  }[];
   /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */
   positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments?: OptionItem[];
@@ -115,25 +128,46 @@ export default function EmployeeFilterPanel({
     setForm((f) => ({ ...f, [k]: v }));
 
   /**
-   * 门店候选（Stage 9.30）：
-   *   `storeScope` = 在职表 + 南昌3店 的门店（服务端算好，带各店在职人数）
+   * 门店候选（Stage 9.30 / 9.41）：
+   *   `storeScope` = 服务端算好的候选（在职/南昌3店里有人的在前，无人的在后）
    *   `allStoreOptions` = 全部启用门店，筛离职人员时按「更多门店」展开
    *   `stores`（props 传入的全量）作为兜底，保证 URL 里的历史门店值能正常回显
+   * ⚠️ Stage 9.41：`tier` / `historyCount` 必须一起带上，
+   *    否则 Picker 分不出「在职门店 / 暂无在职员工（含新开门店）」两段。
    */
   const storeScope = useMemo(
     () =>
       stores.map((s) => {
-        const hit = (storeScopeRaw as { id: number; name: string; activeCount: number }[]).find(
-          (x) => x.id === s.id
-        );
-        return { id: s.id, name: s.name, activeCount: hit?.activeCount };
+        const hit = (
+          storeScopeRaw as {
+            id: number;
+            name: string;
+            activeCount: number;
+            tier?: "inScope" | "empty";
+            historyCount?: number;
+          }[]
+        ).find((x) => x.id === s.id);
+        return {
+          id: s.id,
+          name: s.name,
+          activeCount: hit?.activeCount,
+          tier: hit?.tier,
+          historyCount: hit?.historyCount,
+        };
       }),
     [stores, storeScopeRaw]
   );
   const allStoreOptions = useMemo(() => stores.map((s) => ({ id: s.id, name: s.name })), [stores]);
   /* ---------- 职位（Stage 9.32） ---------- */
   const positionItems = useMemo(
-    () => [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({ id: p.id, name: p.name, group: p.group })),
+    () =>
+      [...positionScopeRaw.store, ...positionScopeRaw.ops].map((p) => ({
+        id: p.id,
+        name: p.name,
+        group: p.group,
+        tier: p.tier,
+        inUse: p.inUse,
+      })),
     [positionScopeRaw]
   );
   const allPositionOptions = useMemo(() => positions.map((p) => ({ id: p.id, name: p.name })), [positions]);
