@@ -24,10 +24,14 @@ export interface PositionItem {
   /** store=门店职位 / ops=运营部职位，仅用于分组显示 */
   group?: "store" | "ops";
   /**
-   * 分层（Stage 9.41）：用户指定的常用 7+3 排前面；
-   * `other` = 其余 ACTIVE 职位（含职位管理里新建的），排在后面但**必须能选到**。
+   * 分层（Stage 9.41 v2）：
+   * - `common` = 用户指定的常用 7+3 —— 排在最前
+   * - `other`  = 有人在用的其他职位
+   * - `manual` = **用户手动新建**的职位 —— 必须能选到
+   *
+   *   Excel 导入但从没人用过的历史职位由服务层过滤，不进候选。
    */
-  tier?: "common" | "other";
+  tier?: "common" | "other" | "manual";
   /** `tier=other` 时：该职位有多少在职/南昌3店/运营部员工在用（区分「新职位」与「历史细分」） */
   inUse?: number;
   /** 伪选项专用：写入表单/URL 的原始值（如「未分配岗位」= `__none__`，非真实职位 id） */
@@ -75,9 +79,9 @@ export default function PositionPicker({
   const boxRef = useRef<HTMLDivElement>(null);
 
   /**
-   * 分组后的候选：伪选项 → 范围外当前职位 → 常用职位 → 其余职位
-   * Stage 9.41：加了「常用职位 / 其他职位」两段，
-   * 让职位管理里新建的职位（`tier=other`）在列表里能直接看到并选中。
+   * 分组后的候选：伪选项 → 范围外当前职位 → 常用职位 → 其他/我新建的职位
+   * Stage 9.41 v2：Excel 导入但从没人用过的历史职位已被服务层过滤，
+   * 这里只需把「常用的」放前面，「有人在用的 / 我新建的」放后面。
    */
   const groups = useMemo<{ title: string; hint?: string; list: PositionItem[] }[]>(() => {
     const s = kw.trim();
@@ -90,8 +94,10 @@ export default function PositionPicker({
       return [{ title: "全部职位", list: allPositions.filter((p) => match(p.name)) }];
     }
     // 常用排前（common 优先），其余在后
-    const byTier = (list: PositionItem[]) =>
-      [...list.filter((i) => (i.tier ?? "common") === "common"), ...list.filter((i) => i.tier === "other")];
+    const byTier = (list: PositionItem[]) => [
+      ...list.filter((i) => (i.tier ?? "common") === "common"),
+      ...list.filter((i) => i.tier !== "common"),
+    ];
 
     const store = byTier(items.filter((i) => i.group === "store" && match(i.name)));
     const ops = byTier(items.filter((i) => i.group === "ops" && match(i.name)));
@@ -107,19 +113,20 @@ export default function PositionPicker({
     }
 
     const storeCommon = store.filter((i) => (i.tier ?? "common") === "common");
-    const storeOther = store.filter((i) => i.tier === "other");
+    const storeRest = store.filter((i) => i.tier !== "common");
     const opsCommon = ops.filter((i) => (i.tier ?? "common") === "common");
-    const opsOther = ops.filter((i) => i.tier === "other");
+    const opsRest = ops.filter((i) => i.tier !== "common");
+    const manualCount = [...storeRest, ...opsRest].filter((i) => i.tier === "manual").length;
     if (storeCommon.length) out.push({ title: "常用职位", list: storeCommon });
-    if (storeOther.length) {
+    if (storeRest.length) {
       out.push({
-        title: `其他职位（含新建 · ${storeOther.length} 种）`,
-        hint: "职位管理里新增的职位在这里",
-        list: storeOther,
+        title: `其他职位（${storeRest.length} 种）`,
+        hint: manualCount > 0 ? "含你新建的" : undefined,
+        list: storeRest,
       });
     }
     if (opsCommon.length) out.push({ title: "运营部常用职位", list: opsCommon });
-    if (opsOther.length) out.push({ title: `运营部其他职位（${opsOther.length} 种）`, list: opsOther });
+    if (opsRest.length) out.push({ title: `运营部其他职位（${opsRest.length} 种）`, list: opsRest });
     return out;
   }, [kw, items, allPositions, showAll, extraItems, pseudoItems, value?.id]);
 
@@ -234,7 +241,7 @@ export default function PositionPicker({
                   {g.list.map((p) => {
                     const idx = flat.indexOf(p);
                     const extra = extraItems.find((e) => e.id === p.id);
-                    const isOther = p.tier === "other";
+                    const isOther = p.tier !== undefined && p.tier !== "common";
                     return (
                       <button
                         key={`${g.title}-${p.id}`}

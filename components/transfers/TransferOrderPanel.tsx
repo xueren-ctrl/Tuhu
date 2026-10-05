@@ -254,7 +254,7 @@ export default function TransferOrderPanel({
     id: number;
     name: string;
     activeCount: number;
-    tier?: "inScope" | "empty";
+    tier?: "inScope" | "manual" | "legacy";
     historyCount?: number;
   }[];
 }) {

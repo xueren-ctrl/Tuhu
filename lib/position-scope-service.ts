@@ -1,6 +1,7 @@
 /** 职位选择范围（Stage 9.32 / Stage 9.41 修正） */
 
 import { prisma } from "./prisma";
+import { isManualEntry } from "./manual-entry-cutoff";
 
 /**
  * 职位选择范围（Stage 9.32）
@@ -72,11 +73,15 @@ export interface PositionScopeItem {
   /** 是否需要填职位备注（= 美容） */
   hasNote: boolean;
   /**
-   * 是否属于用户指定的常用 7+3（Stage 9.41）。
-   * - `common` = 写死的常用职位，**排在列表最前**
-   * - `other`  = 其余 ACTIVE 职位（含新建的），排在后面 —— 不加这个就没法选到新职位
+   * 分层（Stage 9.41 v2）：
+   * - `common` = 用户指定的常用 7+3 —— **排在最前**
+   * - `other`  = 有人在用的其他职位（当前在职员工真在用）
+   * - `manual` = **用户手动新建**的职位 —— 必须能选到
+   *
+   *   Excel 导入但从没人用过的历史职位（「青铜机修技师」…）**不进候选**
+   *   （用户 2026-10-05：「之前那些已经不用的就不用选了」）
    */
-  tier: "common" | "other";
+  tier: "common" | "other" | "manual";
   /** 是否已被在职/南昌3店/运营部的人使用（用于「历史细分」提示） */
   inUse?: number;
 }
@@ -86,8 +91,10 @@ export interface PositionScopeOptions {
   ops: PositionScopeItem[];
   /** 常用 7+3 里字典缺失的职位名（属异常，会在测试里报错） */
   missing: string[];
-  /** 非常用但 ACTIVE 的职位数（Stage 9.41：新建的职位落在这里） */
+  /** 常用以外的候选数（有人在用的 + 手动新建的） */
   otherCount: number;
+  /** 被排除的「导入但从没人用过」的历史职位数 */
+  legacyCount: number;
 }
 
 /**
@@ -100,7 +107,7 @@ export async function getPositionScopeOptions(): Promise<PositionScopeOptions> {
   const names = [...STORE_POSITION_NAMES, ...OPS_POSITION_NAMES];
   const rows = await prisma.position.findMany({
     where: { status: "ACTIVE" },
-    select: { id: true, name: true },
+    select: { id: true, name: true, createdAt: true },
   });
   const byName = new Map(rows.map((r) => [r.name, r.id]));
 
@@ -144,31 +151,46 @@ export async function getPositionScopeOptions(): Promise<PositionScopeOptions> {
 
   const missing = names.filter((n) => !byName.has(n));
 
-  // ── Stage 9.41：其余 ACTIVE 职位也进候选，但排在常用之后 ──
-  // 分组规则：名字里带运营味关键词的归运营部，其余归门店（只是显示分组，不影响数据）
+  /**
+   * ── Stage 9.41 v2（用户二次纠正）：只收「常用」+「手动新建」+「有人在用」 ──
+   * 排除：**Excel 导入但从没人用过的历史细分职位**（青铜机修技师、储备店长、前台…共 40 种）。
+   * 用户原话：「之前那些已经不用的门店和职位就不用���了」。
+   * 判定：`isManualEntry(createdAt)`（见 lib/manual-entry-cutoff.ts）
+   *   —— 导入是 2026-09-19 13:43 一次性建的，手动新建的明显更晚。
+   */
   const OPS_HINT = /(运营|人事|行政|财务|文员|经理|助理|前台文员)/;
-  const others = rows
-    .filter((r) => !takenIds.has(r.id))
-    .map((r) => ({
+  const others: PositionScopeItem[] = [];
+  let legacyCount = 0;
+  for (const r of rows) {
+    if (takenIds.has(r.id)) continue;
+    const inUse = usedCount.get(r.id) ?? 0;
+    const isManual = isManualEntry(r.createdAt);
+    // 没人用 + 不是手动新建 → 历史遗留，不进候选
+    if (inUse === 0 && !isManual) {
+      legacyCount++;
+      continue;
+    }
+    others.push({
       id: r.id,
       name: r.name,
       group: (OPS_HINT.test(r.name) ? "ops" : "store") as PositionGroup,
       hasNote: r.name === BEAUTY_POSITION_NAME,
-      tier: "other" as const,
-      inUse: usedCount.get(r.id) ?? 0,
-    }))
-    .sort((a, b) => {
-      // 有人在用的排前面（更像「正常在用的职位」），其次按名字
-      const ua = a.inUse ?? 0;
-      const ub = b.inUse ?? 0;
-      if (ua !== ub) return ub - ua;
-      return a.name.localeCompare(b.name, "zh-Hans-CN");
+      tier: isManual ? "manual" : "other",
+      inUse,
     });
+  }
+  // 有人在用的排前面（更像「正常在用的职位」），其次按名字
+  others.sort((a, b) => {
+    const ua = a.inUse ?? 0;
+    const ub = b.inUse ?? 0;
+    if (ua !== ub) return ub - ua;
+    return a.name.localeCompare(b.name, "zh-Hans-CN");
+  });
   for (const o of others) {
     (o.group === "store" ? store : ops).push(o);
   }
 
-  return { store, ops, missing, otherCount: others.length };
+  return { store, ops, missing, otherCount: others.length, legacyCount };
 }
 
 /** 全部启用职位（仅供「筛选/查看」场景展开用，不用于录入） */

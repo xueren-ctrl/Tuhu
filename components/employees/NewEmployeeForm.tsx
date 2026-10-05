@@ -32,7 +32,7 @@ type ScopePos = {
   name: string;
   group: "store" | "ops";
   hasNote: boolean;
-  tier?: "common" | "other";
+  tier?: "common" | "other" | "manual";
   inUse?: number;
 };
 
@@ -59,7 +59,7 @@ export default function NewEmployeeForm({
     id: number;
     name: string;
     activeCount: number;
-    tier?: "inScope" | "empty";
+    tier?: "inScope" | "manual" | "legacy";
     historyCount?: number;
   }[];
   /** 职位选择范围（Stage 9.32）：门店 7 种 + 运营部 3 种 */

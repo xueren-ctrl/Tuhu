@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { isManualEntry } from "./manual-entry-cutoff";
 
 /**
  * 门店选择范围（Stage 9.30）
@@ -29,52 +30,60 @@ export interface StoreScopeItem {
   /** 该店南昌3店人数（status=NC3），在职表口径为 0 */
   nc3Count: number;
   /**
-   * 分层（Stage 9.41，用户 2026-10-05 选「常用在前 + 完整可搜」）：
+   * 分层（Stage 9.41，用户 2026-10-05 两次更正）：
    * - `inScope` = 在职表/南昌3店里有人的门店 —— **排在最前**
-   * - `empty`   = ACTIVE 但**一个在职员工都没有**的门店（含刚新建的）—— 排在后面，
-   *   但**必须能选到**，否则新建门店后没法给第一个人录进去，形成死循环
+   * - `manual`  = **用户手动新建**的门店 —— 排在中间，
+   *   必须能选到，否则新建门店后没法给第一个人录进去（死循环）
+   * - `legacy`  = Excel 导入但**从来没人用过**的门店 —— **不显示**
+   *   （用户原话：「之前那些已经不用的门店和职位就不用选了」）
    */
-  tier: "inScope" | "empty";
-  /** 该店历史总人数（含离职），用于给「空店」一个可信度提示 */
+  tier: "inScope" | "manual" | "legacy";
+  /** 该店历史总人数（含离职），用于给新门店一个可信度提示 */
   historyCount: number;
 }
 
 export interface StoreScopeOptions {
-  /** 候选门店：有人的在前，无人的在后（均按名称拼音排） */
+  /** 候选门店：有人的在前 → 手动新建的次之（均按名称拼音排） */
   stores: StoreScopeItem[];
   /** 门店主数据里启用门店总数（页面用来提示「还有更多历史门店」） */
   allStoreCount: number;
+  /** 被排除的「导入但从没人用过」的门店数（页面可提示"已折叠 N 家历史门店"） */
+  legacyCount: number;
 }
 
 /**
- * 候选门店 = 在职/南昌3店里有人的（在前） + ACTIVE 但无人的（在后）
+ * 候选门店 = 在职/南昌3店里有人的 + **用户手动新建的**
  *
  * ══════════════════════════════════════════════════════════════════
- * Stage 9.41（2026-10-05）修：新建的门店在「新增员工」表单里选不到
+ * Stage 9.41 演进（用户两次更正，勿走回头路）
  * ══════════════════════════════════════════════════════════════════
- * 用户反馈：「我新增了一个门店，也选不了」。
+ * 原始问题：「我新增了一个门店，也选不了」
+ *   根因是死循环 —— 范围 =「有在职或南昌3店员工的门店」，
+ *   而新建的门店一个人都没有 → 进不了范围 → 表单选不了 →
+ *   没法给第一个人录员工 → 这店永远没人 → 永远进不了范围。
+ *   等于「**开了一家新店，软件就再也录不进人了**」，比职位那个更严重。
  *
- * **根因是死循环**：范围 =「有在职或南昌3店员工的门店」，
- * 而新建的门店**一个人都没有** → 进不了范围 → 表单选不了 →
- * 没法给第一个人录员工 → 这个店永远没人 → 永远进不了范围。
- * 也就是「**开了一家新店，软件就再也录不进人了**」，比职位那个更严重。
+ * v1（我第一版理解错了）：候选 = **全部 ACTIVE 门店**（67 → 合并后 52 家）
+ *   后果：把**13 家 Excel 导入但从来没人用过的店**也塞进了列表，
+ *   用户看到一堆用不上的店反而更难找。用户明确纠正：
+ *   > 「我说的是我手动新增的门店和职位，之前那些已经不用的门店和职位就不用选了」
  *
- * 用户选择的方案（2026-10-05 确认）：**常用在前 + 完整可搜**
- *   · 有人的门店（39 家）排在最前，带「在职 N 人」
- *   · ACTIVE 但无人的门店（实测 28 家，含新建的）排在后面，同样可选
- *   · INACTIVE（停用）仍然排除 —— 停用的店不该出现在录入表单
+ * v2（本版）：候选 = **有人的 ∪ 手动新建的**
+ *   · 有人的（39 家）—— 在职/南昌3店里有员工，肯定要用
+ *   · 手动新建的 —— 用 `createdAt` 识别。导入是 2026-09-19 13:43 **一次性**建的
+ *     （66 家门店 / 52 种职位全在同一秒），手动新建的 createdAt 明显更晚：
+ *     实测门店 #435 `dajdia店`=10-05、#434 `其他`=09-25；职位 #323 `dd`=10-05。
+ *   · 导入但没人用的 → **不显示**。它们仍在 `getAllActiveStores()` 里，
+ *     筛离职人员时按「更多门店」照样能查到，只是不占录入时的位置。
  *
- * ⚠️ 实测（2026-10-05）：ACTIVE 67 家，其中 39 家在范围内、**28 家一个人都没有**。
- *    那28 家大多是「同一商圈的别名店」（如 `惠州水云居` / `惠州水云居店`），
- *    列表变长是已知代价；相比「开新店录不进人」，这个代价可以接受。
- *    ⚠️ 别名重复问题由S9-98 单独盯（有名字互相包含的会报错），不在这里合并。
+ * 仍排除 INACTIVE（停用门店不该出现在录入表单）。
  */
 export async function getStoreScopeOptions(): Promise<StoreScopeOptions> {
-  // ⚠️ Stage 9.41 改：查**全部** ACTIVE 门店（不再只查「有人的」），
-  //    否则新建的门店永远进不了候选。
+  // ⚠️ Stage 9.41 改：查全部 ACTIVE 门店（不再只查「有人的」），
+  //    否则新建的门店永远进不了候选。**legacy 的会在这里被过滤掉**。
   const allActive = await prisma.store.findMany({
     where: { status: "ACTIVE" },
-    select: { id: true, name: true },
+    select: { id: true, name: true, createdAt: true },
   });
 
   // 按门店 × 状态统计人数（含离职，用于给「空店」提示历史规模）
@@ -95,27 +104,35 @@ export async function getStoreScopeOptions(): Promise<StoreScopeOptions> {
   }
 
   const list: StoreScopeItem[] = [];
+  let legacyCount = 0;
   for (const s of allActive) {
     const cur = acc.get(s.id);
     const activeCount = cur?.activeCount ?? 0;
     const nc3Count = cur?.nc3Count ?? 0;
+    const hasPeople = activeCount > 0 || nc3Count > 0;
+    const isManual = isManualEntry(s.createdAt);
+    // 没人用 + 不是手动新建 → 历史遗留，不进候选
+    if (!hasPeople && !isManual) {
+      legacyCount++;
+      continue;
+    }
     list.push({
       id: s.id,
       name: s.name,
       activeCount,
       nc3Count,
-      tier: activeCount > 0 || nc3Count > 0 ? "inScope" : "empty",
+      tier: hasPeople ? "inScope" : "manual",
       historyCount: cur?.historyCount ?? 0,
     });
   }
 
-  // 有人在职的排前面（各组内按名称拼音排）
+  // 有人在职的排前面，手动新建的排后面（各组内按名称拼音排）
   list.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier === "inScope" ? -1 : 1;
     return a.name.localeCompare(b.name, "zh-Hans-CN");
   });
 
-  return { stores: list, allStoreCount: allActive.length };
+  return { stores: list, allStoreCount: allActive.length, legacyCount };
 }
 
 /**

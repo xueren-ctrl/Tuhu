@@ -79,7 +79,7 @@ export default function SocialInsurancePanel({
     id: number;
     name: string;
     activeCount: number;
-    tier?: "inScope" | "empty";
+    tier?: "inScope" | "manual" | "legacy";
     historyCount?: number;
   }[];
   initialStats: SiStats;
@@ -892,7 +892,7 @@ function AddEntryForm({
     id: number;
     name: string;
     activeCount: number;
-    tier?: "inScope" | "empty";
+    tier?: "inScope" | "manual" | "legacy";
     historyCount?: number;
   }[];
   onDone: () => Promise<void>;

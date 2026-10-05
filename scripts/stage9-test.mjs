@@ -1952,24 +1952,33 @@ async function main() {
       select: { id: true, name: true },
     });
     /**
-     * Stage 9.41（2026-10-05）：页面实际渲染的候选
-     * = **全部 ACTIVE 门店**，有人的排在前面，无人的（含新建）排在后面。
-     * 旧口径（只取 39 家「有人的门店」）会形成死循环 ——
-     * 新建门店 → 无人 → 不进范围 → 新增员工表单选不了 → 永远录不进第一个人。
+     * Stage 9.41 v2（2026-10-05 用户二次纠正后）：
+     * 候选= **有人的 ∪ 手动新建的**（不是全部 ACTIVE）。
+     *
+     * 用户原话：「我说的是我手动新增的门店和职位，之前那些已经不用的就不用选了」
+     * → Excel 导入但从来没人用过的门店（11 家）**不进候选**。
+     *
+     * 判定「手动新建」：createdAt 的**日期**晚于导入批次（2026-09-19），
+     * 见 lib/manual-entry-cutoff.ts（不能用时刻比较 —— 导入的毫秒各不相同）。
      */
+    const IMPORT_BATCH_DATE = "2026-09-19";
+    const isManualDate = (d) => d.toISOString().slice(0, 10) > IMPORT_BATCH_DATE;
     const inScopeIds = new Set(scopeIds);
     const allActiveStoreRows = await prisma.store.findMany({
       where: { status: "ACTIVE" },
-      select: { id: true, name: true },
+      select: { id: true, name: true, createdAt: true },
       orderBy: { name: "asc" },
     });
-    const scopeList = allActiveStoreRows.map((s) => ({
-      id: s.id,
-      name: s.name,
-      activeCount: activeByStore.get(s.id)?.activeCount ?? 0,
-      nc3Count: activeByStore.get(s.id)?.nc3Count ?? 0,
-      tier: inScopeIds.has(s.id) ? "inScope" : "empty",
-    }));
+    const scopeList = allActiveStoreRows
+      .map((s) => ({
+        id: s.id,
+        name: s.name,
+        activeCount: activeByStore.get(s.id)?.activeCount ?? 0,
+        nc3Count: activeByStore.get(s.id)?.nc3Count ?? 0,
+        isManual: isManualDate(s.createdAt),
+        tier: inScopeIds.has(s.id) ? "inScope" : isManualDate(s.createdAt) ? "manual" : "legacy",
+      }))
+      .filter((s) => s.tier !== "legacy");
 
     // 逐页体检：
     //  ① 门店选择处必须是搜索框（含「输入门店名」placeholder）
@@ -2011,18 +2020,21 @@ async function main() {
       pageReports.push(`${label} 搜索框=${hasBox} 停用门店泄漏=${leaked.length}`);
     }
     const inScopeList = scopeList.filter((s) => s.tier === "inScope");
-    const emptyList = scopeList.filter((s) => s.tier === "empty");
+    const manualList = scopeList.filter((s) => s.tier === "manual");
+    const legacyExcluded = allActiveStoreRows.length - scopeList.length;
     check(
       "S9-97",
-      `门店选择全部改为「输入关键词联想」，候选 = 全部启用门店分两层（在职 ${inScopeList.length} 家在前 / 无人 ${emptyList.length} 家在后）`,
+      `门店选择全部改为「输入关键词联想」，候选 = 有人的 ${inScopeList.length} 家 + 我新建的 ${manualList.length} 家（不用的已排除）`,
       allSearchBox &&
         noLegacyOption &&
         inScopeList.length === 39 &&
-        emptyList.length > 0 &&
-        scopeList.length === (await prisma.store.count({ where: { status: "ACTIVE" } })),
+        manualList.length > 0 &&
+        legacyExcluded > 0 &&
+        scopeList.length < allActiveStoreRows.length,
       pageReports.join("；") +
-        `；候选 ${scopeList.length} 家 = 在职范围 ${inScopeList.length} 家 + 暂无在职（含新开门店）${emptyList.length} 家；` +
-        `停用门店 ${outOfScopeStores.length} 家均未以旧式下拉出现`
+        `；候选 ${scopeList.length} 家 = 在职 ${inScopeList.length} + 我新建 ${manualList.length}（${manualList.map((s) => s.name).join("、") || "无"}）；` +
+        `已排除 ${legacyExcluded} 家「导入但从没人用过」+ ${outOfScopeStores.length} 家停用；` +
+        `停用门店均未以旧式下拉出现`
     );
 
     // 范围口径（Stage 9.41）：全部启用门店都可选，且**严格分层** ——
@@ -2040,12 +2052,12 @@ async function main() {
     });
     const ordered = serviceSorted.every((s, i) => {
       if (i === 0) return s.tier === "inScope"; // 第一段必须是在职门店
-      return serviceSorted[i - 1].tier === s.tier || s.tier === "empty";
+      return serviceSorted[i - 1].tier === s.tier || s.tier === "manual";
     });
-    // 分层边界：一旦出现 empty，后面不允许再有 inScope
-    const firstEmpty = serviceSorted.findIndex((s) => s.tier === "empty");
+    // 分层边界：一旦出现 manual，后面不允许再有 inScope
+    const firstManual = serviceSorted.findIndex((s) => s.tier === "manual");
     const orderedOk =
-      ordered && (firstEmpty === -1 || serviceSorted.slice(firstEmpty).every((s) => s.tier === "empty"));
+      ordered && (firstManual === -1 || serviceSorted.slice(firstManual).every((s) => s.tier === "manual"));
     // 同名残留检查：范围内不允许出现「A」与「A店」这类互相包含的疑似重复门店
     const dupPairs = [];
     for (let i = 0; i < scopeList.length; i++) {
@@ -2057,15 +2069,15 @@ async function main() {
     }
     check(
       "S9-98",
-      "门店范围 = 全部启用门店，严格分层（在职在前 / 无人含新建在后）——新开门店能录第一个人",
-      scopeList.length === allActiveStores &&
+      "门店范围 = 有人的 ∪ 手动新建的（不用的不进候选），严格分层（在职在前 / 新建在后）",
+      scopeList.length < allActiveStores &&
         orderedOk &&
         scopeList.every((s) => typeof s.activeCount === "number") &&
         inScopeList.some((s) => s.nc3Count > 0) &&
         inScopeList.some((s) => s.activeCount > 0) &&
-        emptyList.length > 0 &&
+        manualList.length > 0 &&
         dupPairs.length === 0,
-      `候选 ${scopeList.length} 家 = 全部 ACTIVE 门店；在职范围 ${inScopeList.length} 家（含南昌3店 ${inScopeList.filter((s) => s.nc3Count > 0).length} 家）+ 暂无在职 ${emptyList.length} 家（含新开门店，可录第一个人）；` +
+      `候选 ${scopeList.length} 家 < ACTIVE ${allActiveStores} 家；在职 ${inScopeList.length} 家（含南昌3店 ${inScopeList.filter((s) => s.nc3Count > 0).length} 家）+ 我新建 ${manualList.length} 家；` +
         `分层有序=${orderedOk}；同名重复残留 ${dupPairs.length} 组${dupPairs.length ? "：" + dupPairs.join("、") : ""}`
     );
 
@@ -2095,17 +2107,53 @@ async function main() {
     const outNames = (
       await prisma.position.findMany({ where: { id: { in: outOfScopeActive } }, select: { name: true } })
     ).map((p) => p.name);
-    // Stage 9.41：全部 ACTIVE 职位都必须进候选（含新建的），否则新增员工表单选不了
-    const allActivePosCount = await prisma.position.count({ where: { status: "ACTIVE" } });
+    /**
+     * Stage 9.41 v2：候选 = **常用 7+3 ∪ 有人在用的 ∪ 手动新建的**。
+     * Excel 导入但从来没人用过的历史职位（39 种）**不进候选**
+     * （用户 2026-10-05：「之前那些已经不用的就不用选了」）。
+     * 判定「手动新建」= createdAt 的日期晚于导入批次。
+     */
+    const allActivePosRows = await prisma.position.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true, name: true, createdAt: true },
+    });
+    const scopePosIds2 = posRows.map((p) => p.id);
+    const inUsePosIds = new Set(
+      (
+        await prisma.employee.groupBy({
+          by: ["positionId"],
+          where: {
+            positionId: { not: null },
+            deletedAt: null,
+            status: { in: ["ACTIVE", "NC3", "OPS"] },
+          },
+        })
+      ).map((r) => r.positionId)
+    );
+    const posCandidates = allActivePosRows.filter(
+      (p) =>
+        scopePosIds2.includes(p.id) ||
+        inUsePosIds.has(p.id) ||
+        isManualDate(p.createdAt)
+    );
+    const manualPos = posCandidates.filter(
+      (p) => !scopePosIds2.includes(p.id) && !inUsePosIds.has(p.id)
+    );
+    const usedNotCommon = posCandidates.filter(
+      (p) => !scopePosIds2.includes(p.id) && inUsePosIds.has(p.id)
+    );
+    const posLegacyExcluded = allActivePosRows.length - posCandidates.length;
 
     check(
       "S9-99",
-      "职位选择范围 = 常用 7+3 在前 + 其余 ACTIVE 在后（新建职位能选到），字典齐全",
-      missingPos.length === 0 && allActivePosCount > 0,
+      "职位范围 = 常用 7+3 ∪ 有人在用的 ∪ 手动新建的（不用的不进候选），字典齐全",
+      missingPos.length === 0 &&
+        manualPos.length > 0 &&
+        posLegacyExcluded > 0 &&
+        posCandidates.length < allActivePosRows.length,
       `字典命中常用 ${posRows.length}/10 种（缺：${missingPos.join("、") || "无"}）；` +
-        `候选含全部 ACTIVE 职位 ${allActivePosCount} 种 = 常用 10 种 + 其他 ${allActivePosCount - posRows.length} 种（含新建）；` +
-        `在职用到 ${activePosIds.length} 种职位，其中范围外 ${outOfScopeActive.length} 种${outNames.length ? "：" + outNames.join("、") : ""} ` +
-        `→ 已改为「其他职位」分组，仍可选`
+        `候选 ${posCandidates.length} 种 < ACTIVE ${allActivePosRows.length} 种 = 常用 ${scopePosIds2.length} + 有人在用 ${usedNotCommon.length}${usedNotCommon.length ? "（" + usedNotCommon.map((p) => p.name).join("、") + "）" : ""} + 我新建 ${manualPos.length}${manualPos.length ? "（" + manualPos.map((p) => p.name).join("、") + "）" : ""}；` +
+        `已排除 ${posLegacyExcluded} 种「导入但从没人用过」`
     );
 
     // 职位备注：只允许 师傅/中工/学徒（外加历史脏值原样保留）
@@ -2189,17 +2237,32 @@ async function main() {
          *   · 门店候选 = 全部 ACTIVE门店（不按「有没有人」过滤）
          *   · 职位候选 = 常用 7+3 + 其余 ACTIVE
          */
+        // ⚠️ 不能只查「是不是 ACTIVE」—— 那太宽松了，导入的 52 家/52 种也是 ACTIVE。
+        //   必须复现服务端的真实判定：**有人的 ∪ 手动新建的**
+        //   （createdAt 日期晚于导入批次 = 手动新建，见 lib/manual-entry-cutoff.ts）。
+        const probeCreated = (await prisma.store.findUnique({
+          where: { id: probeStore.id },
+          select: { createdAt: true },
+        })).createdAt;
+        const sHit = isManualDate(probeCreated) && !inScopeIds.has(probeStore.id);
+
+        const probePosCreated = (await prisma.position.findUnique({
+          where: { id: probePos.id },
+          select: { createdAt: true },
+        })).createdAt;
+        const pHit =
+          isManualDate(probePosCreated) &&
+          !scopePosIds2.includes(probePos.id) &&
+          !inUsePosIds.has(probePos.id);
+
         const allActiveStoresNow = await prisma.store.findMany({
           where: { status: "ACTIVE" },
           select: { id: true, name: true },
-          orderBy: { name: "asc" },
         });
-        const sHit = allActiveStoresNow.some((s) => s.id === probeStore.id);
         const allActivePosNow = await prisma.position.findMany({
           where: { status: "ACTIVE" },
           select: { id: true, name: true },
         });
-        const pHit = allActivePosNow.some((p) => p.id === probePos.id);
 
         // 页面要真的有搜索框（并且不是旧式 <option> 下拉）
         const newPage = await req("/employees/new?kind=STORE");
@@ -2209,11 +2272,12 @@ async function main() {
 
         check(
           "S9-116",
-          "新建的门店 / 职位立刻能在新增员工表单选到（不再有「必须先有人才能选」的死循环）",
+          "新建的门店 / 职位立刻能在新增员工表单选到，且「不用���的那些」不进候选",
           sHit && pHit && hasSearchBox && !leaked,
-          `新建门店「${probeStore.name}」进了候选池=${sHit}（一人在职都没有，但 ACTIVE → 可选）；` +
-            `新建职位「${probePos.name}」进了候选池=${pHit}；` +
-            `候选 = 全部 ACTIVE 门店 ${allActiveStoresNow.length} 家 / ACTIVE 职位 ${allActivePosNow.length} 种；` +
+          `新建门店「${probeStore.name}」判为手动新建=${sHit} → 进候选（tier=manual）；` +
+            `新建职位「${probePos.name}」判为手动新建=${pHit} → 进候选（tier=manual）；` +
+            `ACTIVE 总数 门店 ${allActiveStoresNow.length} 家 / 职位 ${allActivePosNow.length} 种；` +
+            `实际候选 门店 ${scopeList.length} 家 / 职位 ${posCandidates.length} 种（其余为导入但不用的）；` +
             `新增员工页两个搜索框齐备=${hasSearchBox}；旧式下拉残留=${leaked}`
         );
       } finally {

@@ -32,10 +32,12 @@ export interface PickerStore {
   /** 在职人数，仅用于列表里区分同名门店，可缺省 */
   activeCount?: number;
   /**
-   * 分层（Stage 9.41）：有人在职的门店排前面；`empty` = 一个在职员工都没有
-   * （含刚新建的门店）。**必须能选到 empty** —— 否则新建门店后无法录第一个人。
+   * 分层（Stage 9.41 v2）：
+   * - `inScope` = 在职表/南昌3店里有人的门店 —— 排在最前，带「在职 N 人」
+   * - `manual`  = 用户手动新建的门店 —— 排在后面，必须能选到（否则新店录不进第一个人）
+   * - `legacy`  = Excel 导入但从没人用过的 —— 服务层已过滤，不该出现在这里
    */
-  tier?: "inScope" | "empty";
+  tier?: "inScope" | "manual" | "legacy";
   /** 该店历史总人数（含离职），用于给「无人店」提示 */
   historyCount?: number;
   /**
@@ -107,9 +109,9 @@ export default function StorePicker({
   }, [kw, stores, allStores, showAll, extraStores, pseudoStores, value?.id]);
 
   /**
-   * 渲染用的分组结构（Stage 9.41）
-   * 「有人在职的门店」与「暂无在职员工的门店（含新建）」分成两段，
-   * 这样用户能一眼看出哪个是新开的店，不会误选别名店。
+   * 渲染用的分组结构（Stage 9.41 v2）
+   * 「在职门店」与「我新建的门店」分成两段 ——
+   * 服务层已把「导入但从没人用过」的历史门店过滤掉了，这里只分两段。
    */
   const sections = useMemo(() => {
     const s = kw.trim();
@@ -119,21 +121,21 @@ export default function StorePicker({
     const out: { title: string; hint?: string; list: PickerStore[] }[] = [];
     if (pseudo.length) out.push({ title: "", list: pseudo });
     if (extras.length) out.push({ title: "", list: extras });
-    // 已有关键词时不再分组（搜索结果混在一起更好用）
+    // 有关键词时不再分组（搜索结果混在一起更好用）
     if (s) {
       if (real.length) out.push({ title: "", list: real });
       return out;
     }
-    const inScope = real.filter((x) => (x.activeCount ?? 0) > 0 || (x.tier ?? "inScope") === "inScope");
-    const empty = real.filter((x) => (x.activeCount ?? 0) === 0 && x.tier === "empty");
+    const inScope = real.filter((x) => (x.tier ?? "inScope") === "inScope");
+    const manual = real.filter((x) => x.tier === "manual");
     if (inScope.length) {
       out.push({ title: `在职门店（${inScope.length} 家）`, list: inScope });
     }
-    if (empty.length) {
+    if (manual.length) {
       out.push({
-        title: `暂无在职员工 · 含新开门店（${empty.length} 家）`,
-        hint: "新开的门店在这里，录第一个人时选它",
-        list: empty,
+        title: `我新建的门店（${manual.length} 家）`,
+        hint: "录第一个人时在这里选它",
+        list: manual,
       });
     }
     return out;
@@ -253,7 +255,7 @@ export default function StorePicker({
                     const i = list.indexOf(s);
                     const extra: StoreExtra | undefined = extraStores.find((e) => e.id === s.id);
                     const cnt: number | undefined = stores.find((x) => x.id === s.id)?.activeCount;
-                    const isEmpty = (cnt ?? 0) === 0 && s.tier === "empty";
+                    const isManual = s.tier === "manual";
                     return (
                       <button
                         key={`${s.id}-${si}`}
@@ -268,7 +270,7 @@ export default function StorePicker({
                           i === hi ? "bg-brand-50" : ""
                         }`}
                       >
-                        <span className={`truncate ${isEmpty ? "text-slate-500" : "text-slate-800"}`}>
+                        <span className={`truncate ${isManual ? "text-slate-500" : "text-slate-800"}`}>
                           {s.name}
                         </span>
                         {extra?.tag ? (
@@ -281,7 +283,7 @@ export default function StorePicker({
                           >
                             {extra.tag}
                           </span>
-                        ) : isEmpty ? (
+                        ) : isManual ? (
                           <span className="shrink-0 text-[11px] text-slate-400">
                             {s.historyCount && s.historyCount > 0
                               ? `历史 ${s.historyCount} 人`
