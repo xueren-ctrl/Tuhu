@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import { PrismaClient } from "@prisma/client";
 
-const XLSX = "C:/Users/Administrator/Desktop/人事z资料9.19.xlsx";
+const XLSX = process.env.EXCEL_SOURCE_PATH?.trim() ?? "C:/Users/Administrator/Desktop/人事z资料9.19.xlsx";
 const SHA = crypto.createHash("sha256").update(readFileSync(XLSX)).digest("hex");
 
 /** 取单元格显示值：公式取缓存结果；日期取 YYYY-MM-DD；其它转字符串 */

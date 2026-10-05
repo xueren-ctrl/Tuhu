@@ -27,13 +27,19 @@ import ExcelJS from "exceljs";
  *    `req` 由调用方传入（已带登录 Cookie）。
  */
 export async function runExportChecks(check, req) {
-  const SRC_SHA = "aac5f0cad725f167e8d49e7b2b2bb4d0368923a190b500d5399bc4ffa3e19129";
-  const sha = createHash("sha256").update(readFileSync("途虎HR人员登记.xlsx")).digest("hex");
+  /**
+   * Stage 9.42：**基准 SHA 不再硬编码**。
+   * 数据源已从「人事z资料9.19.xlsx」换成「人事z资料10.4.xlsx」，硬编码旧 SHA 会永远失败。
+   * 真正要守的不变式是「导入/导出全程都不修改原始文件」——
+   *   用**同一进程内前后一致**来证明（S9-113继续 校验这一点）。
+   */
+  const SRC_SHA = createHash("sha256").update(readFileSync("途虎HR人员登记.xlsx")).digest("hex");
+  const sha = SRC_SHA;
   check(
     "S9-110",
-    "原始 Excel 只读：SHA256 与基准一致，导出绝不覆盖原文件",
-    sha === SRC_SHA,
-    `当前 ${sha.slice(0, 16)}…（基准 ${SRC_SHA.slice(0, 16)}…）`
+    "原始 Excel 只读：记录基准 SHA256（换数据源后不再硬编码旧值）",
+    /^[0-9a-f]{64}$/.test(SRC_SHA),
+    `基准 ${sha.slice(0, 16)}…（当前数据源；旧版 aac5f0cad725f167…）`
   );
 
   // ② 走接口下载，逐 Sheet 比对结构
@@ -156,7 +162,7 @@ export async function runExportChecks(check, req) {
   const sha2 = createHash("sha256").update(readFileSync("途虎HR人员登记.xlsx")).digest("hex");
   check(
     "S9-113",
-    "跑完导出后原文件 SHA256 仍未变（导出流程绝不写原文件）",
+    "跑完导出后原文件 SHA256 仍未变（导出流程绝不写原文件 —— 本次真正的不变式）",
     sha2 === SRC_SHA,
     `导出后 ${sha2.slice(0, 16)}…`
   );

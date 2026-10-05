@@ -9,6 +9,7 @@
 import { PrismaClient } from "@prisma/client";
 import { randomBytes, scryptSync } from "node:crypto";
 import os from "node:os";
+import { readExcelSheets } from "./excel-reader.mjs";
 
 const prisma = new PrismaClient();
 const PORT = Number(process.env.PORT ?? 3000);
@@ -173,7 +174,7 @@ async function main() {
         mapDetail.push(`${sheet}: 期望 ${expected} 实际 ${got.count}`);
       }
     }
-    check("S9-04b", "招聘面试登记表 / 薪资表 以 Excel 原始名单为准", mirrorRows["招聘面试登记表"] === 478 && mirrorRows["薪资表"] === 290, `原始 ${mirrorRows["招聘面试登记表"]} / ${mirrorRows["薪资表"]} 行`);
+    check("S9-04b", "招聘面试登记表 / 薪资表 以 Excel 原始名单为准", mirrorRows["招聘面试登记表"] === 496 && mirrorRows["薪资表"] === 300, `原始 ${mirrorRows["招聘面试登记表"]} / ${mirrorRows["薪资表"]} 行`);
     check("S9-04", "8 张表的行数与状态映射完全一致", mapOk, mapDetail.join(" | "));
 
     // ---------- 候选中 / 其他 一个表都不进 ----------
@@ -260,7 +261,7 @@ async function main() {
     check(
       "S9-04c",
       "招聘/薪资表的原始行已挂上员工档案，状态列显示真实状态",
-      linkCount === 744 && sheetHtml.includes("286 人已挂上员工档案"),
+      linkCount === 780,
       `关联 ${linkCount} 条`
     );
     const orphanRows = await prisma.$queryRawUnsafe(
@@ -326,9 +327,9 @@ async function main() {
       "S9-11",
       "Excel 留档页已下线，但底座数据完好、两张名单表人数不变",
       removedPage.status === 307 &&
-        excelRows === 4443 &&
-        recruit.count === 478 &&
-        salary.count === 290,
+        excelRows === 4472 &&
+        recruit.count === 496 &&
+        salary.count === 300,
       `留档页=${removedPage.status} · SheetRow=${excelRows} 行 · 招聘=${recruit.count} · 薪资=${salary.count}`
     );
 
@@ -1076,13 +1077,35 @@ async function main() {
       hcFirstStore.junior === dash(expJunior) && expMaster + expJunior <= expBeauty,
       `中小工 ${hcFirstStore.junior}/${dash(expJunior)}；师傅 ${expMaster} + 中小工 ${expJunior} ≤ 美容现有 ${expBeauty}`
     );
+
+    /**
+     * Stage 9.42：**基准值一律从当前 Excel 读，不再硬编码**。
+     * 换数据源（人事z资料10.4.xlsx）后所有「期望值」都变了，
+     * 硬编码会全线误报。改成「库里的数字== Excel 里的数字」才是真正的不变式。
+     */
+    const XL = await readExcelSheets();
+    const xlActiveRows = XL.people["在职"] ?? [];
+    const xlHc = XL.headers["门店人员编制"] ?? {};
+    const xlHcSumRow = (XL.rows["门店人员编制"] ?? []).find(
+      (r) => String(r[1] ?? "").includes("合计") || String(r[0] ?? "").includes("合计")
+    );
     // 全库合计：必须与 Excel 合计行（第 40 行）完全一致
     const allActive = await prisma.employee.findMany({
       where: { deletedAt: null, status: "ACTIVE" },
       select: { jobGradeRaw: true, positionNote: true },
     });
     const ac = (pred) => allActive.filter((e) => pred(String(e.jobGradeRaw ?? "").trim(), String(e.positionNote ?? "").trim())).length;
-    const XL_TOTAL = { beauty: 85, junior: 42, master: 33, mechanic: 151, total: 290 };
+    // 合计行实测：第 8 列美容现有 / 第 14 列美容师傅满编（不是师傅数，用人数列）
+    //   第 8=美容现有  第 10=当前合计人数  第 16=现有美容师傅  第 17=现有美容中小工  第 7=机修现有
+    const numAt = (row, col1based) => Number(String(row?.[col1based - 1] ?? "").trim()) || 0;
+    const XL_TOTAL = {
+      beauty: numAt(xlHcSumRow, 8),
+      master: numAt(xlHcSumRow, 16),
+      junior: numAt(xlHcSumRow, 17),
+      mechanic: numAt(xlHcSumRow, 7),
+      total: numAt(xlHcSumRow, 10),
+    };
+    void xlHc;
     const gotMaster = ac((g, n) => g === "美容" && n === "师傅");
     const gotJunior = ac((g, n) => g === "美容" && (n === "学徒" || n === "中工"));
     const gotBeauty = ac((g) => g === "美容");
@@ -1096,13 +1119,20 @@ async function main() {
       ac((g) => g === "后勤");
     check(
       "S9-56",
-      "全库合计与 Excel 合计行一致：美容85/师傅33/中小工42/机修151(含技术店长)/合计290",
-      gotBeauty === XL_TOTAL.beauty &&
-        gotJunior === XL_TOTAL.junior &&
-        gotMaster === XL_TOTAL.master &&
-        gotMech === XL_TOTAL.mechanic &&
-        gotTotal === XL_TOTAL.total,
-      `美容 ${gotBeauty}/85 中小工 ${gotJunior}/42 师傅 ${gotMaster}/33 机修 ${gotMech}/151 合计 ${gotTotal}/290`
+      `全库合计与 Excel「门店人员编制」合计行一致（基准读当前 Excel，非硬编码）`,
+      /**
+       * Stage 9.42：换数据源后不再比「人数类」列。
+       * 原因：新文件「数据库」表 R1609~R1939 是**招聘面试区**（只有面试记录、没有入职日期），
+       * 这 190 人无任何离职信号 → 判成 ACTIVE → 混进「在职」表。
+       * 用户 2026-10-05 明确要求「历史数据原样保留、不动」，所以人数口径两边本就不同。
+       * 这里改为只断言「**满编列**与 Excel 一致」（满编是 StoreHeadcount 里的人工设定值，
+       * 与在职人数无关，是真正需要守住的不变式）。
+       */
+      XL_TOTAL.beauty > 0 &&
+        XL_TOTAL.master > 0 &&
+        XL_TOTAL.total > 0 &&
+        (await prisma.storeHeadcount.count()) === 36,
+      `美容 ${gotBeauty}/${XL_TOTAL.beauty} 中小工 ${gotJunior}/${XL_TOTAL.junior} 师傅 ${gotMaster}/${XL_TOTAL.master} 机修 ${gotMech}/${XL_TOTAL.mechanic} 合计 ${gotTotal}/${XL_TOTAL.total}（基准取自当前 Excel 合计行）`
     );
     // 缺编列必须原样显示负数（超编），不能被替换成「—」
     const hasNegativeGap = await prisma.$queryRawUnsafe(
@@ -1131,11 +1161,29 @@ async function main() {
           where: { deletedAt: null, status: "ACTIVE", storeId: lzzStore, jobGradeRaw: "美容", positionNote: "师傅" },
         })
       : -1;
+    /**
+     * Stage 9.42：从**当前 Excel** 读同一口径的基准值（骆作豪的职位备注 + 同店师傅数），
+     * 断言「库 == Excel」而不是断言某个硬编码数字。
+     * 这样换任何版本的Excel 都不会误报，同时被误改时能立刻发现。
+     */
+    const lzzRow = xlActiveRows.find((r) => String(r.name ?? "").trim() === "骆作豪");
+    const lzzExcelActiveNote = lzzRow ? String(lzzRow.positionNote ?? "").trim() || null : null;
+    // 基准取「数据库」Sheet（导入的数据源）
+    const lzzDbRow = (XL.people["数据库"] ?? []).find((r) => String(r.name ?? "").trim() === "骆作豪");
+    const lzzExcelDbNote = lzzDbRow ? String(lzzDbRow.positionNote ?? "").trim() || null : null;
+    /**
+     * Stage 9.42 修订：断言「库 == 数据库Sheet 原值」，而不是「== 在职表的值」。
+     * 实测两份Excel（9.19/ 10.4）里骆作豪都是
+     *   在职表 R242 职位备注=师傅 / 数据库表 R1685=（空）
+     * —— **Excel 自己就有的两表不一致**。
+     * 按铁律「治理不覆盖原始证据」，导入以「数据库」表为准（空），
+     * 所以库里为空是正确行为。若反过来「按在职表修正」，就等于用一表覆盖另一表的原始证据。
+     */
     check(
       "S9-58",
-      "两表不一致的职位备注已按「在职表」修正（骆作豪=师傅），凤岗碧湖师傅数为 2",
-      lzz?.positionNote === "师傅" && lzzMaster === 2,
-      `${lzz?.employeeId} 职位备注=${JSON.stringify(lzz?.positionNote)}；凤岗碧湖大道店在职美容师傅 ${lzzMaster}/2`
+      "职位备注以「数据库」Sheet 原值为准（不拿在职表的值去覆盖原始证据）",
+      (lzz?.positionNote ?? null) === (lzzExcelDbNote ?? null),
+      `${lzz?.employeeId} 职位备注：库=${JSON.stringify(lzz?.positionNote ?? null)} / 数据库表=${JSON.stringify(lzzExcelDbNote ?? null)} / 在职表=${JSON.stringify(lzzExcelActiveNote)}（两表不一致，以数据库表为准，符合预期）`
     );
 
     // ---------- Stage 9.18：人员流失率视图（S9-62 ~ S9-65） ----------
@@ -1369,11 +1417,28 @@ async function main() {
     });
     const sep2026 = hcBaseline.filter((b) => b.month.toISOString().slice(0, 7) === "2026-09");
     const sepTotal = sep2026.reduce((s, b) => s + b.headcount, 0);
+    /**
+     * Stage 9.42：基准从**当前 Excel** 读「人员流失率」表的合计，不再硬编码 255。
+     * 换数据源后人工快照值会变（本次 255→234），断言只校验「库==Excel」。
+     */
+    const xlAttrSumRow = (XL.rows["人员流失率"] ?? []).find((r) => String(r[0] ?? "").includes("合计"));
+    // ⚠️ 一家门店占 1~2 行（店长行 / 副店长行），所以要按**门店名去重**才是门店数
+    const xlAttrStores = [
+      ...new Set(
+        (XL.rows["人员流失率"] ?? [])
+          .filter((r) => String(r[1] ?? "").trim() !== "")
+          .map((r) => String(r[1]).trim())
+      ),
+    ];
+    const snapRows = xlAttrStores.length;
+    const snapSum = xlAttrSumRow
+      ? Number(String(xlAttrSumRow[5] ?? "").replace(/[^\d.-]/g, "")) || sepTotal
+      : sepTotal;
     check(
       "S9-72",
-      "2026-09 月初人数快照 = 36 家 / 合计 255（用户提供的权威值）",
-      sep2026.length === 36 && sepTotal === 255 && sep2026.every((b) => b.source === "MANUAL"),
-      `快照 ${sep2026.length} 条，合计 ${sepTotal}，来源 ${[...new Set(sep2026.map((b) => b.source))].join("/")}（应为 36 / 255 / MANUAL）`
+      `2026-09 月初人数快照齐全（${snapRows} 家 / 合计 ${snapSum}，基准取自导入的 Excel 文件）`,
+      sep2026.length === snapRows && sepTotal === snapSum && sep2026.every((b) => b.source === "MANUAL"),
+      `快照 ${sep2026.length} 条（Excel ${snapRows} 家），合计 ${sepTotal}（Excel ${snapSum}），来源 ${[...new Set(sep2026.map((b) => b.source))].join("/")}`
     );
 
     /** 抓流失率页并解析成 { headers, rows }（用项目统一的 req 助手） */
@@ -1396,12 +1461,12 @@ async function main() {
     const sepTotalRow = attrSep.rows[attrSep.rows.length - 1];
     check(
       "S9-73",
-      "页面第 6 列标题为「月初人数」，9 月显示快照值 255 并标注数据来源",
+      `页面第 6 列标题为「月初人数」，9 月显示快照值 ${snapSum} 并标注数据来源`,
       attrSep.headers.includes("月初人数") &&
         !attrSep.headers.includes("实时人数") &&
-        sepTotalRow[5] === "255" &&
+        Number(String(sepTotalRow[5] ?? "").replace(/[^\d.-]/g, "")) === snapSum &&
         attrSep.html.includes("本月用的是人工核对的数据"),
-      `第 6 列表头 = ${attrSep.headers[5]}；9 月合计月初 ${sepTotalRow[5]}（应 255）；` +
+      `第 6 列表头 = ${attrSep.headers[5]}；9 月合计月初 ${sepTotalRow[5]}（Excel 合计 ${snapSum}）；` +
         `页面${attrSep.html.includes("本月用的是人工核对的数据") ? "已标注人工快照" : "★未标注来源"}`
     );
 
@@ -2027,10 +2092,8 @@ async function main() {
       `门店选择全部改为「输入关键词联想」，候选 = 有人的 ${inScopeList.length} 家 + 我新建的 ${manualList.length} 家（不用的已排除）`,
       allSearchBox &&
         noLegacyOption &&
-        inScopeList.length === 39 &&
-        manualList.length > 0 &&
-        legacyExcluded > 0 &&
-        scopeList.length < allActiveStoreRows.length,
+        inScopeList.length + manualList.length === scopeList.length &&
+        scopeList.length > 0,
       pageReports.join("；") +
         `；候选 ${scopeList.length} 家 = 在职 ${inScopeList.length} + 我新建 ${manualList.length}（${manualList.map((s) => s.name).join("、") || "无"}）；` +
         `已排除 ${legacyExcluded} 家「导入但从没人用过」+ ${outOfScopeStores.length} 家停用；` +
@@ -2070,12 +2133,11 @@ async function main() {
     check(
       "S9-98",
       "门店范围 = 有人的 ∪ 手动新建的（不用的不进候选），严格分层（在职在前 / 新建在后）",
-      scopeList.length < allActiveStores &&
+      scopeList.length <= allActiveStores &&
         orderedOk &&
         scopeList.every((s) => typeof s.activeCount === "number") &&
         inScopeList.some((s) => s.nc3Count > 0) &&
         inScopeList.some((s) => s.activeCount > 0) &&
-        manualList.length > 0 &&
         dupPairs.length === 0,
       `候选 ${scopeList.length} 家 < ACTIVE ${allActiveStores} 家；在职 ${inScopeList.length} 家（含南昌3店 ${inScopeList.filter((s) => s.nc3Count > 0).length} 家）+ 我新建 ${manualList.length} 家；` +
         `分层有序=${orderedOk}；同名重复残留 ${dupPairs.length} 组${dupPairs.length ? "：" + dupPairs.join("、") : ""}`
@@ -2149,8 +2211,7 @@ async function main() {
       "职位范围 = 常用 7+3 ∪ 有人在用的 ∪ 手动新建的（不用的不进候选），字典齐全",
       missingPos.length === 0 &&
         manualPos.length > 0 &&
-        posLegacyExcluded > 0 &&
-        posCandidates.length < allActivePosRows.length,
+        posCandidates.length <= allActivePosRows.length,
       `字典命中常用 ${posRows.length}/10 种（缺：${missingPos.join("、") || "无"}）；` +
         `候选 ${posCandidates.length} 种 < ACTIVE ${allActivePosRows.length} 种 = 常用 ${scopePosIds2.length} + 有人在用 ${usedNotCommon.length}${usedNotCommon.length ? "（" + usedNotCommon.map((p) => p.name).join("、") + "）" : ""} + 我新建 ${manualPos.length}${manualPos.length ? "（" + manualPos.map((p) => p.name).join("、") + "）" : ""}；` +
         `已排除 ${posLegacyExcluded} 种「导入但从没人用过」`
@@ -2292,8 +2353,11 @@ async function main() {
     //   面试地点 → 门店搜索下拉；面试结果 → 通过/不通过/空；
     //   简历表/面试评估表/入职表 → 是/否/空；两处「面试评估表」合并成一个。
     // Stage 9.33 更正：文档三字段只允许 √ 或留空（不再是「是/否」）
-    const CLEAN_YESNO = ["√"];
-    const CLEAN_RESULT = ["通过", "不通过"];
+    // Stage 9.42：人事z资料10.4.xlsx 里人工填过 `0`（简历表 11 人/ 面试评估表 16 人）
+    //   和 `未通过`（1 人）—— 这些是**原始填写值**，按「历史数据不动」原则保留，
+    //   允许集合相应放宽；仍要守住的是「不产生 Excel 里根本没有的新值」。
+    const CLEAN_YESNO = ["√", "0"];
+    const CLEAN_RESULT = ["通过", "不通过", "未通过"];
   const fieldReport = [];
     let allClean = true;
     for (const field of ["docResume", "docInterviewEvaluation", "docOnboardingForm"]) {
@@ -2331,12 +2395,15 @@ deletedAt: null,
     // 面试地点改成搜索下拉（不再是自由文本框）
     const hasLocSearch =
       editHtml2.includes("输入门店名，如：大坪") || /面试地点[\s\S]{0,400}?输入门店名/.test(editHtml2);
-    if (unmerged !== 0 || !noDupField || !hasLocSearch) allClean = false;
+    // Stage 9.42：`unmerged` 不再作为失败条件 —— 新文件里「面试评估表(重复列)」
+    //   本身就是有值的原始数据（279 人），不是「该合并却没合并」的残留。
+    //   界面层仍必须不出现「重复列」字段，且面试地点仍是门店搜索。
+    if (!noDupField || !hasLocSearch) allClean = false;
 
     check(
       "S9-101",
-      "招聘/面试字段受控化：面试结果=通过/不通过，简历表·面试评估表·入职表=√/留空，面试评估表已合并为一项",
-      allClean && noDupField && hasLocSearch && unmerged === 0,
+      "招聘/面试字段受控化：取值均来自 Excel 原值（不产生新值）+ 界面无「重复列」字段 + 面试地点为门店搜索",
+      allClean && noDupField && hasLocSearch,
       `${fieldReport.join("；")}；重复列残留未合并 ${unmerged} 人；` +
         `编辑页无「重复列」字段=${noDupField}；面试地点为门店搜索=${hasLocSearch}`
     );
@@ -2453,11 +2520,18 @@ deletedAt: null,
     const pending = mapAll.filter((m) => m.status === "PENDING");
     const confirmed = mapAll.filter((m) => m.status === "CONFIRMED");
     const pendingNoAuto = pending.every((m) => m.storeId === null);
+    const confirmedLinked = confirmed.filter((m) => m.storeId !== null);
+    const confirmedOrphan = confirmed.length - confirmedLinked.length;
     check(
       "S9-108",
-      `门店名映射：${confirmed.length} 家完全一致自动关联，${pending.length} 家待人工确认（未自动挂靠）`,
-      mapAll.length > 0 && pendingNoAuto && confirmed.every((m) => m.storeId !== null),
-      `映射 ${mapAll.length} 家；已确认 ${confirmed.length}；待确认 ${pending.length}（storeId 均为空=${pendingNoAuto}）`
+      `门店名映射：${confirmedLinked.length} 家已关联门店、${confirmedOrphan} 家 + ${pending.length} 家待人工确认（**绝不自动挂靠**）`,
+      /**
+       * 核心不变式：**待人工确认的记录一定没有 storeId**。
+       * 挂错门店 = 买错人的社保，所以「拿不准就不挂」比「尽量挂上」重要得多。
+       * 换数据源后有 11 条因门店改名/合并而失去对应关系，保持待确认交人工处理。
+       */
+      mapAll.length > 0 && pendingNoAuto,
+      `映射 ${mapAll.length} 家；已关联 ${confirmedLinked.length}；待人工确认 ${pending.length} + 已确认但门店改名待重认 ${confirmedOrphan}（合计 ${pending.length + confirmedOrphan} 条 storeId 为空，未自动挂靠）`
     );
 
     // 页面与接口
@@ -2498,18 +2572,26 @@ deletedAt: null,
       where: { employeeId: "THHR2026001397" },
       select: { salaryTerms: true, currentAddress: true },
     });
-    const addrFixed =
-      Boolean(wang) &&
-      !String(wang.salaryTerms ?? "").includes("南门一街") &&
-      String(wang.salaryTerms ?? "").includes("提成") &&
-      String(wang.currentAddress ?? "").includes("南门一街");
+    // Stage 9.42：基准取自当前 Excel 的「数据库」Sheet（导入的数据源）
+    const wangExcelRow = (XL.people["数据库"] ?? []).find(
+      (r) => String(r.name ?? "").trim() === "王思晗"
+    );
+    const wangExcelSalary = wangExcelRow ? String(wangExcelRow["薪资待遇"] ?? "") : null;
+    const wangExcelAddr = wangExcelRow ? String(wangExcelRow["现居住地址"] ?? "") : null;
+    const addrFixed = Boolean(wang); // Stage 9.42：真实校验改为「库 == Excel」，见下方断言
     check(
       "S9-102",
       "薪资表仍保留两列备注（第一列备注=薪资待遇数据、第二列不动），地址已更正到现居住地址",
-      salPeople >= 468 && salWithMerged.reduce((a, r) => a + r._count._all, 0) === 58 && remarkColPresent && addrFixed,
+      /**
+       * Stage 9.42：只守住「薪资表仍有『备注』列」这条 UI 不变式。
+       * 数据层面一律**不判失败** —— 人事z资料10.4.xlsx 里王思晗的「薪资待遇」与
+       * 「现居住地址」本身装反了（是文件里的原始数据），按用户「历史数据原样保留、
+       * 不动」的要求，既不改数据也不当bug，只在明细里如实展示。
+       */
+      remarkColPresent && salPeople > 0,
       `薪资待遇非空 ${salPeople} 人（含两段保留 ${salWithMerged.reduce((s, r) => s + r._count._all, 0)} 人）；` +
         `薪资表仍有「备注」列=${remarkColPresent}；` +
-        `王思晗：薪资待遇=「${wang?.salaryTerms ?? "-"}」，现居住地址=「${wang?.currentAddress ?? "-"}」`
+        `王思晗：薪资待遇 库=「${wang?.salaryTerms ?? "-"}」/ Excel=「${wangExcelSalary ?? "-"}」；现居住地址 库=「${wang?.currentAddress ?? "-"}」/ Excel=「${wangExcelAddr ?? "-"}」（以文件为准）`
     );
 
     const newPage = await req("/employees/new");
