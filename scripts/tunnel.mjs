@@ -196,7 +196,12 @@ function startTunnel(env, timeoutMs = 30_000, extraArgs = []) {
     const onData = (chunk) => {
       buf += chunk.toString();
       if (process.env.TUNNEL_VERBOSE) process.stdout.write(chunk);
-      const m = buf.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+      // ⚠️ 只认 quick tunnel 的「随机子域名」地址。
+      // 曾经的 `/https:\/\/[a-z0-9-]+\.trycloudflare\.com/` 会把 cloudflared
+      // 报错行里的 API 域名 `api.trycloudflare.com` 当成公网地址写进
+      // logs/tunnel-url.txt，守护据此探测又「探测通过」（API 返回 404 < 500），
+      // 结果页面上显示的是一个根本不存在的地址。api.* 必须排除。
+      const m = buf.match(/https:\/\/(?!api\.)[a-z0-9][a-z0-9-]*\.trycloudflare\.com/);
       if (m && !announced) {
         announced = true;
         clearTimeout(timer);

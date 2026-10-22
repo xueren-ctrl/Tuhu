@@ -8,6 +8,8 @@
     "build": "next build",
     "start": "next start -H 0.0.0.0 -p 3000",
     "serve": "node scripts/serve.mjs",
+    "restart": "node scripts/restart.mjs",
+    "status": "node scripts/restart.mjs --status",
     "tunnel": "node scripts/tunnel.mjs",
     "firewall": "powershell -ExecutionPolicy Bypass -File scripts/firewall.ps1",
     "lint": "next lint",
