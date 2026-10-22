@@ -50,6 +50,12 @@ export interface EmployeeFormProps {
   positionScopeRaw?: { store: ScopePos[]; ops: ScopePos[] };
   departments: { id: number; name: string }[];
   positions: { id: number; name: string }[];
+  /**
+   * 全部门店 / 职位（**含已停用**，Stage 10.2）
+   * 只用于把 id 回显成名字：门店停用后，挂在它上面的老员工不该显示成「门店#44」。
+   */
+  allStores?: { id: number; name: string; status?: string }[];
+  allPositions?: { id: number; name: string; status?: string }[];
   initial?: Record<string, unknown> | null;
 }
 
@@ -159,9 +165,25 @@ export default function EmployeeForm({
   positionScopeRaw = { store: [], ops: [] },
   departments,
   positions,
+  allStores = [],
+  allPositions = [],
   initial,
 }: EmployeeFormProps) {
   const router = useRouter();
+
+  /** id → 名称（含已停用条目），用于回显历史数据，避免显示成「门店#44」 */
+  const storeNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const s of allStores) m.set(s.id, s.name);
+    for (const s of stores) if (!m.has(s.id)) m.set(s.id, s.name);
+    return m;
+  }, [allStores, stores]);
+  const positionNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const p of allPositions) m.set(p.id, p.name);
+    for (const p of positions) if (!m.has(p.id)) m.set(p.id, p.name);
+    return m;
+  }, [allPositions, positions]);
 
   const init = useMemo<FormState>(() => {
     const base: FormState = {
@@ -224,8 +246,8 @@ export default function EmployeeForm({
     if (!cur) return null;
     const id = Number(cur);
     const hit = storeScope.find((s) => s.id === id);
-    return hit ?? { id, name: stores.find((s) => String(s.id) === cur)?.name ?? `门店#${cur}` };
-  }, [storeScope, stores, form.storeId]);
+    return hit ?? { id, name: storeNameById.get(id) ?? `门店#${id}` };
+  }, [storeScope, storeNameById, form.storeId]);
   /** 当前门店不在 40 家内时，在候选列表里加一条「当前门店」标记项 */
   const storeExtras = useMemo(() => {
     const cur = storeSelected;
@@ -257,8 +279,8 @@ export default function EmployeeForm({
     if (!cur) return null;
     const id = Number(cur);
     const hit = positionItems.find((p) => p.id === id);
-    return hit ?? { id, name: positions.find((p) => String(p.id) === cur)?.name ?? `职位#${cur}` };
-  }, [positionItems, positions, form.positionId]);
+    return hit ?? { id, name: positionNameById.get(id) ?? `职位#${id}` };
+  }, [positionItems, positionNameById, form.positionId]);
   /** 当前职位不在 7+3 范围内（如离职人员的「青铜机修技师」）也必须可选，否则会丢数据 */
   const positionExtras = useMemo(() => {
     const cur = positionSelected;
@@ -298,6 +320,11 @@ export default function EmployeeForm({
   }, [form.interviewLocation, storeScope, allStoreOptions]);
 
   const isResigned = form.status === "RESIGNED";
+
+  /** 仍是 Excel 旧写法（× / / 等）的「是否」字段：提前告诉用户是哪些，免得保存后才看到报错 */
+  const legacyYesNoFields = TEXT_FIELDS.filter(
+    (m) => m.type === "yesno" && form[m.key] && form[m.key] !== "是" && form[m.key] !== "否"
+  ).map((m) => ({ label: m.label, col: m.excel, value: form[m.key] }));
 
   const submit = async () => {
     setError("");
@@ -358,6 +385,17 @@ export default function EmployeeForm({
     <div className="mx-auto max-w-[1200px] space-y-4">
       {error ? <Alert tone="error">保存失败：{error}</Alert> : null}
       {saved ? <Alert tone="success">{saved}</Alert> : null}
+      {legacyYesNoFields.length ? (
+        <Alert tone="info">
+          <strong>
+            有 {legacyYesNoFields.length} 个「是否」字段还是 Excel 旧写法
+          </strong>
+          ：
+          {legacyYesNoFields.map((f) => `${f.label}（${f.col}）=「${f.value}」`).join("、")}
+          。这些写法语义就是「否」，<strong>保持原样可以直接保存</strong>；想统一成「是 / 否」，
+          在下方「入职信息补充 / 社保 / 合同与入职资料」分组里改即可。
+        </Alert>
+      ) : null}
 
       {/* ---------------- 核心字段 ---------------- */}
       <Card title={mode === "create" ? "核心字段（新增员工）" : "核心字段"}>
@@ -410,19 +448,7 @@ export default function EmployeeForm({
               value={storeSelected}
               onChange={(s) => set("storeId")(s ? String(s.id) : "")}
               placeholder="输入门店名，如：大坪"
-              emptyLabel="未指定 / 保留 Excel 原文"
-            />
-          </Field>
-
-          <Field
-            label="门店（Excel 原文）"
-            excelColumn="B"
-            hint="迁移数据保留的历史门店名称，不会被覆盖"
-          >
-            <Input
-              value={form.storeNameRaw}
-              onChange={(e) => set("storeNameRaw")(e.target.value)}
-              placeholder="留空则跟随所选门店"
+              emptyLabel="未指定（保留现有原文）"
             />
           </Field>
 
@@ -444,7 +470,7 @@ export default function EmployeeForm({
                 if (p) set("jobGradeRaw")(p.name);
               }}
               placeholder="输入职位，如：机修"
-              emptyLabel="未指定 / 保留 Excel 原文"
+              emptyLabel="未指定（保留现有原文）"
             />
           </Field>
 
@@ -527,29 +553,6 @@ export default function EmployeeForm({
             </Select>
           </Field>
 
-          <Field
-            label="部门（Excel 原文）"
-            hint="迁移数据保留的原始部门名称，不会被覆盖"
-          >
-            <Input
-              value={form.departmentNameRaw}
-              onChange={(e) => set("departmentNameRaw")(e.target.value)}
-              placeholder="留空则跟随所选部门"
-            />
-          </Field>
-
-          <Field
-            label="工种级别（Excel 原文）"
-            excelColumn="H"
-            hint="如「青铜机修技师」，历史取值完整保留"
-          >
-            <Input
-              value={form.jobGradeRaw}
-              onChange={(e) => set("jobGradeRaw")(e.target.value)}
-              placeholder="留空则跟随所选职位"
-            />
-          </Field>
-
           <Field label="入职日期" excelColumn="C">
             <Input
               type="date"
@@ -575,12 +578,6 @@ export default function EmployeeForm({
                   type="date"
                   value={form.resignDate}
                   onChange={(e) => set("resignDate")(e.target.value)}
-                />
-              </Field>
-              <Field label="离职日期（Excel 原文）" excelColumn="AA" hint="如「9/30已离职」等非标准写法">
-                <Input
-                  value={form.resignDateRaw}
-                  onChange={(e) => set("resignDateRaw")(e.target.value)}
                 />
               </Field>
               <Field label="离职原因" excelColumn="Z">
@@ -660,36 +657,38 @@ export default function EmployeeForm({
               </button>
               {isOpen ? (
                 <div className="grid grid-cols-1 gap-x-5 gap-y-4 border-t border-[var(--hr-border)] p-3.5 sm:grid-cols-2 lg:grid-cols-3">
-                  {metas.map((m) => (
+                  {metas.map((m) => {
+                    // Excel 旧写法（× / /）等不在「是/否」里的值：下拉里原样显示出来，
+                    // 让用户看得见当前值，而不是显示成「（未填）」却保存时报错。
+                    const cur = form[m.key] ?? "";
+                    const isLegacyYesNo =
+                      m.type === "yesno" && cur !== "" && cur !== "是" && cur !== "否";
+                    return (
                     <Field
                       key={m.key}
                       label={m.label}
                       excelColumn={m.excel}
                       hint={
                         m.type === "yesno"
-                          ? "只允许 是 / 否 / 留空"
+                          ? isLegacyYesNo
+                            ? `当前是 Excel 旧写法「${cur}」（语义就是「否」），保持原样即可保存；也可改成「是」/「否」`
+                            : "只允许 是 / 否 / 留空"
                           : m.hint
                       }
                     >
                       {m.type === "yesno" ? (
                         // Stage 7.3：7 个「是否」字段改下拉。
-                        // 历史第三态（如 在职 / 外宿 / 新增人员 / 实习 / 做不了）保留为额外选项，原样不丢。
+                        // 历史第三态（如 在职 / 外宿 / 新增人员 / 实习 / 做不了 / × / /）保留为额外选项，原样不丢。
                         <Select
-                          value={
-                            form[m.key] === "是" || form[m.key] === "否"
-                              ? form[m.key]
-                              : ""
-                          }
+                          value={cur}
                           onChange={(e) => set(m.key)(e.target.value)}
                         >
                           <option value="">（未填）</option>
                           <option value="是">是</option>
                           <option value="否">否</option>
-                          {form[m.key] &&
-                          form[m.key] !== "是" &&
-                          form[m.key] !== "否" ? (
-                            <option value={form[m.key]}>
-                              历史值：{form[m.key]}（保持不变）
+                          {isLegacyYesNo ? (
+                            <option value={cur}>
+                              历史值：{cur}（Excel 旧写法，可保持）
                             </option>
                           ) : null}
                         </Select>
@@ -708,7 +707,8 @@ export default function EmployeeForm({
                         />
                       )}
                     </Field>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
             </div>

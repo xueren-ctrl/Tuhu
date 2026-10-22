@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EMPLOYEE_FIELDS } from "./constants";
 import {
   normalizeBankAccount,
   normalizeIdCard,
@@ -15,29 +16,25 @@ const nullableText = z
   .transform((v) => toNullableText(v));
 
 /**
- * Stage 7.3：7 个「是否」字段的写库校验。
- * 规则：新写入只允许 `是` / `否` / 空。
- *  - `×` 与 `/` 是 Excel 里的「否」写法，**禁止再写入**（在职侧已于 Stage 7.3 全部归一化）
- *  - 历史第三态（在职 / 外宿 / 新增人员 / 实习 / 做不了 等）**原样放行**，
- *    避免详情页保存时把老值误清掉
+ * 7 个「是否」字段的写库校验（Stage 7.3 立、Stage 10.1 修订）。
+ *
+ * **2026-10-22 修订**：Excel 历史写法 `×`、`/`（语义都是「否」）改为**原样放行**。
+ *   原因：从人工表全量导入后，这两个写法分布很广（住宿舍 832 人、社保购买 1101 人、
+ *   宿舍免责协议 80 人、其余零星，合计约 2000 处）。旧规则「禁止再写入」会让几乎
+ *   每个员工一进编辑页、什么都不改、点保存就报错，而用户明确要求历史数据保持原样。
+ *   界面侧这 7 个字段仍是「是 / 否 / 空」下拉，不会因放行而让新数据继续用旧写法。
+ * 历史第三态（在职 / 外宿 / 新增人员 / 实习 / 做不了 等）同样原样放行，
+ *   避免详情页保存时把老值误清掉。
  */
 const yesNoField = z
   .union([z.string(), z.null(), z.undefined()])
-  .transform((v, ctx) => {
+  .transform((v) => {
     const s = toNullableText(v);
     if (s === null) return null;
     const t = s.trim();
-    if (t === "" ) return null;
-    if (t === "是" || t === "否") return t;
-    if (t === "×" || t === "/") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `「${t}」是旧的不规范写法，请改用「是」或「否」`,
-      });
-      return z.NEVER;
-    }
-    // 历史第三态：原样保留
-    return s;
+    if (t === "") return null;
+    // 是 / 否 / × / / / 历史第三态：一律原样保存，不做改写
+    return t;
   });
 
 /** 可空日期：接受 yyyy-MM-dd / ISO / 空串，统一转为 UTC 零点的「纯日期」 */
@@ -278,9 +275,26 @@ export type StoreInput = z.infer<typeof storeSchema>;
 export type DepartmentInput = z.infer<typeof departmentSchema>;
 export type PositionInput = z.infer<typeof positionSchema>;
 
-/** 把 zod 错误整理成前端可直接展示的中文提示 */
+/**
+ * 字段 key → 中文名（错误提示用中文，避免出现「dormitory：…」这种看不懂的字段名）
+ * 懒加载：只有真正报错时才构建，平时零成本。
+ */
+let fieldLabelCache: Record<string, string> | null = null;
+function fieldLabels(): Record<string, string> {
+  if (!fieldLabelCache) {
+    fieldLabelCache = Object.fromEntries(EMPLOYEE_FIELDS.map((f) => [f.key, f.label]));
+  }
+  return fieldLabelCache;
+}
+
+/** 把 zod 错误整理成前端可直接展示的中文提示：`中文字段名（字段key）：说明` */
 export function formatZodError(err: z.ZodError): string {
   return err.errors
-    .map((e) => `${e.path.join(".") || "表单"}：${e.message}`)
+    .map((e) => {
+      const key = e.path.join(".");
+      const label = key ? fieldLabels()[key] : "";
+      const where = !key ? "表单" : label && label !== key ? `${label}（${key}）` : key;
+      return `${where}：${e.message}`;
+    })
     .join("；");
 }

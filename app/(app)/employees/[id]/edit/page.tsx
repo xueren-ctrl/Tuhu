@@ -57,10 +57,12 @@ export default async function EditEmployeePage({
       <EmployeeForm
         mode="edit"
         stores={options.stores}
+        allStores={options.allStores}
         storeScopeRaw={options.storeScope}
         positionScopeRaw={options.positionScope}
         departments={options.departments}
         positions={options.positions}
+        allPositions={options.allPositions}
         initial={employee as unknown as Record<string, unknown>}
       />
     </div>

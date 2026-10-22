@@ -39,6 +39,12 @@ const SOURCE_TONE: Record<string, "green" | "blue" | "amber" | "red" | "gray"> =
 
 const HISTORY_TAB = "__history__";
 
+/**
+ * 详情页展示用字段：去掉「（Excel原文）」这类冗余副本（门店 / 部门 / 工种级别 / 离职日期
+ * 都有对应的结构化字段）。原文仍完整保存在数据库里，只是不再占一栏重复显示。
+ */
+const VISIBLE_FIELDS = EMPLOYEE_FIELDS.filter((f) => !f.label.includes("Excel原文"));
+
 function DetailItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -63,7 +69,7 @@ export default function EmployeeDetail({
 
   const groupsWithData = useMemo(() => {
     return EMPLOYEE_GROUPS.map((g) => {
-      const fields = EMPLOYEE_FIELDS.filter((f) => f.group === g.key);
+      const fields = VISIBLE_FIELDS.filter((f) => f.group === g.key);
       const filled = fields.filter((f) => {
         const v = employee[f.key];
         return v !== null && v !== undefined && v !== "";
@@ -244,7 +250,14 @@ export default function EmployeeDetail({
           <Alert tone="warn" className="mt-4">
             该员工状态为「离职」，但数据库中<strong>没有可解析的离职日期</strong>。
             原因：Excel「备注（离职日期）」为空或其内容为非标准文本（如「9/30已离职」）。
-            原文已保留在「离职信息」分组中，后续可人工补录。
+            {employee.resignDateRaw ? (
+              <>
+                <br />
+                Excel 原文：
+                <strong className="font-mono">{String(employee.resignDateRaw)}</strong>
+                （原文已保存在数据库，可在「编辑」里把「离职日期」改成标准日期补录）
+              </>
+            ) : null}
           </Alert>
         ) : null}
       </Card>
@@ -405,7 +418,7 @@ export default function EmployeeDetail({
                 </tr>
               </thead>
               <tbody>
-                {EMPLOYEE_FIELDS.map((f, i) => {
+                {VISIBLE_FIELDS.map((f, i) => {
                   const v = renderValue(f.key);
                   const empty =
                     v === null || v === undefined || v === "";
@@ -427,7 +440,7 @@ export default function EmployeeDetail({
           </div>
         ) : (
           <p className="text-[12.5px] text-slate-500">
-            点击「展开」可查看该员工在数据库中全部 {EMPLOYEE_FIELDS.length} 个字段的实际取值，
+            点击「展开」可查看该员工在数据库中全部 {VISIBLE_FIELDS.length} 个字段的实际取值，
             用于核对 Excel 迁移是否完整。
           </p>
         )}

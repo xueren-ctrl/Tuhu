@@ -316,26 +316,47 @@ export async function setDepartmentStatus(
  *
  * ⚠️ Stage 9.32 起额外返回 `positionScope`：职位选择范围 = 门店 7 种 + 运营部 3 种
  *   （Position 字典 52 条，在职实际只用 10 种；历史细分职位靠「更多职位」展开）。
+ *
+ * ⚠️ Stage 10.2 起额外返回 `allStores` / `allPositions`（**含停用**）：
+ *   停用只该影响「能不能新选」，不该让历史数据的名字变成 `门店#44` / `职位#123`。
+ *   下拉与筛选仍用 `stores` / `positions`（只含启用），这两个全量表**只用于回显名字**。
  */
 export async function getSelectOptions() {
-  const [stores, departments, positions, storeScope, positionScope] = await Promise.all([
-    prisma.store.findMany({
-      where: { status: "ACTIVE" },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    }),
-    prisma.department.findMany({
-      where: { status: "ACTIVE" },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-      select: { id: true, name: true, deptType: true },
-    }),
-    prisma.position.findMany({
-      where: { status: "ACTIVE" },
-      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-      select: { id: true, name: true, category: true, level: true },
-    }),
-    getStoreScopeOptions(),
-    getPositionScopeOptions(),
-  ]);
-  return { stores, departments, positions, storeScope: storeScope.stores, positionScope };
+  const [stores, departments, positions, allStores, allPositions, storeScope, positionScope] =
+    await Promise.all([
+      prisma.store.findMany({
+        where: { status: "ACTIVE" },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      prisma.department.findMany({
+        where: { status: "ACTIVE" },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: { id: true, name: true, deptType: true },
+      }),
+      prisma.position.findMany({
+        where: { status: "ACTIVE" },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: { id: true, name: true, category: true, level: true },
+      }),
+      prisma.store.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true, status: true },
+      }),
+      prisma.position.findMany({
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: { id: true, name: true, status: true },
+      }),
+      getStoreScopeOptions(),
+      getPositionScopeOptions(),
+    ]);
+  return {
+    stores,
+    departments,
+    positions,
+    allStores,
+    allPositions,
+    storeScope: storeScope.stores,
+    positionScope,
+  };
 }

@@ -43,7 +43,9 @@ export default async function EmployeesPage({
     chips.push(
       q.storeId === UNASSIGNED
         ? "未分配门店"
-        : `门店「${options.stores.find((s) => String(s.id) === q.storeId)?.name ?? q.storeId}」`
+        : `门店「${
+            options.allStores.find((s) => String(s.id) === q.storeId)?.name ?? q.storeId
+          }」`
     );
   if (q.departmentId)
     chips.push(
@@ -55,7 +57,9 @@ export default async function EmployeesPage({
     chips.push(
       q.positionId === UNASSIGNED
         ? "未分配职位"
-        : `职位「${options.positions.find((p) => String(p.id) === q.positionId)?.name ?? q.positionId}」`
+        : `职位「${
+            options.allPositions.find((p) => String(p.id) === q.positionId)?.name ?? q.positionId
+          }」`
     );
   if (q.status) chips.push(`状态「${EMPLOYEE_STATUS_LABEL[q.status] ?? q.status}」`);
   if (q.includeDeleted) chips.push("包含已停用档案");
