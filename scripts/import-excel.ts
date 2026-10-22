@@ -26,7 +26,7 @@ import type { Prisma } from "@prisma/client";
 // ---- 共享解析底座（第五阶段）：解析/归一化/状态判定只有这一份实现 ----
 import type { EmployeeRecord, EmployeeStatus, ParseIssue } from "../lib/excel-import/types";
 import { parseWorkbook } from "../lib/excel-import/parser";
-import { dateFromIso } from "../lib/excel-import/normalization";
+import { dateFromIso, normalizeForCompare } from "../lib/excel-import/normalization";
 import { SPEC_BY_FIELD, STORED_SPECS } from "../lib/excel-import/field-mapping";
 // Stage 7.1.5（P0）：门店解析统一入口（ACTIVE 门店 > 指向 ACTIVE 门店的别名 > null）
 import { resolveStoreNamesBatch } from "../lib/store-service";
@@ -413,6 +413,10 @@ async function main() {
   const idSingle = new Map<string, number>(); // idCard -> empId（仅当唯一）
   const idCardsWithHire = new Set<string>(); // 有入职日期的身份证号
   const hireByEmpId = new Map<number, string | null>(); // empId -> 当前入职日期
+  // ⚠️ Stage 10.3：身份证号在源表里被两个人共用（同 ID 不同姓名）时，
+  // 旧逻辑会按「身份证唯一」合并并用后一行的值覆盖前一行的姓名/入职日期，
+  // 实测造成 3 条记录姓名错位。这里记录 empId → 姓名，合并前先比对姓名。
+  const nameByEmpId = new Map<number, string>();
   // 溯源键：来源 Sheet + 原始行号，持久化在 EmployeeSourceRow 表。
   // 这是「没有任何业务去重键」的行的最后兜底，也是重复执行导入幂等性的保证。
   const bySourceRow = new Map<string, number>();
@@ -447,6 +451,7 @@ async function main() {
     }
     if (hireIso) byNameHire.set(`${e.name}|${hireIso}`, e.id);
     if (e.phone) byNamePhone.set(`${e.name}|${e.phone}`, e.id);
+    nameByEmpId.set(e.id, e.name);
     hireByEmpId.set(e.id, hireIso);
   };
 
@@ -542,7 +547,21 @@ async function main() {
     //    且该记录缺少入职日期（或本行缺少入职日期）时使用，避免错误合并
     if (targetId === null && p.idCardKey && idSingle.has(p.idCardKey)) {
       const single = idSingle.get(p.idCardKey)!;
-      if (!hireIso) {
+      // ⚠️ Stage 10.3：同一个身份证号可能被两个不同姓名的人共用（原表填错）。
+      // 姓名不同 → 绝不能合并，否则会用本行的值覆盖掉别人的姓名/入职日期。
+      const existingName = normalizeForCompare("name", nameByEmpId.get(single) ?? "");
+      const rowName = normalizeForCompare("name", p.name ?? "");
+      if (existingName !== rowName) {
+        addIssue({
+          row: p.row,
+          name: p.name,
+          field: "身份证号",
+          rawValue: null,
+          type: "OTHER",
+          severity: "WARN",
+          message: `该身份证号在库中对应的是「${existingName ?? "（空）"}」，与本行姓名不同 —— 已按两条独立记录处理，不覆盖对方数据，请人工核对身份证号`,
+        });
+      } else if (!hireIso) {
         targetId = single;
         matchedBy = "idCardOnly";
         matchByIdCardOnly++;

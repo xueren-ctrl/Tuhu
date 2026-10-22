@@ -77,6 +77,15 @@ export function readCellValue(
     const t = String((v as { text?: unknown }).text ?? "");
     return t.replace(/\u3000/g, " ").trim() || null;
   }
+  // Excel 错误值（#N/A / #VALUE! / #NAME? …）：ExcelJS 给的是 { error: "#N/A" } 对象。
+  // ⚠️ 必须在这里拦下：早期版本会落到下方 String(v)，把整格写成「[object Object]」
+  //    （实测 6 条开户行被写脏，Stage 10.3 修复）。
+  if (typeof v === "object" && !(v instanceof Date) && "error" in v) {
+    const e = (v as { error?: unknown }).error;
+    const t = e === null || e === undefined ? "" : String(e).trim();
+    if (!t) return null;
+    return t.startsWith("#") ? t : `#${t}`;
+  }
 
   if (v instanceof Date) return isoDate(v);
 
