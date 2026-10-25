@@ -254,6 +254,8 @@ function employeeValues(
     // 原表第 41 列的重复「面试评估表」—— 必须单独输出，否则该列整列丢失
     docInterviewEvaluation2: s(e.docInterviewEvaluation2),
     docOnboardingForm: s(e.docOnboardingForm),
+    // 薪资表第 7 列「备注」：薪资说明在原表里可能记在「薪资待遇」列，也可能记在「备注」列
+    __salaryNote__: s(e.salaryTerms) || s(e.remark),
     hireDate: d(e.hireDate),
     resignDate: d(e.resignDate),
 
@@ -670,7 +672,8 @@ async function writeRecruitAndSalarySheets(
   /** 列号 → 字段（薪资表 R1 实测；第 6 列表头是合并的「首月保障」跨两列） */
   const SALARY_COLUMNS: (string | null)[] = [
     "__seq__", "storeId", "hireDate", "name", "jobGradeRaw", "firstMonthGuarantee",
-    "salaryTerms", "recruiterName", "mentorName", "docOnboardingForm",
+    // 第 7 列「备注」：原表这里记的是薪资说明，系统里可能落在 salaryTerms 或 remark
+    "__salaryNote__", "recruiterName", "mentorName", "docOnboardingForm",
     "docInterviewEvaluation", "certificateLevel", "remark3", "__work7days__", "__work2months__",
   ];
 
@@ -741,6 +744,12 @@ async function writeRecruitAndSalarySheets(
         if (e) {
           if (!field) continue;
           v = vals[field] ?? "";
+          // ⚠️ 档案里这一项是空的 → 退回原名单的值。
+          //    否则「已建档」的行会被空值覆盖（实测面试地点 16 处、招聘人 7 处丢失）。
+          if (v === "") {
+            const raw = String(cells[c - 1] ?? "").trim();
+            if (raw && raw !== NOT_FOUND) v = raw;
+          }
         } else {
           v = vals[`c${c}`] ?? "";
         }

@@ -294,16 +294,21 @@ export async function getAttrition({ month }: MonthParam): Promise<{
     //    店长行用 $C、技术店长行用 $D、副店长行用 $E）。
     //    ⛔ 早期版本让「技术店长顶替店长」取邀约，是错的 —— 已修正。
     const inviteName = p.storeManager ?? p.techManager;
+    // 没有店长/技术店长时，副店长占用本行（人工表：店长列空、副店长列填名字）
+    const soleDeputy = !inviteName && p.deputyManager ? p.deputyManager : null;
+    const inviteFor = inviteName ?? soleDeputy;
     rows.push({
       ...baseRow,
-      role: "STORE_MANAGER",
-      managerName: inviteName,
-      invites: inviteName ? invites.get(inviteName) ?? 0 : 0,
+      role: soleDeputy ? "DEPUTY_MANAGER" : "STORE_MANAGER",
+      managerName: inviteFor,
+      invites: inviteFor ? invites.get(inviteFor) ?? 0 : 0,
       headcountSource: hasBaseline ? "SNAPSHOT" : "COMPUTED",
     });
 
-    // 该店有副店长 → 追加一行，人数/流失率相同，只换邀约数量
-    if (p.deputyManager) {
+    // 该店有副店长 **且已有店长/技术店长** → 才追加一行（人数/流失率相同，只换邀约数量）。
+    // ⚠️ 没有店长的门店，副店长就填在本行里（人工表就是这么记的：
+    //    店长列空、副店长列填名字，不另起一行）。实测「大朗富华中路店」属于这种。
+    if (p.deputyManager && inviteName) {
       rows.push({
         ...baseRow,
         role: "DEPUTY_MANAGER",
