@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 导出 Excel（Stage 9.40 重写）
  *
  * ## 用户要求（2026-10-03）
@@ -138,9 +138,12 @@ const STAFF_COLUMNS: Record<string, (string | null)[]> = {
     "bankAccountNo", "idCardNo", "phone", "workPhone", "householdAddress",
   ],
   // 运营部离职：R1 = 字段名，18 列
+  // ⚠️ 原表第 9/10 列虽然表头是「劳动合同」「备注（薪资）」，实际填的是
+  //    **紧急联系人**和其电话（人工表就是这样记的）。这里按原表实际含义取值，
+  //    避免把姓名/电话写进劳动合同与薪资字段，也不污染「数据库」表。
   运营部离职: [
     "__seq__", "storeId", "hireDate", "__resignedTenure__", "name", "jobGradeRaw", "dormitory",
-    "socialInsurancePurchased", "laborContract", "salaryTerms", "bankBranch",
+    "socialInsurancePurchased", "emergencyContact1", "emergencyPhone1", "bankBranch",
     "bankAccountNo", "idCardNo", "phone", "workPhone", "householdAddress",
     "resignDate", "resignReason",
   ],
