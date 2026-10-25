@@ -442,7 +442,16 @@ export async function exportExcel(): Promise<ExportResult> {
       continue;
     }
     const cols = STAFF_COLUMNS[sheet];
-    const allRows = employees as unknown as Record<string, unknown>[];
+    // ⚠️ 同名可能有多个档案（同一人的多段任职/重复补录行）。
+    // 必须让"本表状态"的档案排在前面，否则「在职」表里同名的人可能配到已离职那条，
+    // 出现入职日期/工种全错（实测 29 行）。
+    const allRows = (employees as unknown as Record<string, unknown>[])
+      .slice()
+      .sort((a, b) => {
+        const sa = statuses.includes(String(a.status)) ? 0 : 1;
+        const sb = statuses.includes(String(b.status)) ? 0 : 1;
+        return sa - sb;
+      });
     const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow);
     const originalNames = entries.map((e) => e.name);
     // 迁移校验口径：行集合 = 原表行（顺序、行数不变）；
@@ -460,6 +469,14 @@ export async function exportExcel(): Promise<ExportResult> {
       targets.push(lastOriginalRow + (i - entries.length) + 1);
     }
 
+    // 原表的「序号」不能重算：人工表里有跳号/重复号，重算会整列错开。
+    // 先快照再回填，只有追加出来的新行才给新序号。
+    const seqBefore = new Map<number, string>();
+    for (const t of targets) {
+      const v = cellToText(ws.getRow(t).getCell(1).value);
+      if (v) seqBefore.set(t, v);
+    }
+
     // 先把整块数据区清空（原表残留值一律不留），再逐行写
     const clearTo = Math.max(tplLast, ...targets, layout.dataStart - 1);
     clearRange(ws, layout.dataStart, clearTo, 1, layout.lastCol);
@@ -472,7 +489,7 @@ export async function exportExcel(): Promise<ExportResult> {
       // 超出原模板数据区的行（追加的新员工）→ 沿用上一行格式
       if (target > tplLast) cloneRowStyle(ws, target - 1, target, layout.lastCol);
       const vals = employeeValues(rec, storeNames, posNames, now);
-      vals.__seq__ = String(i + 1); // 序号列 = 在本表里的行号
+      vals.__seq__ = seqBefore.get(target) ?? String(i + 1); // 原有行沿用原序号，新行才编号
       for (let c = 1; c <= cols.length; c++) {
         const field = cols[c - 1];
         if (!field) continue;
@@ -513,6 +530,12 @@ export async function exportExcel(): Promise<ExportResult> {
         targets.push(lastOriginalRow + (i - entries.length) + 1);
       }
       const clearTo = Math.max(tplLast, ...targets, layout.dataStart - 1);
+      // 序号沿用原表（人工表里有跳号），只给追加出来的新行编号
+      const seqBefore = new Map<number, string>();
+      for (const t of targets) {
+        const v = cellToText(ws.getRow(t).getCell(1).value);
+        if (v) seqBefore.set(t, v);
+      }
       clearRange(ws, layout.dataStart, clearTo, 1, layout.lastCol);
 
       let written = 0;
@@ -522,7 +545,7 @@ export async function exportExcel(): Promise<ExportResult> {
         if (!rec) continue;
         if (target > tplLast) cloneRowStyle(ws, target - 1, target, layout.lastCol);
         const vals = employeeValues(rec, storeNames, posNames, now);
-        vals.__seq__ = String(i + 1);
+        vals.__seq__ = seqBefore.get(target) ?? String(i + 1);
         for (let c = 1; c <= cols.length; c++) {
           const field = cols[c - 1];
           if (!field) continue;
@@ -552,6 +575,13 @@ export async function exportExcel(): Promise<ExportResult> {
         entries
       );
       const clearTo = Math.max(lastDataRow(ws, layout.dataStart, layout.lastCol), layout.dataStart + aligned.length - 1);
+      // 第 1 列「序号」是原表的分组序号（合并单元格），不能重写也不能清空
+      const seqBefore = new Map<number, string>();
+      for (let i = 0; i < aligned.length; i++) {
+        const t = layout.dataStart + i;
+        const v = cellToText(ws.getRow(t).getCell(1).value);
+        if (v) seqBefore.set(t, v);
+      }
       clearRange(ws, layout.dataStart, clearTo, 1, layout.lastCol);
 
       let written = 0;
@@ -569,7 +599,12 @@ export async function exportExcel(): Promise<ExportResult> {
         };
         for (let c = 1; c <= SI_COLUMNS.length; c++) {
           const field = SI_COLUMNS[c - 1];
-          if (!field) continue;
+          if (!field) {
+            // 序号列：把原值写回去（清除后需要恢复）
+            const seq = seqBefore.get(target);
+            if (seq) putCell(ws, target, c, seq);
+            continue;
+          }
           if (putCell(ws, target, c, vals[field] ?? "")) written++;
         }
       }
