@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 导出 Excel（Stage 9.40 重写）
  *
  * ## 用户要求（2026-10-03）
@@ -271,14 +271,14 @@ function employeeValues(
       if (!e.hireDate) return "";
       const ref = (e.resignDate as Date | null) ?? now;
       const days = Math.floor((ref.getTime() - (e.hireDate as Date).getTime()) / 86_400_000);
-      return days >= 7 ? "入职满7天" : "未满7天";
+      return days >= 7 ? "入职满7天" : "未达7天";
     }, ""),
     __work2months__: safe(() => {
       if (!e.hireDate) return "";
       const ref = (e.resignDate as Date | null) ?? now;
       const done = hasCompletedTwoMonths(e.hireDate as Date, ref);
       if (done === null) return "";
-      return done ? "入职满2个月" : "未满2个月";
+      return done ? "入职满2个月" : "未达2个月";
     }, ""),
   };
 }

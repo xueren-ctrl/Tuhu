@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 员工驱动的「表」数据服务（Stage 9）
  *
  * 各表（在职 / 离职 / 南昌3店 / 运营部 / 招聘面试登记表 / 运营部离职 / 薪资表 / 数据库）
@@ -176,7 +176,7 @@ function cellValue(emp: EmployeeLite, source: string, now: Date): string {
       if (!emp.hireDate) return "";
       const ref = (emp.resignDate as Date | null) ?? now;
       const days = Math.floor((ref.getTime() - (emp.hireDate as Date).getTime()) / 86_400_000);
-      return days >= 7 ? "入职满7天" : "未满7天";
+      return days >= 7 ? "入职满7天" : "未达7天";
     }
     case COMPUTED.WORK_2MONTHS: {
       if (!emp.hireDate) return "";
@@ -184,7 +184,7 @@ function cellValue(emp: EmployeeLite, source: string, now: Date): string {
       const ref = (emp.resignDate as Date | null) ?? now;
       const done = hasCompletedTwoMonths(emp.hireDate as Date, ref);
       if (done === null) return "";
-      return done ? "入职满2个月" : "未满2个月";
+      return done ? "入职满2个月" : "未达2个月";
     }
     case COMPUTED.SEQ:
       return "";
@@ -301,3 +301,4 @@ export async function loadEmployeeSheet(
 
   return { sheet, columns, rows, origin };
 }
+
