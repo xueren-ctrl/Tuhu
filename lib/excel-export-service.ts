@@ -875,13 +875,15 @@ async function writeStatSheets(wb: ExcelJS.Workbook): Promise<ExportResult["stat
           }
           if (putCell(ws, sumRow, c, s)) written++;
         }
-        // 18~21 缺编四列的合计（负数 = 超编，原样相加；Excel R 列汇总才是 SUMIF(">0")）
+        // 18~21 缺编四列的合计：**只累加正数**（Excel 原表就是 SUMIF(">0")）。
+        // ⚠️ 早先直接相加，超编门店的负数会抵消其它门店的缺口，合计出现 -9 / -8
+        //    这种不可能的数字（人工表合计是 7 / 4）。
         for (let c = 18; c <= 21; c++) {
           let s = 0;
           for (const r of hc.rows) {
             const v =
               c === 18 ? r.gap.total : c === 19 ? r.gap.mechanic : c === 20 ? r.gap.beauty : r.gap.serviceManager;
-            if (typeof v === "number") s += v;
+            if (typeof v === "number" && v > 0) s += v;
           }
           if (putCell(ws, sumRow, c, s)) written++;
         }
