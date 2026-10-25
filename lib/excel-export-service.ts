@@ -154,8 +154,9 @@ const STAFF_COLUMNS: Record<string, (string | null)[]> = {
     "resignReason", "resignDate", "recruiterName",
   ],
   // 数据库：R2 = 字段名，46 列。R1 是一行示例数据（不是表头）
-  // ⚠️ 第 41 列也是「面试评估表」—— 那是薪资表的重复列（Stage 9.36 已合并），
-  //    原表保留了这一列，导出时留空（与原表一致，不写重复值）。
+  // ⚠️ 第 41 列也是「面试评估表」—— 原表的重复列。Stage 10.4 起改为按
+  //    docInterviewEvaluation2 原样导出：原表这一列是有值的（部分行与第 35 列不同），
+  //    早先「留空以保持与原表一致」的判断是错的，会导致 300+ 行内容丢失。
   数据库: [
     "__seq__", "storeId", "hireDate", "__tenureAny__", "name", "idCardNo", "phone",
     "jobGradeRaw", "positionNote", "dormitory", "socialInsurancePurchased",
@@ -165,7 +166,7 @@ const STAFF_COLUMNS: Record<string, (string | null)[]> = {
     "recruiterName", "resignReason", "resignDate", "__age__", "interviewDate",
     "interviewLocation", "interviewResult", "interviewerName", "interviewHired",
     "docResume", "docInterviewEvaluation", "__resignedTenure__", "firstMonthGuarantee",
-    "remark", "mentorName", "docOnboardingForm", null, "certificateLevel", "remark3",
+    "remark", "mentorName", "docOnboardingForm", "docInterviewEvaluation2", "certificateLevel", "remark3",
     "__work7days__", "__work2months__", "minorNote",
   ],
 };
@@ -250,6 +251,8 @@ function employeeValues(
     interviewHired: s(e.interviewHired),
     docResume: s(e.docResume),
     docInterviewEvaluation: s(e.docInterviewEvaluation),
+    // 原表第 41 列的重复「面试评估表」—— 必须单独输出，否则该列整列丢失
+    docInterviewEvaluation2: s(e.docInterviewEvaluation2),
     docOnboardingForm: s(e.docOnboardingForm),
     hireDate: d(e.hireDate),
     resignDate: d(e.resignDate),
@@ -287,25 +290,44 @@ function safe(fn: () => string, fallback: string): string {
   }
 }
 
-/** 读原表某列的姓名顺序（保持用户手工排好的门店分组顺序） */
-function readOriginalOrder(ws: ExcelJS.Worksheet, nameCol: number, headerRow: number): string[] {
-  const out: string[] = [];
+/**
+ * 读原表某列的姓名及其**原始行号**（保持用户手工排好的门店分组顺序）。
+ *
+ * ⚠️ 必须带行号：人工表的「数据库」Sheet 中间有空行/断行，
+ * 如果紧凑写入就会整体错行（实测 1880 行错位）。行号用于"原位回填"。
+ */
+function readOriginalOrder(
+  ws: ExcelJS.Worksheet,
+  nameCol: number,
+  headerRow: number
+): { row: number; name: string }[] {
+  const out: { row: number; name: string }[] = [];
   if (nameCol <= 0) return out;
   for (let r = headerRow + 1; r <= ws.rowCount; r++) {
     const nm = cellToText(ws.getRow(r).getCell(nameCol).value);
-    if (nm) out.push(nm);
+    if (nm) out.push({ row: r, name: nm });
   }
   return out;
 }
 
 /**
- * 按原表顺序对齐；原表有但库里没有的 → null 占位（清空该行）；
- * 库里多出来的（新增员工）→ 追加到末尾
+ * 按原表顺序对齐。
+ *
+ * - 原表有、库中无 → null 占位（该行留空）
+ * - 原表同名多行（人工表里的重复补录行）→ 默认复用同一条档案数据，避免出现"空行"
+ *   （opts.reuseExhausted）
+ * - 库中多出来的 → 按 opts.append 决定是否追加到末尾
+ *   默认全部追加；迁移校验场景只追加「导入之后新增」的员工（importBatch 为空）
  */
 function alignToOriginalOrder(
   originalNames: string[],
-  rows: Record<string, unknown>[]
+  rows: Record<string, unknown>[],
+  opts: {
+    append?: (r: Record<string, unknown>) => boolean;
+    reuseExhausted?: boolean;
+  } = {}
 ): (Record<string, unknown> | null)[] {
+  const { append = () => true, reuseExhausted = false } = opts;
   const byName = new Map<string, Record<string, unknown>[]>();
   for (const r of rows) {
     const k = String(r.name ?? "");
@@ -320,11 +342,15 @@ function alignToOriginalOrder(
     if (bucket && i < bucket.length) {
       aligned.push(bucket[i]);
       used.set(nm, i + 1);
+    } else if (bucket && bucket.length > 0 && reuseExhausted) {
+      // 同名多行但库里只有 1 条档案 → 复用第一条，保持行数与人工表一致
+      aligned.push(bucket[0]);
     } else {
       aligned.push(null);
     }
   }
   for (const r of rows) {
+    if (!append(r)) continue;
     const nm = String(r.name ?? "");
     const i = used.get(nm) ?? 0;
     const bucket = byName.get(nm) ?? [];
@@ -344,6 +370,36 @@ function lastDataRow(ws: ExcelJS.Worksheet, dataStart: number, lastCol: number):
     }
   }
   return dataStart - 1;
+}
+
+/**
+ * 追加行套用上一行的格式（字体/边框/底纹/数字格式/对齐/行高）。
+ * 用于「导入之后新增的员工」——原模板里没有这一行的样式，不复制就会是白板行。
+ */
+function cloneRowStyle(ws: ExcelJS.Worksheet, fromRow: number, toRow: number, lastCol: number): void {
+  const src = ws.getRow(fromRow);
+  const dst = ws.getRow(toRow);
+  if (src.height != null) dst.height = src.height;
+  for (let c = 1; c <= lastCol; c++) {
+    const s = src.getCell(c).style;
+    if (s) dst.getCell(c).style = JSON.parse(JSON.stringify(s));
+  }
+}
+
+/** 导出前把整本工作簿的隐藏行、隐藏列全部取消（用户要求"不要带隐藏行列"） */
+function unhideAll(wb: ExcelJS.Workbook): void {
+  wb.eachSheet((ws) => {
+    const rowCount = ws.rowCount;
+    for (let r = 1; r <= rowCount; r++) {
+      const row = ws.getRow(r);
+      if (row.hidden) row.hidden = false;
+    }
+    const colCount = ws.columnCount;
+    for (let c = 1; c <= colCount; c++) {
+      const col = ws.getColumn(c);
+      if (col.hidden) col.hidden = false;
+    }
+  });
 }
 
 export interface ExportResult {
@@ -375,13 +431,6 @@ export async function exportExcel(): Promise<ExportResult> {
   const posNames = new Map(positions.map((p) => [p.id, p.name]));
   const now = new Date();
 
-  const byStatus = new Map<string, Record<string, unknown>[]>();
-  for (const e of employees as unknown as Record<string, unknown>[]) {
-    const st = String(e.status);
-    if (!byStatus.has(st)) byStatus.set(st, []);
-    byStatus.get(st)!.push(e);
-  }
-
   const stats: ExportResult["stats"] = [];
 
   // ---------- ② 人员类表：逐格写实时值 ----------
@@ -393,19 +442,35 @@ export async function exportExcel(): Promise<ExportResult> {
       continue;
     }
     const cols = STAFF_COLUMNS[sheet];
-    const rows = statuses.flatMap((st) => byStatus.get(st) ?? []);
-    const originalNames = readOriginalOrder(ws, layout.nameCol, layout.headerRow);
-    const aligned = alignToOriginalOrder(originalNames, rows);
+    const allRows = employees as unknown as Record<string, unknown>[];
+    const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow);
+    const originalNames = entries.map((e) => e.name);
+    // 迁移校验口径：行集合 = 原表行（顺序、行数不变）；
+    // 同名多行复用同一条档案；只有「导入之后新增」的员工才追加到末尾
+    const aligned = alignToOriginalOrder(originalNames, allRows, {
+      reuseExhausted: true,
+      append: (r) => !r.importBatch && statuses.includes(String(r.status)),
+    });
+
+    // 写入的物理行号：原有行按原行号回填，追加的新员工接在最后一行之后
+    const tplLast = lastDataRow(ws, layout.dataStart, layout.lastCol);
+    const lastOriginalRow = entries.length ? entries[entries.length - 1].row : layout.dataStart - 1;
+    const targets: number[] = entries.map((e) => e.row);
+    for (let i = entries.length; i < aligned.length; i++) {
+      targets.push(lastOriginalRow + (i - entries.length) + 1);
+    }
 
     // 先把整块数据区清空（原表残留值一律不留），再逐行写
-    const clearTo = Math.max(lastDataRow(ws, layout.dataStart, layout.lastCol), layout.dataStart + aligned.length - 1);
+    const clearTo = Math.max(tplLast, ...targets, layout.dataStart - 1);
     clearRange(ws, layout.dataStart, clearTo, 1, layout.lastCol);
 
     let written = 0;
     for (let i = 0; i < aligned.length; i++) {
-      const target = layout.dataStart + i;
+      const target = targets[i];
       const rec = aligned[i];
       if (!rec) continue; // 库中已无此人 → 保持清空
+      // 超出原模板数据区的行（追加的新员工）→ 沿用上一行格式
+      if (target > tplLast) cloneRowStyle(ws, target - 1, target, layout.lastCol);
       const vals = employeeValues(rec, storeNames, posNames, now);
       vals.__seq__ = String(i + 1); // 序号列 = 在本表里的行号
       for (let c = 1; c <= cols.length; c++) {
@@ -434,16 +499,28 @@ export async function exportExcel(): Promise<ExportResult> {
     if (ws && layout) {
       const cols = STAFF_COLUMNS[sheet];
       const rows = employees as unknown as Record<string, unknown>[];
-      const originalNames = readOriginalOrder(ws, layout.nameCol, layout.headerRow);
-      const aligned = alignToOriginalOrder(originalNames, rows);
-      const clearTo = Math.max(lastDataRow(ws, layout.dataStart, layout.lastCol), layout.dataStart + aligned.length - 1);
+      const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow);
+      const originalNames = entries.map((e) => e.name);
+      // 同 ②：行集合 = 原表行；只追加导入之后新增的员工
+      const aligned = alignToOriginalOrder(originalNames, rows, {
+        reuseExhausted: true,
+        append: (r) => !r.importBatch,
+      });
+      const tplLast = lastDataRow(ws, layout.dataStart, layout.lastCol);
+      const lastOriginalRow = entries.length ? entries[entries.length - 1].row : layout.dataStart - 1;
+      const targets: number[] = entries.map((e) => e.row);
+      for (let i = entries.length; i < aligned.length; i++) {
+        targets.push(lastOriginalRow + (i - entries.length) + 1);
+      }
+      const clearTo = Math.max(tplLast, ...targets, layout.dataStart - 1);
       clearRange(ws, layout.dataStart, clearTo, 1, layout.lastCol);
 
       let written = 0;
       for (let i = 0; i < aligned.length; i++) {
-        const target = layout.dataStart + i;
+        const target = targets[i];
         const rec = aligned[i];
         if (!rec) continue;
+        if (target > tplLast) cloneRowStyle(ws, target - 1, target, layout.lastCol);
         const vals = employeeValues(rec, storeNames, posNames, now);
         vals.__seq__ = String(i + 1);
         for (let c = 1; c <= cols.length; c++) {
@@ -471,7 +548,7 @@ export async function exportExcel(): Promise<ExportResult> {
     if (ws && layout) {
       const entries = siEntries as unknown as Record<string, unknown>[];
       const aligned = alignToOriginalOrder(
-        readOriginalOrder(ws, layout.nameCol, layout.headerRow),
+        readOriginalOrder(ws, layout.nameCol, layout.headerRow).map((e) => e.name),
         entries
       );
       const clearTo = Math.max(lastDataRow(ws, layout.dataStart, layout.lastCol), layout.dataStart + aligned.length - 1);
@@ -512,6 +589,9 @@ export async function exportExcel(): Promise<ExportResult> {
 
   // ---------- ⑥ 统计类表：实时计算写入（复用页面同一服务） ----------
   stats.push(...(await writeStatSheets(wb)));
+
+  // ---------- ⑦ 取消全部隐藏行 / 隐藏列（原模板里离职表 F~O 列是隐藏的） ----------
+  unhideAll(wb);
 
   const out = await wb.xlsx.writeBuffer();
   const d = new Date();
