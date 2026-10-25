@@ -12,6 +12,7 @@ export const maxDuration = 120;
  * 以**原始 `途虎HR人员登记.xlsx` 为底模**，把数据库最新数据回填到对应单元格。
  * 目标（用户 2026-10-02 要求）：导出后跟原 Excel 一模一样，只是数据更新了。
  *
+ * - `?month=YYYY-MM` 指定「人员流失率」的统计月份（默认当前月）
  * - `?report=1` 返回导出明细（各 Sheet 回填了多少格），用于页面展示核对
  * - 否则直接返回 xlsx 文件流下载
  */
@@ -20,10 +21,14 @@ export async function GET(req: Request) {
   if (auth instanceof Response) return auth;
 
   try {
-    const { buffer, filename, stats } = await exportExcel();
+    const sp = new URL(req.url).searchParams;
+    // 月份只接受 YYYY-MM；非法值忽略，回落到当前月
+    const rawMonth = (sp.get("month") ?? "").trim();
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(rawMonth) ? rawMonth : undefined;
+    const { buffer, filename, stats } = await exportExcel({ month });
 
-    if (new URL(req.url).searchParams.get("report") === "1") {
-      return NextResponse.json({ ok: true, data: { filename, stats } });
+    if (sp.get("report") === "1") {
+      return NextResponse.json({ ok: true, data: { filename, month: month ?? "当前月", stats } });
     }
 
     return new NextResponse(new Uint8Array(buffer), {

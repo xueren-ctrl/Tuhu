@@ -124,6 +124,12 @@ export function defaultMonth(now = new Date()): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+/** 当前月份（YYYY-MM）—— 导出默认用它，避免「10 月导出还是 9 月」 */
+export function currentMonth(now = new Date()): string {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 /** 入职是否满 3 个自然月（截至 asOf） */
 function hiredAtLeast3MonthsAgo(hireDate: Date | null, asOf: Date): boolean {
   if (!hireDate) return false;

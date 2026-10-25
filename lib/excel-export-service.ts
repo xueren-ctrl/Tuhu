@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 导出 Excel（Stage 9.40 重写）
  *
  * ## 用户要求（2026-10-03）
@@ -42,7 +42,7 @@ import { flattenFormulas, putCell, clearRange } from "./excel-export-helpers";
 import { EMPLOYEE_STATUS_LABEL } from "./constants";
 // 统计表口径**直接复用页面所用的服务**，绝不在导出里另写一套算法
 import { getStoreHeadcount } from "./headcount-service";
-import { getAttrition, defaultMonth, parseMonth } from "./attrition-service";
+import { getAttrition, currentMonth, parseMonth } from "./attrition-service";
 import { getDistribution, DISTRIBUTION_GRADES } from "./distribution-service";
 
 /** 原始 Excel（只读，永不写） */
@@ -418,7 +418,8 @@ export interface ExportResult {
 /**
  * 导出 Excel —— 纯数据、零公式
  */
-export async function exportExcel(): Promise<ExportResult> {
+export async function exportExcel(opts: { month?: string } = {}): Promise<ExportResult> {
+  const month = opts.month?.trim() || currentMonth();
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(SOURCE_XLSX);
 
@@ -628,7 +629,7 @@ export async function exportExcel(): Promise<ExportResult> {
   stats.push(...(await writeRecruitAndSalarySheets(wb, storeNames, now)));
 
   // ---------- ⑥ 统计类表：实时计算写入（复用页面同一服务） ----------
-  stats.push(...(await writeStatSheets(wb)));
+  stats.push(...(await writeStatSheets(wb, month)));
 
   // ---------- ⑦ 取消全部隐藏行 / 隐藏列（原模板里离职表 F~O 列是隐藏的） ----------
   unhideAll(wb);
@@ -794,9 +795,9 @@ function safeParseCells(json: string): string[] {
  * 之前这些格全是公式（COUNTIFS / SUMPRODUCT / TEXTJOIN / LET），手机上看是空的；
  * 现在全部写死为常量值。
  */
-async function writeStatSheets(wb: ExcelJS.Workbook): Promise<ExportResult["stats"]> {
+async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<ExportResult["stats"]> {
   const out: ExportResult["stats"] = [];
-  const month = defaultMonth();
+  
 
   const [hc, dist, attrition] = await Promise.all([
     getStoreHeadcount(),
@@ -992,3 +993,6 @@ async function writeStatSheets(wb: ExcelJS.Workbook): Promise<ExportResult["stat
 }
 
 export { LAYOUT, cellToText, normTitle };
+
+
+
