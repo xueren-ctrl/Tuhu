@@ -38,7 +38,7 @@ const EMPTY = {
   remark: "",
 };
 
-/** 门店管理：新增 / 编辑 / 停用 / 搜索 */
+/** 门店管理：新增 / 编辑 / 停用 / 删除 / 搜索 */
 export default function StoreManager() {
   const [rows, setRows] = useState<StoreRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,6 +52,11 @@ export default function StoreManager() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
+  // 站内确认框（替代 window.confirm：无头/自动化浏览器会自动驳回原生 confirm）
+  const [confirmAction, setConfirmAction] = useState<{
+    type: "toggle" | "delete";
+    row: StoreRow;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -133,15 +138,8 @@ export default function StoreManager() {
 
   const toggleStatus = async (r: StoreRow) => {
     const next = r.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
-    if (
-      !window.confirm(
-        next === "INACTIVE"
-          ? `确认停用门店「${r.name}」？\n停用后不影响已关联的 ${r.employeeCount} 名员工档案，只是不再出现在新表单的下拉选项中。`
-          : `确认启用门店「${r.name}」？`
-      )
-    )
-      return;
     setBusy(true);
+    setError("");
     try {
       const res = await fetch(`/api/stores/${r.id}`, {
         method: "PATCH",
@@ -157,6 +155,31 @@ export default function StoreManager() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const deleteStore = async (r: StoreRow) => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/stores/${r.id}`, { method: "DELETE" });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || "删除失败");
+      setMsg("门店已删除");
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 确认框里点「确认」：按 confirmAction.type 执行对应操作 */
+  const runConfirmed = async () => {
+    if (!confirmAction) return;
+    const { type, row } = confirmAction;
+    setConfirmAction(null);
+    if (type === "delete") await deleteStore(row);
+    else await toggleStatus(row);
   };
 
   return (
@@ -218,7 +241,7 @@ export default function StoreManager() {
                   <th className="px-3 py-2.5 font-medium">在职员工</th>
                   <th className="px-3 py-2.5 font-medium">状态</th>
                   <th className="px-3 py-2.5 font-medium">备注</th>
-                  <th className="px-4 py-2.5 font-medium w-[150px]">操作</th>
+                  <th className="px-4 py-2.5 font-medium w-[210px]">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -258,10 +281,25 @@ export default function StoreManager() {
                           size="sm"
                           variant="ghost"
                           className={r.status === "ACTIVE" ? "text-red-600" : "text-emerald-600"}
-                          onClick={() => void toggleStatus(r)}
+                          onClick={() => {
+                            setError("");
+                            setConfirmAction({ type: "toggle", row: r });
+                          }}
                           disabled={busy}
                         >
                           {r.status === "ACTIVE" ? "停用" : "启用"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-red-600"
+                          onClick={() => {
+                            setError("");
+                            setConfirmAction({ type: "delete", row: r });
+                          }}
+                          disabled={busy}
+                        >
+                          删除
                         </Button>
                       </div>
                     </td>
@@ -272,6 +310,59 @@ export default function StoreManager() {
           </div>
         )}
       </Card>
+
+      <Modal
+        open={confirmAction !== null}
+        width="w-[460px]"
+        title={
+          confirmAction?.type === "delete"
+            ? `删除门店：${confirmAction.row.name}`
+            : confirmAction?.row.status === "ACTIVE"
+              ? `停用门店：${confirmAction?.row.name ?? ""}`
+              : `启用门店：${confirmAction?.row.name ?? ""}`
+        }
+        onClose={() => {
+          if (!busy) setConfirmAction(null);
+        }}
+        footer={
+          <>
+            <Button onClick={() => setConfirmAction(null)} disabled={busy}>
+              取消
+            </Button>
+            <Button
+              variant={confirmAction?.type === "delete" ? "danger" : "primary"}
+              onClick={() => void runConfirmed()}
+              loading={busy}
+            >
+              确认{confirmAction?.type === "delete" ? "删除" : ""}
+            </Button>
+          </>
+        }
+      >
+        {confirmAction?.type === "delete" ? (
+          <div className="space-y-2 text-[13px] text-slate-600">
+            <p>
+              确认删除门店「{confirmAction.row.name}」？删除后无法恢复。
+            </p>
+            <p className="text-slate-500">
+              有关联员工的门店不能删除（该门店当前在职员工：
+              {confirmAction.row.employeeCount} 名）。如仍需下线，请改用「停用」。
+            </p>
+          </div>
+        ) : confirmAction?.row.status === "ACTIVE" ? (
+          <div className="space-y-2 text-[13px] text-slate-600">
+            <p>确认停用门店「{confirmAction.row.name}」？</p>
+            <p className="text-slate-500">
+              停用后不影响已关联的 {confirmAction.row.employeeCount}{" "}
+              名员工档案，只是不再出现在新表单的下拉选项中。
+            </p>
+          </div>
+        ) : (
+          <div className="text-[13px] text-slate-600">
+            确认启用门店「{confirmAction?.row.name ?? ""}」？
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={open}
