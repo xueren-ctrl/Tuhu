@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { setStoreStatus, updateStore } from "@/lib/settings-service";
+import { deleteStore, setStoreStatus, updateStore } from "@/lib/settings-service";
 import { formatZodError, storeSchema } from "@/lib/validation";
 import { requireApiUser } from "@/lib/auth";
 import { operatorFromRequest } from "@/lib/operator";
@@ -53,6 +53,26 @@ export async function PATCH(req: Request, ctx: Ctx) {
     }
     const updated = await setStoreStatus(numId, body.status, await operatorFromRequest(req));
     return NextResponse.json({ ok: true, data: updated });
+  } catch (e) {
+    return NextResponse.json(
+      { ok: false, error: (e as Error).message },
+      { status: 400 }
+    );
+  }
+}
+
+/** DELETE /api/stores/:id —— 删除门店（仅当无员工关联时） */
+export async function DELETE(req: Request, ctx: Ctx) {
+  const auth = await requireApiUser(req);
+  if (auth instanceof Response) return auth;
+  try {
+    const { id } = await ctx.params;
+    const numId = Number(id);
+    if (!Number.isFinite(numId) || numId <= 0) {
+      return NextResponse.json({ ok: false, error: "无效的门店 ID" }, { status: 400 });
+    }
+    const deleted = await deleteStore(numId, await operatorFromRequest(req));
+    return NextResponse.json({ ok: true, data: deleted });
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: (e as Error).message },
