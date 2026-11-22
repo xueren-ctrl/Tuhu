@@ -110,6 +110,27 @@ export async function setStoreStatus(
   return s;
 }
 
+/** 删除门店（仅当无员工关联时；Employee.storeId 是 Cascade，必须挡住级联删员工） */
+export async function deleteStore(id: number, actor?: string | null) {
+  const existing = await prisma.store.findUnique({ where: { id } });
+  if (!existing) throw new Error("门店不存在");
+  // 关键安全 guard：Employee.storeId 是 onDelete: Cascade，
+  // 直接删有员工的门店会级联删掉员工档案，必须拒绝。
+  const n = await prisma.employee.count({ where: { storeId: id } });
+  if (n > 0) throw new Error(`门店「${existing.name}」仍有 ${n} 名员工，不能删除；请先将员工调离或停用该门店`);
+  const s = await prisma.store.delete({ where: { id } });
+  await prisma.auditLog.create({
+    data: {
+      action: "DELETE",
+      entity: "Store",
+      entityId: String(id),
+      actor: actor ?? null,
+      summary: `删除门店 ${existing.name}`,
+    },
+  });
+  return s;
+}
+
 // ---------------------------- 职位 ----------------------------
 
 export async function listPositions(opts?: {
