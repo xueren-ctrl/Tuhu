@@ -171,9 +171,23 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
         field: "phone",
         rawValue: cPhone,
         type: "FIELD_MISPLACED",
-        message: "「联系电话」列内为 18 位身份证号，已归位到身份证号字段；原电话值缺失",
+        message: "「联系电话」列内为 18 位身份证号，已归位到身份证号字段",
       });
-      if (looksBankCard(cIdCard)) {
+      if (looksMobile(cIdCard)) {
+        // ★ 2026-11-24 修：身份证/电话互换的另一半 —— 身份证列里是 11 位手机号，
+        //    必须归位到联系电话字段。旧逻辑只纠了身份证、把手机号丢了，
+        //    实测 37 人的电话因此丢失（罗建柔、陈俊杰、唐跃彬等）。
+        phone = cIdCard;
+        flags.push("手机号填写在「身份证号」列，已按内容归位到联系电话字段");
+        collector.add({
+          row: r,
+          name,
+          field: "idCardNo",
+          rawValue: cIdCard,
+          type: "FIELD_MISPLACED",
+          message: "「身份证号」列内为 11 位手机号，已归位到联系电话字段",
+        });
+      } else if (looksBankCard(cIdCard)) {
         if (!cBank) {
           cBank = cIdCard;
           flags.push("银行卡号填写在「身份证号」列，已按内容归位到银行卡账号字段");
@@ -337,7 +351,8 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
       flags.push(`入职日期异常（${hireRaw}）`);
     }
 
-    const interviewRaw = read(29);
+    // ⚠️ 2026-11-24 修：原表只有 45 列、无「薪资待遇」列，面试时间在 28 列（旧版误读 29 列）。
+    const interviewRaw = read(28);
     const interviewDate = parseDateIso(interviewRaw);
     if (interviewRaw && !interviewDate) {
       collector.add({
@@ -351,8 +366,10 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
     }
 
     // ---------- 3.3 离职信息与状态 ----------
-    const resignRawText = read(27);
-    const resignReason = read(26);
+    // ⚠️ 2026-11-24 修：原表只有 45 列、无「薪资待遇」列，离职原因在 25 列、
+    //    备注（离职日期）在 26 列（旧版误读 26/27 列，离职原因读进了备注文本）。
+    const resignRawText = read(26);
+    const resignReason = read(25);
     const resignDate = parseDateIso(resignRawText);
 
     const rosterKey = `${name}|${hireDate ?? ""}`;
@@ -372,7 +389,8 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
     flags.push(...st.flags);
 
     // ---------- 3.4 年龄 ----------
-    const ageRaw = read(28);
+    // ⚠️ 2026-11-24 修：原表只有 45 列、无「薪资待遇」列，年龄在 27 列（旧版误读 28 列）。
+    const ageRaw = read(27);
     let age: number | null = null;
     if (ageRaw) {
       const n = Number(ageRaw.replace(/[^\d]/g, ""));

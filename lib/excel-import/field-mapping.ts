@@ -1,10 +1,18 @@
 /**
- * Excel「数据库」Sheet —— 46 列字段映射（第五阶段）
+ * Excel「数据库」Sheet —— 45 列字段映射（第五阶段）
  *
  * 这是**唯一**的列定义来源。正式导入与导入预览都从这里取列号、
  * 取值方式与字段中文名，任何一方都不得再写一份 COL。
  *
  * 列顺序被改动会导致身份证号写进银行卡列，因此在解析前会先校验关键列的表头文字。
+ *
+ * ⚠️ 2026-11-24 修：原表实际只有 45 列，**没有「薪资待遇」列**
+ *    （表头实测：W 现居住地址、X 招聘人、Y 离职原因、Z 备注……）。
+ *    旧版误以为 46 列、在 23 列放了薪资待遇，导致 23 列之后全部错位 +1：
+ *    现居住地址读进了招聘人名、离职原因读进了备注日期、首月保障读进了
+ *    备注文本、resignDate/interviewDate/age 全读空（库里 2004/2004 为空）。
+ *    已删除 salaryTerms 规格，23–46 列各减 1。salaryTerms 字段本身保留在
+ *    Employee 模型里（南昌3店导出仍读它，值为 null 时留空即可）。
  */
 import type { FieldSpec } from "./types";
 
@@ -14,7 +22,7 @@ export const SEQ_COL = 1;
 /**
  * 全部字段规格。
  * 说明：col 为 0 表示**派生字段**（不由单元格直接读取，而是由其它列推导）。
- * 同一列允许出现多条规格（例：第 27 列既产出 resignDate 又产出 resignDateRaw）。
+ * 同一列允许出现多条规格（例：第 26 列既产出 resignDate 又产出 resignDateRaw）。
  */
 export const FIELD_SPECS: FieldSpec[] = [
   { col: 1, field: "seqNo", label: "序号", kind: "text", sensitive: false, header: "序号", comparable: false },
@@ -40,32 +48,31 @@ export const FIELD_SPECS: FieldSpec[] = [
   { col: 20, field: "onboardingMedical", label: "入职体检", kind: "text", sensitive: false, header: "入职体检", comparable: true },
   { col: 21, field: "bankBranch", label: "开户行", kind: "text", sensitive: false, header: "工资卡的开户银行支行", comparable: true },
   { col: 22, field: "bankAccountNo", label: "银行卡账号", kind: "digits", sensitive: true, header: "银行卡账号", comparable: true },
-  { col: 23, field: "salaryTerms", label: "薪资待遇", kind: "text", sensitive: true, header: "薪资待遇", comparable: true },
-  { col: 24, field: "currentAddress", label: "现居住地址", kind: "text", sensitive: true, header: "现居住地址", comparable: true },
-  { col: 25, field: "recruiterName", label: "招聘人", kind: "text", sensitive: false, header: "招聘人", comparable: true },
-  { col: 26, field: "resignReason", label: "离职原因", kind: "text", sensitive: false, header: "离职原因", comparable: true },
-  { col: 27, field: "resignDateRaw", label: "备注（离职日期原文）", kind: "raw", sensitive: false, header: "备注", comparable: true },
-  { col: 27, field: "resignDate", label: "离职日期", kind: "date", sensitive: false, header: "备注", comparable: true },
-  { col: 28, field: "ageRaw", label: "年龄（原文）", kind: "raw", sensitive: false, header: "年龄", comparable: true },
-  { col: 28, field: "age", label: "年龄", kind: "int", sensitive: false, header: "年龄", comparable: true },
-  { col: 29, field: "interviewDate", label: "面试时间", kind: "date", sensitive: false, header: "面试时间", comparable: true },
-  { col: 30, field: "interviewLocation", label: "面试地点", kind: "text", sensitive: false, header: "面试地点", comparable: true },
-  { col: 31, field: "interviewResult", label: "面试结果", kind: "text", sensitive: false, header: "面试结果", comparable: true },
-  { col: 32, field: "interviewerName", label: "面试人", kind: "text", sensitive: false, header: "面试人", comparable: true },
-  { col: 33, field: "interviewHired", label: "是否入职", kind: "text", sensitive: false, header: "是否入职", comparable: true },
-  { col: 34, field: "docResume", label: "简历表", kind: "text", sensitive: false, header: "简历表", comparable: true },
-  { col: 35, field: "docInterviewEvaluation", label: "面试评估表", kind: "text", sensitive: false, header: "面试评估表", comparable: true },
-  { col: 36, field: "resignedTenureText", label: "在职年限（离职）", kind: "text", sensitive: false, header: "在职年限", comparable: true },
-  { col: 37, field: "firstMonthGuarantee", label: "首月保障", kind: "text", sensitive: true, header: "首月保障", comparable: true },
-  { col: 38, field: "remark", label: "备注", kind: "text", sensitive: false, header: "备注", comparable: true },
-  { col: 39, field: "mentorName", label: "带教人", kind: "text", sensitive: false, header: "带教人", comparable: true },
-  { col: 40, field: "docOnboardingForm", label: "入职表", kind: "text", sensitive: false, header: "入职表", comparable: true },
-  { col: 41, field: "docInterviewEvaluation2", label: "面试评估表（重复列）", kind: "text", sensitive: false, header: "面试评估表", comparable: true },
-  { col: 42, field: "certificateLevel", label: "证书级别", kind: "text", sensitive: false, header: "证书级别", comparable: true },
-  { col: 43, field: "remark3", label: "备注（重复列）", kind: "text", sensitive: false, header: "备注", comparable: true },
-  { col: 44, field: "computed7Days", label: "是否满7天", kind: "text", sensitive: false, header: "是否满7天", comparable: true },
-  { col: 45, field: "computed2Months", label: "是否满2个月", kind: "text", sensitive: false, header: "是否入职满2个月", comparable: true },
-  { col: 46, field: "minorNote", label: "未成年备注", kind: "text", sensitive: false, header: "未成年备注", comparable: true },
+  { col: 23, field: "currentAddress", label: "现居住地址", kind: "text", sensitive: true, header: "现居住地址", comparable: true },
+  { col: 24, field: "recruiterName", label: "招聘人", kind: "text", sensitive: false, header: "招聘人", comparable: true },
+  { col: 25, field: "resignReason", label: "离职原因", kind: "text", sensitive: false, header: "离职原因", comparable: true },
+  { col: 26, field: "resignDateRaw", label: "备注（离职日期原文）", kind: "raw", sensitive: false, header: "备注", comparable: true },
+  { col: 26, field: "resignDate", label: "离职日期", kind: "date", sensitive: false, header: "备注", comparable: true },
+  { col: 27, field: "ageRaw", label: "年龄（原文）", kind: "raw", sensitive: false, header: "年龄", comparable: true },
+  { col: 27, field: "age", label: "年龄", kind: "int", sensitive: false, header: "年龄", comparable: true },
+  { col: 28, field: "interviewDate", label: "面试时间", kind: "date", sensitive: false, header: "面试时间", comparable: true },
+  { col: 29, field: "interviewLocation", label: "面试地点", kind: "text", sensitive: false, header: "面试地点", comparable: true },
+  { col: 30, field: "interviewResult", label: "面试结果", kind: "text", sensitive: false, header: "面试结果", comparable: true },
+  { col: 31, field: "interviewerName", label: "面试人", kind: "text", sensitive: false, header: "面试人", comparable: true },
+  { col: 32, field: "interviewHired", label: "是否入职", kind: "text", sensitive: false, header: "是否入职", comparable: true },
+  { col: 33, field: "docResume", label: "简历表", kind: "text", sensitive: false, header: "简历表", comparable: true },
+  { col: 34, field: "docInterviewEvaluation", label: "面试评估表", kind: "text", sensitive: false, header: "面试评估表", comparable: true },
+  { col: 35, field: "resignedTenureText", label: "在职年限（离职）", kind: "text", sensitive: false, header: "在职年限", comparable: true },
+  { col: 36, field: "firstMonthGuarantee", label: "首月保障", kind: "text", sensitive: true, header: "首月保障", comparable: true },
+  { col: 37, field: "remark", label: "备注", kind: "text", sensitive: false, header: "备注", comparable: true },
+  { col: 38, field: "mentorName", label: "带教人", kind: "text", sensitive: false, header: "带教人", comparable: true },
+  { col: 39, field: "docOnboardingForm", label: "入职表", kind: "text", sensitive: false, header: "入职表", comparable: true },
+  { col: 40, field: "docInterviewEvaluation2", label: "面试评估表（重复列）", kind: "text", sensitive: false, header: "面试评估表", comparable: true },
+  { col: 41, field: "certificateLevel", label: "证书级别", kind: "text", sensitive: false, header: "证书级别", comparable: true },
+  { col: 42, field: "remark3", label: "备注（重复列）", kind: "text", sensitive: false, header: "备注", comparable: true },
+  { col: 43, field: "computed7Days", label: "是否满7天", kind: "text", sensitive: false, header: "是否满7天", comparable: true },
+  { col: 44, field: "computed2Months", label: "是否满2个月", kind: "text", sensitive: false, header: "是否入职满2个月", comparable: true },
+  { col: 45, field: "minorNote", label: "未成年备注", kind: "text", sensitive: false, header: "未成年备注", comparable: true },
 
   // ---- 派生字段（col = 0）----
   { col: 0, field: "gender", label: "性别", kind: "text", sensitive: false, header: "（由身份证推导）", comparable: true },

@@ -151,8 +151,35 @@ export async function getStoreHeadcount(): Promise<{
   }
 
   // 3) 组装每一行
-  const rows: HeadcountRow[] = plans.map((h) => {
-    const m = stat.get(h.storeId) ?? {};
+  // ⚠️ 2026-11-24 修：行来源 = 编制计划 ∪ 有在职员工的门店。
+  //    旧版只取 StoreHeadcount 计划表 —— 该表从未导入过（0 行），于是编制表
+  //    导出永远是空的（门店人员编制/分布明细/流失率三表同病）。
+  //    没有计划的门店：满编全为 null（导出留空），现有人数照常实时统计。
+  const planByStore = new Map(plans.map((h) => [h.storeId, h]));
+  const storeIds = new Set<number>([...planByStore.keys(), ...stat.keys()]);
+  const storeNames = new Map<number, string>();
+  for (const h of plans) storeNames.set(h.storeId, h.store.name);
+  const missingNames = [...storeIds].filter((id) => !storeNames.has(id));
+  if (missingNames.length) {
+    const stores = await prisma.store.findMany({
+      where: { id: { in: missingNames } },
+      select: { id: true, name: true },
+    });
+    for (const s of stores) storeNames.set(s.id, s.name);
+  }
+  // 有计划的门店按计划顺序在前，其余按 storeId 排后
+  const orderedStoreIds = [...storeIds].sort((a, b) => {
+    const pa = planByStore.get(a);
+    const pb = planByStore.get(b);
+    if (pa && pb) return pa.sortOrder - pb.sortOrder || a - b;
+    if (pa) return -1;
+    if (pb) return 1;
+    return a - b;
+  });
+  const rows: HeadcountRow[] = orderedStoreIds.map((storeId, idx) => {
+    const h = planByStore.get(storeId);
+    const storeName = storeNames.get(storeId) ?? `门店${storeId}`;
+    const m = stat.get(storeId) ?? {};
     const beautyMaster = m.beautyMaster ?? 0;
     const beautyJunior = m.beautyJunior ?? 0;
     // 「美容现有」= 全部美容工种数。
@@ -186,9 +213,9 @@ export async function getStoreHeadcount(): Promise<{
     const gapOf = (full: number | null, actual: number) =>
       full === null || full === undefined ? 0 : full - actual;
 
-    const gapBeauty = gapOf(h.beautyFull, current.beauty);
-    const gapMechanic = gapOf(h.mechanicFull, current.mechanic);
-    const gapService = gapOf(h.serviceManagerFull, current.serviceManager);
+    const gapBeauty = gapOf(h?.beautyFull ?? null, current.beauty);
+    const gapMechanic = gapOf(h?.mechanicFull ?? null, current.mechanic);
+    const gapService = gapOf(h?.serviceManagerFull ?? null, current.serviceManager);
     // 汇总列（R 列）= SUMIF(S:U, ">0")，只累加正数
     const gapTotal =
       Math.max(0, gapMechanic) + Math.max(0, gapBeauty) + Math.max(0, gapService);
@@ -199,23 +226,23 @@ export async function getStoreHeadcount(): Promise<{
     if (gapBeauty > 0) parts.push(`缺美容${gapBeauty}人`);
 
     return {
-      sortOrder: h.sortOrder,
-      storeId: h.storeId,
-      storeName: h.store.name,
+      sortOrder: h?.sortOrder ?? 1000 + idx,
+      storeId,
+      storeName,
       current,
       full: {
-        serviceManager: h.serviceManagerFull,
-        mechanic: h.mechanicFull,
-        beauty: h.beautyFull,
-        beautyMaster: h.beautyMasterFull,
-        beautyJunior: h.beautyJuniorFull,
+        serviceManager: h?.serviceManagerFull ?? null,
+        mechanic: h?.mechanicFull ?? null,
+        beauty: h?.beautyFull ?? null,
+        beautyMaster: h?.beautyMasterFull ?? null,
+        beautyJunior: h?.beautyJuniorFull ?? null,
       },
       gap: {
         total: gapTotal,
         mechanic: gapMechanic,
         beauty: gapBeauty,
         serviceManager: gapService,
-        detail: parts.length ? `${h.store.name} ${parts.join(" ")}` : "",
+        detail: parts.length ? `${storeName} ${parts.join(" ")}` : "",
       },
     };
   });

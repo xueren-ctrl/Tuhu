@@ -68,6 +68,9 @@ export async function getDistribution(): Promise<{
   summary: DistributionSummary;
 }> {
   // ① 门店顺序 = 编制表顺序（与 Excel 分布明细表 B 列一致）
+  // ⚠️ 2026-11-24 修：行来源 = 编制计划 ∪ 有在职员工的门店。
+  //    旧版只取 StoreHeadcount 计划表 —— 该表 0 行，分布明细导出永远是空的。
+  //    无计划的门店排在后面，sortOrder 1000+。
   const plans = await prisma.storeHeadcount.findMany({
     orderBy: [{ sortOrder: "asc" }, { storeId: "asc" }],
     include: { store: { select: { id: true, name: true } } },
@@ -86,9 +89,31 @@ export async function getDistribution(): Promise<{
     byStore.get(sid)!.push(e);
   }
 
+  const planByStore = new Map(plans.map((p) => [p.store.id, p]));
+  const storeIds = new Set<number>([...planByStore.keys(), ...byStore.keys()]);
+  const storeNames = new Map<number, string>();
+  for (const p of plans) storeNames.set(p.store.id, p.store.name);
+  const missingNames = [...storeIds].filter((id) => !storeNames.has(id));
+  if (missingNames.length) {
+    const stores = await prisma.store.findMany({
+      where: { id: { in: missingNames } },
+      select: { id: true, name: true },
+    });
+    for (const s of stores) storeNames.set(s.id, s.name);
+  }
+  const orderedStoreIds = [...storeIds].sort((a, b) => {
+    const pa = planByStore.get(a);
+    const pb = planByStore.get(b);
+    if (pa && pb) return pa.sortOrder - pb.sortOrder || a - b;
+    if (pa) return -1;
+    if (pb) return 1;
+    return a - b;
+  });
+
   // ③ 逐店按工种分组
-  const rows: DistributionRow[] = plans.map((p) => {
-    const list = byStore.get(p.store.id) ?? [];
+  const rows: DistributionRow[] = orderedStoreIds.map((storeId, idx) => {
+    const p = planByStore.get(storeId);
+    const list = byStore.get(storeId) ?? [];
     const people = {} as Record<DistributionGradeKey, string[]>;
     for (const g of DISTRIBUTION_GRADES) {
       // 严格按 jobGradeRaw 原文匹配，不做任何归一化
@@ -96,7 +121,12 @@ export async function getDistribution(): Promise<{
         .filter((e) => g.grades.includes(String(e.jobGradeRaw ?? "").trim() as never))
         .map((e) => e.name);
     }
-    return { sortOrder: p.sortOrder, storeName: p.store.name, headcount: list.length, people };
+    return {
+      sortOrder: p?.sortOrder ?? 1000 + idx,
+      storeName: storeNames.get(storeId) ?? `门店${storeId}`,
+      headcount: list.length,
+      people,
+    };
   });
 
   // ④ 汇总

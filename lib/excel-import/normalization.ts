@@ -65,6 +65,19 @@ export function readCellValue(
     if (typeof r === "object") return null; // #N/A 等错误值
     return String(r).replace(/\u3000/g, " ").trim() || null;
   }
+  // 公式单元格但无缓存结果（共享公式母格 / 克隆格，如 {formula, ref, shareType} /
+  // {sharedFormula}）：ExcelJS 没给出 result，只能用 Excel 显示文本（cell.text）。
+  // ⚠️ 绝不能落到下方 String(v) —— 那会把整格写成「[object Object]」
+  //    （实测 2026-11-24：docInterviewEvaluation 532 格、remark3 193 格、
+  //    computed7Days 193 格、tenureTextAtImport 204 格因此写脏，导出 729 格）。
+  if (
+    typeof v === "object" &&
+    !(v instanceof Date) &&
+    ("formula" in v || "sharedFormula" in v)
+  ) {
+    const t = (displayText ?? "").replace(/\u3000/g, " ").trim();
+    return t === "" ? null : t;
+  }
   // 富文本
   if (typeof v === "object" && !(v instanceof Date) && "richText" in v) {
     const t = (v as { richText?: { text: string }[] })
@@ -102,6 +115,13 @@ export function readCellValue(
       return isoDate(new Date(Date.UTC(1899, 11, 30) + v * 86400000));
     }
     return String(v);
+  }
+
+  // 兜底：未知对象值绝不能 String()（会得到「[object Object]」），
+  // 用 Excel 显示文本，没有就视为空。
+  if (typeof v === "object") {
+    const t = (displayText ?? "").replace(/\u3000/g, " ").trim();
+    return t === "" ? null : t;
   }
 
   const s = String(v).replace(/\u3000/g, " ").trim();

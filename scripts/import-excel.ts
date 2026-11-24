@@ -169,15 +169,46 @@ function cmpVal(v: unknown): string {
  * 判断「写入数据 data」与「库内快照 snap」是否完全一致。
  * 只比内容字段（STORED_SPECS + 两个外键），不比 importBatch / deletedAt 等
  * 运行期字段 —— 否则每次重跑都会因批次号不同而被误判为「已更新」。
+ * data 里缺失（undefined）的字段视为「不改动」，直接跳过。
  */
 function dataIsUnchanged(data: Record<string, unknown>, snap: Record<string, unknown>): boolean {
   for (const sp of STORED_SPECS) {
+    if (data[sp.field] === undefined) continue;
     if (cmpVal(data[sp.field]) !== cmpVal(snap[sp.field])) return false;
   }
   for (const fk of ["storeId", "positionId"]) {
+    if (data[fk] === undefined) continue;
     if (cmpVal(data[fk]) !== cmpVal(snap[fk])) return false;
   }
   return true;
+}
+
+/**
+ * 合并更新时：把「本行缺失(null)但库里已有值」的字段从写入数据里去掉。
+ *
+ * Excel 空格 = 「未提供」，不是「清空」。旧逻辑会把后一行空的身份证/电话/
+ * 入职日期写进库里，覆盖前一行已有的好值 —— 实测丢了刘家卓的身份证+电话
+ * （行 1075 空身份证/电话覆盖了行 128 的好值）、袁斯荣的入职日期
+ * （行 327 空入职日期覆盖了行 235 的 2020-07-02）。
+ *
+ * ⚠️ deletedAt 例外：重跑导入必须能把软删除的员工恢复（data.deletedAt = null
+ *    是「恢复」的意思），所以永不去掉它。
+ */
+function stripNullOverwrites(
+  data: Record<string, unknown>,
+  snap: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!snap) return data;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (k === "deletedAt") {
+      out[k] = v;
+      continue;
+    }
+    if (v === null && snap[k] !== null && snap[k] !== undefined) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------
@@ -778,15 +809,27 @@ async function main() {
           sourceRowNo: created.sourceRowNo,
           sourceSheet: created.sourceSheet,
         });
+        // ★ 2026-11-24 修：新建的员工也要登记快照，否则同一人在本次导入里
+        //   再出现时，后一行的空值会把刚建好的身份证/电话覆盖掉（同下）。
+        snapshotById.set(created.id, created as any);
         touchedThisRun.set(created.id, p.row);
         resolvedId = created.id;
         inserted++;
       } else {
         const snap = snapshotById.get(targetId);
-        const isUnchanged = snap ? dataIsUnchanged(data, snap) : false;
+        // ★ 2026-11-24 修：合并更新时本行缺失的字段不得覆盖库里已有的值
+        //   （Excel 空格 = 未提供，不是清空；见 stripNullOverwrites）。
+        const updateData = stripNullOverwrites(data, snap);
+        const isUnchanged = snap ? dataIsUnchanged(updateData, snap) : false;
         let after: any = snap;
         if (!isUnchanged) {
-          await prisma.employee.update({ where: { id: targetId }, data: data as never });
+          await prisma.employee.update({ where: { id: targetId }, data: updateData as never });
+          // ★ 2026-11-24 修：快照同步。同一人在本次导入里可能出现多行
+          //   （如刘家卓行 128+1075、袁斯荣行 235+327）。旧逻辑只在导入开始时
+          //   拍一次快照，后一行用旧快照判断「空值覆盖」，会把前一行刚写好的
+          //   身份证/电话/入职日期又用空值覆盖回去（实测刘家卓、袁斯荣因此未修复）。
+          //   每次更新后把本次写入的值合并进快照，后一行才看得到最新值。
+          snapshotById.set(targetId, { ...snap, ...updateData });
           // 目标已存在：补齐索引（身份证 / 电话可能在本行才出现）
           after = (await prisma.employee.findUnique({
             where: { id: targetId },

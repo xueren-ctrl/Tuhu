@@ -88,14 +88,14 @@ interface SheetLayout {
 }
 
 const LAYOUT: Record<string, SheetLayout> = {
-  在职: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 25 },
+  在职: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 24 }, // ⚠️ 2026-11-24：原表 24 列（无薪资待遇）
   离职: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 26 },
   南昌3店: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 25 },
   运营部: { headerRow: 1, dataStart: 2, nameCol: 5, lastCol: 16 },
   运营部离职: { headerRow: 1, dataStart: 2, nameCol: 5, lastCol: 18 },
   招聘面试登记表: { headerRow: 3, dataStart: 4, nameCol: 2, lastCol: 15 },
   薪资表: { headerRow: 1, dataStart: 2, nameCol: 4, lastCol: 15 },
-  数据库: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 46 },
+  数据库: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 45 }, // ⚠️ 2026-11-24：原表 45 列（无薪资待遇）
   社保总名单: { headerRow: 1, dataStart: 2, nameCol: 3, lastCol: 6 },
   门店人员编制: { headerRow: 3, dataStart: 4, nameCol: -1, lastCol: 22 },
   人员流失率: { headerRow: 3, dataStart: 4, nameCol: -1, lastCol: 10 },
@@ -114,13 +114,15 @@ const LAYOUT: Record<string, SheetLayout> = {
  * `null` = 该列在软件里没有对应数据，保持为空。
  */
 const STAFF_COLUMNS: Record<string, (string | null)[]> = {
-  // 在职 / 南昌3店：R2 = 字段名，25 列（两者列序完全一致）
+  // 在职：R2 = 字段名，24 列（⚠️ 2026-11-24 修：原表在职表只有 24 列，没有「薪资待遇」列，
+  //   旧版 25 列多写一列，导致第 25 列出现招聘人名/离职原因等串位内容）。
+  // 南昌3店：R2 = 字段名，25 列（南昌3店表确有「薪资待遇」列 W，保留）。
   在职: [
     "__seq__", "storeId", "hireDate", "__tenure__", "name", "idCardNo", "phone",
     "jobGradeRaw", "positionNote", "dormitory", "socialInsurancePurchased",
     "emergencyContact1", "emergencyPhone1", "emergencyContact2", "emergencyPhone2",
     "laborContract", "socialInsuranceAgreement", "fireSafetyCommitment", "dormitoryWaiver",
-    "onboardingMedical", "bankBranch", "bankAccountNo", "salaryTerms", "currentAddress",
+    "onboardingMedical", "bankBranch", "bankAccountNo", "currentAddress",
     "recruiterName",
   ],
   南昌3店: [
@@ -145,28 +147,34 @@ const STAFF_COLUMNS: Record<string, (string | null)[]> = {
     "__seq__", "storeId", "hireDate", "__resignedTenure__", "name", "jobGradeRaw", "dormitory",
     "socialInsurancePurchased", "emergencyContact1", "emergencyPhone1", "bankBranch",
     "bankAccountNo", "idCardNo", "phone", "workPhone", "householdAddress",
-    "resignDate", "resignReason",
+    "__resignDateOrRaw__", "resignReason",
   ],
   // 离职：R2 = 字段名，26 列（第 4 列「在职年限」= 离职时点的在职年限）
+  // ⚠️ 第 25 列「备注（离职日期）」用 __resignDateOrRaw__：原表里有「9/30已离职」
+  //    这类非日期文本，只写解析日期会丢（2026-11-24 实测少 48 格）。
   离职: [
     "__seq__", "storeId", "hireDate", "__resignedTenure__", "name", "idCardNo", "phone",
     "jobGradeRaw", "positionNote", "dormitory", "socialInsurancePurchased",
     "emergencyContact1", "emergencyPhone1", "emergencyContact2", "emergencyPhone2",
     "laborContract", "socialInsuranceAgreement", "fireSafetyCommitment", "dormitoryWaiver",
     "onboardingMedical", "bankBranch", "bankAccountNo", "currentAddress",
-    "resignReason", "resignDate", "recruiterName",
+    "resignReason", "__resignDateOrRaw__", "recruiterName",
   ],
-  // 数据库：R2 = 字段名，46 列。R1 是一行示例数据（不是表头）
+  // 数据库：R2 = 字段名，45 列。R1 是一行示例数据（不是表头）
+  // ⚠️ 2026-11-24 修：原表数据库表只有 45 列，没有「薪资待遇」列（旧版 46 列多写一列，
+  //   导致导出多出第 46 列）。第 4 列「在职年限」原表公式是 DATEDIF(C,TODAY())——
+  //   无论在职/离职都算到今天（实测刘家卓 3年8个月=到今天，非到离职日），
+  //   所以用 __tenure__（算到今天），不用 __tenureAny__（离职算到离职日）。
   // ⚠️ 第 41 列也是「面试评估表」—— 原表的重复列。Stage 10.4 起改为按
   //    docInterviewEvaluation2 原样导出：原表这一列是有值的（部分行与第 35 列不同），
   //    早先「留空以保持与原表一致」的判断是错的，会导致 300+ 行内容丢失。
   数据库: [
-    "__seq__", "storeId", "hireDate", "__tenureAny__", "name", "idCardNo", "phone",
+    "__seq__", "storeId", "hireDate", "__tenure__", "name", "idCardNo", "phone",
     "jobGradeRaw", "positionNote", "dormitory", "socialInsurancePurchased",
     "emergencyContact1", "emergencyPhone1", "emergencyContact2", "emergencyPhone2",
     "laborContract", "socialInsuranceAgreement", "fireSafetyCommitment", "dormitoryWaiver",
-    "onboardingMedical", "bankBranch", "bankAccountNo", "salaryTerms", "currentAddress",
-    "recruiterName", "resignReason", "resignDate", "__age__", "interviewDate",
+    "onboardingMedical", "bankBranch", "bankAccountNo", "currentAddress",
+    "recruiterName", "resignReason", "__resignDateOrRaw__", "__age__", "interviewDate",
     "interviewLocation", "interviewResult", "interviewerName", "interviewHired",
     "docResume", "docInterviewEvaluation", "__resignedTenure__", "firstMonthGuarantee",
     "remark", "mentorName", "docOnboardingForm", "docInterviewEvaluation2", "certificateLevel", "remark3",
@@ -199,7 +207,7 @@ function employeeValues(
   storeNames: Map<number, string>,
   posNames: Map<number, string>,
   now: Date
-): Record<string, string> {
+): Record<string, string | number> {
   const s = (v: unknown) => {
     if (v === null || v === undefined) return "";
     const t = String(v).trim();
@@ -237,7 +245,13 @@ function employeeValues(
     bankBranch: s(e.bankBranch),
     bankAccountNo: s(e.bankAccountNo),
     salaryTerms: s(e.salaryTerms),
-    firstMonthGuarantee: s(e.firstMonthGuarantee),
+    // 首月保障：原表是数字格（290 个数字），导出必须写数字不能写文本，
+    // 否则 SUM 求和不到、逐格比对也会判类型不一致。纯数字才转数字，
+    // 带文字的（如「首月保障8000，次月按提成」）保持文本。
+    firstMonthGuarantee: (() => {
+      const t = s(e.firstMonthGuarantee);
+      return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : t;
+    })(),
     currentAddress: s(e.currentAddress),
     householdAddress: s(e.householdAddress),
     recruiterName: s(e.recruiterName),
@@ -261,14 +275,26 @@ function employeeValues(
     __salaryNote__: s(e.salaryTerms) || s(e.remark),
     hireDate: d(e.hireDate),
     resignDate: d(e.resignDate),
+    // 离职日期（带原文回退）：原表「备注（离职日期）」列里不全是日期，
+    // 还有「9/30已离职」「已离职」这类文本。只写解析出的日期会丢掉这 80 处文本
+    // （2026-11-24 实测离职表 C25 因此少 48 格）。有日期写日期，没日期写原文。
+    __resignDateOrRaw__: (() => {
+      const dd = d(e.resignDate);
+      return dd || s(e.resignDateRaw);
+    })(),
 
     // —— 计算列：与 lib/employee-sheet-service.ts 的 cellValue 同一套口径 ——
     // 在职年限（在职算到今天）
     __tenure__: safe(() => renderTenureCn(e.hireDate as Date | null, null, now), ""),
     // 在职年限（离职算到离职日）
-    __resignedTenure__: safe(() => renderTenureCn(e.hireDate as Date | null, e.resignDate as Date | null, now), ""),
-    // 在职年限（离职看离职日、在职看今天）—— 数据库表用
-    __tenureAny__: safe(() => renderTenureCn(e.hireDate as Date | null, e.resignDate as Date | null, now), ""),
+    // ⚠️ 2026-11-24 修：原表 C35 公式是 IF(OR(C="",Z=""),"",DATEDIF(C,Z,…))——
+    //    没有离职日期（在职员工）时本列为空。旧版 renderTenureCn 在 resignDate 为空时
+    //    回退到今天，导致在职员工的离职年限被算成到今天的年限，写进了「首月保障」列
+    //    隔壁的 C35（配合列错位，C36 首月保障被 1799 格年限文本覆盖）。
+    __resignedTenure__: safe(() => {
+      if (!e.resignDate) return "";
+      return renderTenureCn(e.hireDate as Date | null, e.resignDate as Date | null, now);
+    }, ""),
     __age__: e.age !== null && e.age !== undefined ? String(e.age) : s(e.ageRaw),
     __work7days__: safe(() => {
       if (!e.hireDate) return "";
@@ -295,22 +321,44 @@ function safe(fn: () => string, fallback: string): string {
   }
 }
 
+/** 入职日期归一化为 yyyy-MM-dd（Date / "2025-07-13" / "2025/7/13" 都行），取不到为空串 */
+function toHireIso(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  return "";
+}
+
 /**
  * 读原表某列的姓名及其**原始行号**（保持用户手工排好的门店分组顺序）。
  *
  * ⚠️ 必须带行号：人工表的「数据库」Sheet 中间有空行/断行，
  * 如果紧凑写入就会整体错行（实测 1880 行错位）。行号用于"原位回填"。
+ *
+ * hireDateCol（可选）：同时读出该行的入职日期（归一化为 yyyy-MM-dd），
+ * 供 alignToOriginalOrder 在同名多条记录时按「姓名 + 入职日期」精确定位
+ * （2026-11-24 修：旧版只按姓名取第一条，全帅棋被配到另一家店的离职记录）。
  */
 function readOriginalOrder(
   ws: ExcelJS.Worksheet,
   nameCol: number,
-  headerRow: number
-): { row: number; name: string }[] {
-  const out: { row: number; name: string }[] = [];
+  headerRow: number,
+  hireDateCol?: number
+): { row: number; name: string; hireDate: string }[] {
+  const out: { row: number; name: string; hireDate: string }[] = [];
   if (nameCol <= 0) return out;
+  const readHire = hireDateCol !== undefined && hireDateCol > 0 && hireDateCol !== nameCol;
   for (let r = headerRow + 1; r <= ws.rowCount; r++) {
     const nm = cellToText(ws.getRow(r).getCell(nameCol).value);
-    if (nm) out.push({ row: r, name: nm });
+    if (nm) {
+      out.push({
+        row: r,
+        name: nm,
+        hireDate: readHire ? toHireIso(ws.getRow(r).getCell(hireDateCol!).value) : "",
+      });
+    }
   }
   return out;
 }
@@ -323,9 +371,15 @@ function readOriginalOrder(
  *   （opts.reuseExhausted）
  * - 库中多出来的 → 按 opts.append 决定是否追加到末尾
  *   默认全部追加；迁移校验场景只追加「导入之后新增」的员工（importBatch 为空）
+ *
+ * ⚠️ 2026-11-24 修：同名多条档案时优先按「姓名 + 入职日期」匹配
+ *    （原表行自带入职日期）。入职日期对不上的才回退到「取同名第一条」
+ *    （旧行为）。实测：全帅棋在职行（入职 2026-03-07）旧版配到
+ *    大朗富丽东路店的离职记录（入职 2025-07-13），修后配到
+ *    大朗富华中路店的正确记录。
  */
 function alignToOriginalOrder(
-  originalNames: string[],
+  originalEntries: Array<{ name: string; hireDate?: string }>,
   rows: Record<string, unknown>[],
   opts: {
     append?: (r: Record<string, unknown>) => boolean;
@@ -339,15 +393,21 @@ function alignToOriginalOrder(
     if (!byName.has(k)) byName.set(k, []);
     byName.get(k)!.push(r);
   }
-  const used = new Map<string, number>();
+  const used = new Set<Record<string, unknown>>();
   const aligned: (Record<string, unknown> | null)[] = [];
-  for (const nm of originalNames) {
-    const bucket = byName.get(nm);
-    const i = used.get(nm) ?? 0;
-    if (bucket && i < bucket.length) {
-      aligned.push(bucket[i]);
-      used.set(nm, i + 1);
-    } else if (bucket && bucket.length > 0 && reuseExhausted) {
+  for (const ent of originalEntries) {
+    const bucket = byName.get(ent.name) ?? [];
+    const unused = bucket.filter((r) => !used.has(r));
+    let pick: Record<string, unknown> | undefined;
+    // 同名多条时：入职日期相同的优先（原表行自带入职日期）
+    if (ent.hireDate) {
+      pick = unused.find((r) => toHireIso(r.hireDate) === ent.hireDate);
+    }
+    if (!pick) pick = unused[0];
+    if (pick) {
+      aligned.push(pick);
+      used.add(pick);
+    } else if (bucket.length > 0 && reuseExhausted) {
       // 同名多行但库里只有 1 条档案 → 复用第一条，保持行数与人工表一致
       aligned.push(bucket[0]);
     } else {
@@ -356,13 +416,7 @@ function alignToOriginalOrder(
   }
   for (const r of rows) {
     if (!append(r)) continue;
-    const nm = String(r.name ?? "");
-    const i = used.get(nm) ?? 0;
-    const bucket = byName.get(nm) ?? [];
-    if (i < bucket.length && bucket[i] === r) {
-      used.set(nm, i + 1);
-      aligned.push(r);
-    }
+    if (!used.has(r)) aligned.push(r);
   }
   return aligned;
 }
@@ -458,11 +512,10 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
         const sb = statuses.includes(String(b.status)) ? 0 : 1;
         return sa - sb;
       });
-    const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow);
-    const originalNames = entries.map((e) => e.name);
+    const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow, 3);
     // 迁移校验口径：行集合 = 原表行（顺序、行数不变）；
     // 同名多行复用同一条档案；只有「导入之后新增」的员工才追加到末尾
-    const aligned = alignToOriginalOrder(originalNames, allRows, {
+    const aligned = alignToOriginalOrder(entries, allRows, {
       reuseExhausted: true,
       append: (r) => !r.importBatch && statuses.includes(String(r.status)),
     });
@@ -514,7 +567,7 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
     });
   }
 
-  // ---------- ③ 数据库表：全部员工档案（46 列实值） ----------
+  // ---------- ③ 数据库表：全部员工档案（45 列实值） ----------
   {
     const sheet = "数据库";
     const ws = wb.getWorksheet(sheet);
@@ -522,10 +575,9 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
     if (ws && layout) {
       const cols = STAFF_COLUMNS[sheet];
       const rows = employees as unknown as Record<string, unknown>[];
-      const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow);
-      const originalNames = entries.map((e) => e.name);
+      const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow, 3);
       // 同 ②：行集合 = 原表行；只追加导入之后新增的员工
-      const aligned = alignToOriginalOrder(originalNames, rows, {
+      const aligned = alignToOriginalOrder(entries, rows, {
         reuseExhausted: true,
         append: (r) => !r.importBatch,
       });
@@ -576,8 +628,19 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
     const layout = LAYOUT[sheet];
     if (ws && layout) {
       const entries = siEntries as unknown as Record<string, unknown>[];
+      // ⚠️ 2026-11-24 修：社保名单为空时不清空、保留原模板内容。
+      //    社保参保日期/缴费基数系统里根本没有（SocialInsuranceEntry 0 行，
+      //    导入只读了数据库表），旧版先清空再写 0 行，导出一张空表。
+      if (entries.length === 0) {
+        stats.push({
+          sheet,
+          rows: 0,
+          written: 0,
+          note: "系统里没有社保名单数据（SocialInsuranceEntry 未导入），保留原模板内容未清空",
+        });
+      } else {
       const aligned = alignToOriginalOrder(
-        readOriginalOrder(ws, layout.nameCol, layout.headerRow).map((e) => e.name),
+        readOriginalOrder(ws, layout.nameCol, layout.headerRow),
         entries
       );
       const clearTo = Math.max(lastDataRow(ws, layout.dataStart, layout.lastCol), layout.dataStart + aligned.length - 1);
@@ -620,6 +683,7 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
         written,
         note: `名单 ${entries.length} 人 × 5 列实值（原表本来就没公式）`,
       });
+      } // 社保 0 行保护的 else
     } else {
       stats.push({ sheet, rows: 0, written: 0, note: "Excel 里没有这个 Sheet" });
     }
@@ -726,7 +790,7 @@ async function writeRecruitAndSalarySheets(
       const empId = empIdByRow.get(row.rowNo);
       const e = empId !== undefined ? empMap.get(empId) : undefined;
 
-      let vals: Record<string, string>;
+      let vals: Record<string, string | number>;
       if (e) {
         matched++;
         // 已建档 → 用最新档案算出的值（软件里改过，这里立刻反映）
@@ -744,7 +808,7 @@ async function writeRecruitAndSalarySheets(
 
       for (let c = 1; c <= sp.cols.length; c++) {
         const field = sp.cols[c - 1];
-        let v: string;
+        let v: string | number;
         if (e) {
           if (!field) continue;
           v = vals[field] ?? "";
@@ -821,13 +885,34 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
       out.push({ sheet, rows: 0, written: 0, note: "Excel 里没有这个 Sheet" });
     } else {
       const { dataStart } = layout;
+      // ⚠️ 2026-11-24 修：0 行时不清空、保留原模板内容（旧版先清空再写 0 行，
+      //    导出一张空表）。编制表行来源已改为「计划 ∪ 有在职员工的门店」，
+      //    正常情况下不会 0 行；这里是兜底。
+      if (hc.rows.length === 0) {
+        out.push({
+          sheet,
+          rows: 0,
+          written: 0,
+          note: "无编制计划且无在职员工，保留原模板内容未清空",
+        });
+      } else {
       // ⚠️ 合计行必须在**清空之前**探测：它的 A:B 是合并单元格，
       // 读 B 列拿到的是主格 A 的值；清空后就再也认不出哪行是合计行了。
-      const sumRow = dataStart + hc.rows.length;
-      const hasSumRow =
-        cellToText(ws.getRow(sumRow).getCell(1).value).includes("合计") ||
-        cellToText(ws.getRow(sumRow).getCell(2).value).includes("合计");
-      const lastRow = lastDataRow(ws, dataStart, layout.lastCol);
+      // ⚠️ 2026-11-24 修：按「合计」字样扫描探测，不按行数推算 —— 门店数变化时
+      //    合计行位置会变（实测在职门店 40 家，原表编制表 36 家）。
+      const tplLast = lastDataRow(ws, dataStart, layout.lastCol);
+      let hasSumRow = false;
+      for (let r = dataStart; r <= tplLast; r++) {
+        if (
+          cellToText(ws.getRow(r).getCell(1).value).includes("合计") ||
+          cellToText(ws.getRow(r).getCell(2).value).includes("合计")
+        ) {
+          hasSumRow = true;
+          break;
+        }
+      }
+      const sumRow = dataStart + hc.rows.length; // 合计行写在新数据之后
+      const lastRow = tplLast;
       clearRange(ws, dataStart, lastRow, 1, layout.lastCol);
       if (hasSumRow) putCell(ws, sumRow, 1, "所有店铺合计：");
 
@@ -898,6 +983,7 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
           `实时计算（getStoreHeadcount）：${hc.rows.length} 家门店 22 列实值 + 合计行；` +
           `现有人数按在职表实时 COUNT，满编取人工设置值；0 公式`,
       });
+      } // 0 行保护的 else
     }
   }
 
@@ -912,6 +998,15 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
       out.push({ sheet, rows: 0, written: 0, note: "Excel 里没有这个 Sheet" });
     } else {
       const { dataStart } = layout;
+      // ⚠️ 2026-11-24 修：0 行时不清空、保留原模板内容（见 ①）。
+      if (dist.rows.length === 0) {
+        out.push({
+          sheet,
+          rows: 0,
+          written: 0,
+          note: "无在职员工，保留原模板内容未清空",
+        });
+      } else {
       clearRange(ws, dataStart, lastDataRow(ws, dataStart, layout.lastCol), 1, layout.lastCol);
       let written = 0;
       for (let i = 0; i < dist.rows.length; i++) {
@@ -931,6 +1026,7 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
         written,
         note: `实时计算（getDistribution）：${dist.rows.length} 家门店 × 8 列实值；与软件「人员分布明细」页同一服务；0 公式`,
       });
+      } // 0 行保护的 else
     }
   }
 
@@ -947,6 +1043,19 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
       out.push({ sheet, rows: 0, written: 0, note: "Excel 里没有这个 Sheet" });
     } else {
       const { dataStart } = layout;
+      // ⚠️ 2026-11-24 修：0 行时不清空、不改标题，保留原模板内容（见 ①）。
+      //    流失率的行结构（每家店 1~2 行、店长/副店长分行）和店长姓名都来自
+      //    AttritionIndicator 指标计划，该表系统里是空的；从在职员工工种
+      //    推导店长名并不可靠（实测李正秋：库里工种是「店长」，原表流失率
+      //    记的是「副店长」），所以不强行推导，保留原表。
+      if (attrition.rows.length === 0) {
+        out.push({
+          sheet,
+          rows: 0,
+          written: 0,
+          note: "系统里没有流失率指标数据（AttritionIndicator 未导入），保留原模板内容未清空",
+        });
+      } else {
       clearRange(ws, dataStart, lastDataRow(ws, dataStart, layout.lastCol), 1, layout.lastCol);
       let written = 0;
       let rowNo = 0;
@@ -986,6 +1095,7 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
           `实时计算（getAttrition，月份 ${label}）：${attrition.rows.length} 行 × 实值；` +
           `月初人数/当月离职/当月入职/流失率/邀约数量全部按当前数据重算；0 公式`,
       });
+      } // 0 行保护的 else
     }
   }
 
