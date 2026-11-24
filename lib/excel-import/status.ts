@@ -2,9 +2,14 @@
  * 在职 / 离职状态判定（第五阶段 · 共享底座）
  *
  * 判定口径（与正式导入、导入预览**完全一致**）：
- *   离职信号 = 在「离职」名册 / 有离职日期 / 有离职原因 / 备注文本含离职字样；
+ *   离职信号 = 在「离职」名册 / 有离职日期 / 离职原因含离职语义 / 备注文本含离职字样；
  *   有任一信号即为 RESIGNED，否则 ACTIVE。
  *   「重新入职 / 又入职 / 回归 / 再入职」**不算**离职信号。
+ *   离职原因格是自由文本，可能装薪资备注（如“到手7000含餐补”），只凭有字
+ *   不算信号，必须含离职语义才算；且人在「在职」名册、不在「离职」名册时，
+ *   离职原因不推翻名册（用户规则：不在离职表就没有离职）。
+ *   2026-11-24 修（李冰武误判）：此前离职原因只要非空就算信号，把在职的
+ *   李冰武（离职原因格是薪资备注）误判为离职。
  *
  * 历史教训：预览曾经漏掉「离职名册」这一路，把 171 名离职员工判成在职，
  * 一旦确认写入就会把大批离职档案改回在职 —— 这类错误必须靠单一实现来根除。
@@ -43,11 +48,18 @@ export function deriveStatus(input: StatusInput, issues?: IssueCollector): Statu
   } = input;
 
   const resignText = textMeansResigned(resignDateRaw);
+  // 2026-11-24 修（李冰武误判）：离职原因格是自由文本，可能装薪资备注
+  // （如“到手7000含餐补”），只凭有字不能算离职信号，必须含离职语义；
+  // 且人在「在职」名册、不在「离职」名册时，离职原因不推翻名册
+  // （用户规则：不在离职表就没有离职）。
+  const reasonText = textMeansResigned(resignReason);
+  const reasonCounts =
+    reasonText.yes && !(inActiveRoster && !inResignedRoster);
 
   const signals: string[] = [];
   if (inResignedRoster) signals.push("离职名册");
   if (resignDate) signals.push("离职日期");
-  if (resignReason) signals.push("离职原因");
+  if (reasonCounts) signals.push("离职原因");
   if (resignText.yes) signals.push("备注文本含离职");
 
   const status: EmployeeStatus = signals.length > 0 ? "RESIGNED" : "ACTIVE";
