@@ -92,26 +92,16 @@ export default async function AttritionPage({
         <div className="space-y-1">
           <div>
             <strong>流失率 =（当月离职人数 − 当月入职人数）/ 月初人数</strong>。
-            <strong>当月离职</strong>只算「当月离职<strong>且入职满 3 个月</strong>」的人
-            （刚入职不满 3 个月就走的，不计入流失，避免把试用期离职算成流失）。
+            <strong>当月离职</strong>只算「当月离职<strong>且离职时入职满 3 个月</strong>」的人
+            （离职日 − 入职日 ≥ 3 个自然月；刚入职不满 3 个月就走的，不计入流失，
+            避免把试用期离职算成流失）。
           </div>
           <div>
-            <strong>「月初人数」是流失率的分母</strong>，口径是「1 号在职<strong>且入职满 3 个月</strong>」。
-            {summary.usesSnapshot ? (
-              <>
-                {" "}
-                <strong className="text-brand-700">本月用的是人工核对的数据</strong>
-                （{summary.month} 导入的权威值，合计 {summary.monthStartTotal} 人）——
-                {" "}因为历史档案里有大量「标记离职却没填离职日期」的记录，
-                直接按公式算会少算约 35 人。
-              </>
-            ) : (
-              <>
-                {" "}
-                <strong className="text-brand-700">本月按公式自动计算</strong>
-                （该月没有导入人工数据）—— 每月 1 号自动重算一次，无需手工维护。
-              </>
-            )}
+            <strong>「月初人数」是流失率的分母</strong>，口径是「入职日期 &lt; 月初，
+            且无离职日期或离职日期 ≥ 月初」（不要求入职满 3 个月；门店按现门店计，
+            调店归属新店）。{" "}
+            <strong className="text-brand-700">本月按文字定义自动计算</strong>
+            —— 每月 1 号自动重算一次，无需手工维护。
           </div>
           <div>
             <strong>「店长」与「技术店长」是两种不同的店，职位性质不同</strong>：
@@ -198,12 +188,10 @@ export default async function AttritionPage({
                 <td className="border-b border-r border-slate-100 px-2 py-1.5 text-center text-slate-600">
                   {r.role === "DEPUTY_MANAGER" ? r.managers.deputyManager || "—" : "—"}
                 </td>
-                {/* 月初人数（流失率的分母）。
-                    SNAPSHOT = 该月用了人工核对的权威值；COMPUTED = 按公式实时算。
-                    视觉上不加任何标记（保持表格干净），来源在页面上方说明里讲。 */}
+                {/* 月初人数（流失率的分母）。按文字定义自动计算，来源在页面上方说明里讲。 */}
                 <td
                   className="border-b border-r border-slate-100 px-2 py-1.5 text-center font-semibold text-slate-800"
-                  title={r.headcountSource === "SNAPSHOT" ? "该月使用人工核对的月初人数" : "按公式自动计算：1 号在职且入职满 3 个月"}
+                  title="按文字定义自动计算：入职日期 < 月初，且无离职日期或离职日期 ≥ 月初（不要求满 3 个月）"
                 >
                   {r.monthStartHeadcount}
                 </td>

@@ -1,6 +1,5 @@
 import { prisma } from "./prisma";
 import { addNaturalMonths } from "./tenure";
-import { storesOfManyAt } from "./store-period-service";
 
 /**
  * 门店人员流失率（Stage 9.18）
@@ -9,12 +8,44 @@ import { storesOfManyAt } from "./store-period-service";
  * 列与 Excel 第 3 行严格一致：
  *   序号 | 门店名称 | 店长 | 技术店长 | 副店长 | 实时人数 | 当月离职 | 当月入职 | 流失率 | 邀约数量
  *
- * ── 计算口径（用户公式，与 Excel 公式逐条对齐）────────────────────────
+ * ── 计算口径（原表旁边的文字说明，用户 2026-11-24 确认，以此为准）────
  *   流失率     =（当月离职人数 − 当月入职人数）/ 月初人数
- *   当月离职   = 当月离职 **且入职满 3 个月**
- *   当月入职   = 当月入职
- *   月初人数   = 1 号在职人数 **且入职时间满 3 个月**
+ *   当月离职   = 当月离职 **且离职时入职满 3 个月**（离职日 − 入职日 ≥ 3 个自然月）
+ *   当月入职   = 当月入职（入职日期落在当月）
+ *   月初人数   = 月初在职人数：入职日期 < 月初，且无离职日期或离职日期 ≥ 月初。
+ *                ⚠️ **不要求入职满 3 个月**（旧版要求，2026-11-24 已改）。
+ *                分母是**月初人数**，不是原表公式用的实时人数。
+ *   门店归属   = **现门店**（Employee.storeId）。调店（A→B）归属 B 店、
+ *                入职日期不变，既不算 A 店的离职，也不算 B 店的入职 ——
+ *                按现门店 + 入职/离职日期算，自然就对了，不用特殊处理。
+ *   店长名     = 按现门店的在职人员填（jobGradeRaw 原文匹配，与编制/分布一致）：
+ *                店长 ← {店长, 代理店长}；技术店长 ← 技术店长；副店长 ← 副店长。
+ *                同店同工种多人时取入职最早者。
+ *   门店名单   = 指标计划 ∪ 有在职/离职员工的门店（计划表 AttritionIndicator
+ *                从未导入过，0 行，不能只靠它 —— 与编制/分布同一修法）。
  * ────────────────────────────────────────────────────────────────
+ *
+ * ⚠️ 与原表公式的两处**有意**差异（均为按文字定义修正，非 bug）：
+ *
+ * 1. **分母用月初人数，不用实时人数**。原表公式 `(G-H)/F` 的 F 是实时人数，
+ *    文字说明写的是月初人数 —— 以文字为准。
+ *
+ * 2. **离职的「满 3 个月」按离职日算**（离职日 − 入职日 ≥ 3 个自然月），
+ *    不按月初算。原表公式靠解析文本列「在职年限」取月份数，对离职表里
+ *    未算出的行会返回空、IFERROR 兜底成 0 → 这些人被漏掉；库里存的是
+ *    真实 hireDate/resignDate，直接用自然月加法更准、更可测。
+ *    自然月加法复用 `lib/tenure.ts` 的 `addNaturalMonths`（与「满 2 个月」口径同源）。
+ *
+ * 3. **门店按当前 `storeId` 统计，而非门店名字符串、也非任职历史**。
+ *    Excel 公式里给每家店手写了一个别名分支（如 `离职!$B:$B="常平朗贝社区"`），
+ *    因为 Excel 的门店名字符串不统一；库里 `storeId` 已把别名归一。
+ *    调店按现门店计（用户确认），所以不需要 `storesOfManyAt` 任职历史。
+ *
+ * 「邀约数量」= 招聘面试登记表里，**面试时间落在当月、招聘人是该店店长**的记录数。
+ *   ⚠️ 店长/技术店长/副店长三列取自**现门店在职员工的工种**（见上），不是
+ *      指标计划表的手填姓名 —— 计划表是空的，从员工推导是唯一来源。
+ *      （旧版注：李正秋库里工种是「店长」，原表流失率记的是「副店长」；
+ *       用户 2026-11-24 确认按现门店在职人员填，即按库里工种为准。）
  *
  * ── 店长 / 技术店长 / 副店长 三者的关系（用户确认，重要）────────────
  *   **店长与技术店长互斥**：店长 = 全职店长；技术店长 = 由机修晋升的店长，
@@ -25,22 +56,6 @@ import { storesOfManyAt } from "./store-period-service";
  *   「邀约数量」取**该行填了名字的那一列**（与 Excel 公式逐行核对一致）：
  *   店长行 `$C` / 技术店长行 `$D` / 副店长行 `$E`。
  * ────────────────────────────────────────────────────────────────
- *
- * ⚠️ 与 Excel 的两处**有意**差异（均为改进，非 bug）：
- *
- * 1. **「入职满 3 个月」改用真实日期判定**（Excel 靠解析文本列「在职年限」如「3年2个月」取月份数）。
- *    Excel 那个文本列对**离职表里未算出的行会返回空**，IFERROR 兜底成 0 → 这些人被漏掉。
- *    库里存的是真实 hireDate，直接 `入职日 + 3 自然月 ≤ 月初` 更准、更可测。
- *    自然月加法复用 `lib/tenure.ts` 的 `addNaturalMonths`（与「满 2 个月」口径同源）。
- *
- * 2. **门店按 `storeId` 统计，而非门店名字符串**。
- *    Excel 公式里给每家店手写了一个别名分支（如 `离职!$B:$B="常平朗贝社区"`），
- *    因为 Excel 的门店名字符串不统一（「常平朗贝社区店」/「常平朗贝社区」两个写法）。
- *    库里 `storeId` 已把别名归一，且 `StoreAlias` 可追溯 —— 按 id 统计天然覆盖这些别名。
- *
- * 「邀约数量」= 招聘面试登记表里，**面试时间落在当月、招聘人是该店店长**的记录数。
- *   ⚠️ 店长/技术店长/副店长三列取自 Excel C/D/E 列的**手填姓名**（考核指标的口径），
- *      不是从员工档案实时查的 —— 所以这三列不落库，导入一次即可。
  */
 
 /** 统计月（月初，UTC 零点），如 2026-08-01 */
@@ -70,9 +85,9 @@ export interface AttritionRow {
   managerName: string | null;
   /** 考核指标登记的三个岗位（店长 / 技术店长 互斥，副店长可并存） */
   managers: { storeManager: string | null; techManager: string | null; deputyManager: string | null };
-  /** 月初人数：1 号在职 且 入职满 3 个月（按门店计，店长/副店长行相同） */
+  /** 月初人数：入职日期 < 月初，且无离职日期或离职日期 ≥ 月初（按现门店计，不要求满 3 个月） */
   monthStartHeadcount: number;
-  /** 当月离职（且入职满 3 个月） */
+  /** 当月离职（离职日期落在当月，且离职时入职满 3 个自然月） */
   monthResigned: number;
   /** 当月入职 */
   monthHired: number;
@@ -81,9 +96,12 @@ export interface AttritionRow {
   /** 邀约数量：当月面试且招聘人 = 本行 managerName */
   invites: number;
   /**
-   * 月初人数的来源（Stage 9.22）：
-   *   SNAPSHOT = 用了人工核对的快照（该月有导入）
-   *   COMPUTED = 按公式实时算（该月没有快照）
+   * 月初人数的来源（2026-11-24 起恒为 COMPUTED）：
+   *   旧版用 AttritionBaseline 人工快照覆盖月初人数（Stage 9.22），因为旧口径
+   *   （1 号在职且入职满 3 个月、只算 ACTIVE）会漏掉 269 条「标记离职却没有
+   *   离职日期」的历史档案，2026-09 少算约 35 人。
+   *   新口径（入职日期 < 月初，且无离职日期或离职日期 ≥ 月初，不要求满 3 个月）
+   *   本身就把这批人计入了，快照不再需要 —— 字段保留仅为兼容，不再有 SNAPSHOT。
    */
   headcountSource: "SNAPSHOT" | "COMPUTED";
 }
@@ -98,7 +116,7 @@ export interface AttritionSummary {
   /** 全公司流失率 =（合计离职 − 合计入职）/ 合计月初人数 */
   overallRate: number | null;
   storesWithResign: number;
-  /** 该月月初人数是否用了人工快照（true）/ 全部按公式实时算（false） */
+  /** 该月月初人数是否用了人工快照 —— 2026-11-24 起恒为 false（口径修正后不再用快照，见 headcountSource） */
   usesSnapshot: boolean;
   /** 流失率最高的三家 */
   topWorst: { storeName: string; rate: number }[];
@@ -156,120 +174,110 @@ export async function getAttrition({ month }: MonthParam): Promise<{
 }> {
   const { start, end } = parseMonth(month);
 
-  // ① 门店 + 考核指标里的三个管理岗姓名
+  // ① 门店名单：指标计划 ∪ 有在职/离职员工的门店（现门店归属）。
+  //    指标计划表（AttritionIndicator）从未导入过（0 行），不能只靠它；
+  //    没有计划的门店照常出数（与编制/分布同一修法，2026-11-24）。
   const plans = await prisma.attritionIndicator.findMany({
     orderBy: [{ sortOrder: "asc" }, { storeId: "asc" }],
     include: { store: { select: { id: true, name: true } } },
   });
 
-  // ② 取所有在职 + 离职员工（流失率要把离职的人算进来）
+  // ② 取所有在职 + 离职员工（流失率要把离职的人算进来）。
+  //    门店归属 = **现门店**（storeId），调店归属新店、入职日期不变，
+  //    不用任职历史（storesOfManyAt）—— 用户 2026-11-24 确认。
   const emps = await prisma.employee.findMany({
     where: { deletedAt: null, status: { in: ["ACTIVE", "RESIGNED"] }, storeId: { not: null } },
     select: {
       id: true,
       storeId: true,
       status: true,
+      name: true,
+      jobGradeRaw: true,
       hireDate: true,
       resignDate: true,
     },
   });
 
-  /**
-   * 员工在某月的归属门店（Stage 9.19）。
-   *
-   * ⚠️ 途虎门店之间调动频繁，A 店的人可能被借到 B 店帮忙、调回、或调走不回来。
-   *    光看 Employee 当前的 storeId 算不出「1 号那天他在哪家店」。
-   *    这里**按统计月 1 号那天的任职归属**来判断（用 EmployeeStorePeriod 任职历史），
-   *    没有历史记录时回退到当前门店（视为长期在此店）。
-   *
-   * 用户确认的口径：**按当前门店计** —— 调走就从原店减、调入就给新店加，
-   * 绝不「两边都算」（会重复计数、总数虚高）。
-   *
-   * ✅ 实测验证（2026-08）：回填了 249 段任职历史后，49 位「有多段档案」的在职员工，
-   *    用任职历史算出的 8/1 归属与当前门店**100% 一致（0 处不同）**，
-   *    合计行数字不变（月初 207 / 离职 20 / 入职 27 / −3.4%）。
-   *    说明「按当前门店」这个近似本来就是对的，回填是**加固**而非纠错。
-   *
-   * ⚠️ 仍然算不准的场景（无解，需要业务侧信息）：
-   *    「8/1 那天人在 A 店，之后（8 月内）才调到 B 店」——
-   *    这类人在库里只有「当前门店 = B 店」的单一档案、没有任何历史线索，
-   *    软件无法凭空知道他 8/1 在哪。**只能靠今后每次调动都及时在软件里改门店**。
-   *    （Stage 9.19 起改门店会自动记一段任职，之后这类情况就准了。）
-   */
-  const fallback = new Map<number, number | null>(emps.map((e) => [e.id, e.storeId]));
-  const storeAtStart = await storesOfManyAt(
-    emps.map((e) => e.id),
-    start,
-    fallback
-  );
+  // 店长名：按现门店的在职人员填（jobGradeRaw 原文匹配，与编制/分布一致）。
+  //   店长 ← {店长, 代理店长}；技术店长 ← 技术店长；副店长 ← 副店长。
+  //   同店同工种多人时取入职最早者（入职日为空的排最后），再按 id。
+  const pickManager = (storeId: number, grades: string[]): string | null => {
+    const cands = emps
+      .filter(
+        (e) =>
+          e.storeId === storeId &&
+          e.status === "ACTIVE" &&
+          grades.includes(String(e.jobGradeRaw ?? "").trim())
+      )
+      .sort((a, b) => {
+        const ha = a.hireDate ? a.hireDate.getTime() : Infinity;
+        const hb = b.hireDate ? b.hireDate.getTime() : Infinity;
+        return ha - hb || a.id - b.id;
+      });
+    return cands.length ? cands[0].name : null;
+  };
 
-  const byStore = new Map<number, typeof emps>();
-  for (const e of emps) {
-    const sid = storeAtStart.get(e.id) ?? e.storeId;
-    if (sid === null || sid === undefined) continue;
-    if (!byStore.has(sid)) byStore.set(sid, []);
-    byStore.get(sid)!.push(e);
+  const planByStore = new Map(plans.map((p) => [p.storeId, p]));
+  const storeIds = new Set<number>([
+    ...planByStore.keys(),
+    ...emps.map((e) => e.storeId!),
+  ]);
+  const storeNames = new Map<number, string>();
+  for (const p of plans) storeNames.set(p.storeId, p.store.name);
+  const missingNames = [...storeIds].filter((id) => !storeNames.has(id));
+  if (missingNames.length) {
+    const stores = await prisma.store.findMany({
+      where: { id: { in: missingNames } },
+      select: { id: true, name: true },
+    });
+    for (const s of stores) storeNames.set(s.id, s.name);
   }
+  // 有计划的门店按计划顺序在前，其余按 storeId 排后；序号按最终顺序 1..N 重排。
+  const orderedStoreIds = [...storeIds].sort((a, b) => {
+    const pa = planByStore.get(a);
+    const pb = planByStore.get(b);
+    if (pa && pb) return pa.sortOrder - pb.sortOrder || a - b;
+    if (pa) return -1;
+    if (pb) return 1;
+    return a - b;
+  });
 
   // ③ 邀约数量：当月面试记录，按招聘人（管理者姓名）分组
   const invites = await getInvitesByRecruiter(start, end);
 
-  /**
-   * ③' 月初人数：优先用「人工核对快照」，没有快照才按公式实时算。
-   *
-   * ⚠️ 为什么需要快照（Stage 9.22，**不是冗余功能，别删**）：
-   *   公式要求「1 号在职且入职满 3 个月」，但库里 273 条历史档案
-   *   「标记为离职却没有离职日期」（Stage 7.3 治理事故的遗留）。
-   *   这批人在 9/1 时点其实还在职、按公式应该计入月初人数，
-   *   但因为 status=RESIGNED 被当成「不在职」排除了。
-   *   实测：2026-09 按公式只能算出 **220** 人，人工核对真实值是 **255** 人，差 35。
-   *
-   * 口径（有快照优先）：
-   *   • 该月在 `AttritionBaseline` 里有记录 → 直接用人工核对的权威值
-   *   • 没有记录 → 按公式实时算（1 号在职 + 入职满 3 个月），10 月起自动生效
-   *
-   * ⚠️ 快照**只覆盖月初人数**这一项；当月离职/当月入职始终实时统计
-   *    （用户明确说过：Excel 表里那两列不对，不要用）。
-   */
-  const baselines = await prisma.attritionBaseline.findMany({
-    where: { month: start },
-    select: { storeId: true, headcount: true },
-  });
-  const baselineMap = new Map(baselines.map((b) => [b.storeId, b.headcount]));
-  const hasBaseline = baselineMap.size > 0;
-
   // ④ 逐店计算（有副店长的门店会产出 2 行）
   const rows: AttritionRow[] = [];
-  for (const p of plans) {
-    const list = byStore.get(p.storeId) ?? [];
+  orderedStoreIds.forEach((storeId, idx) => {
+    const list = emps.filter((e) => e.storeId === storeId);
 
-    /**
-     * 月初人数 = 1 号在职 且 入职满 3 个月。
-     * 该月有快照时**直接用快照值**（快照优先，见上方说明）。
-     */
-    let monthStartHeadcount = baselineMap.get(p.storeId) ?? 0;
-    // 当月离职：离职日期落在当月 且 入职满 3 个月
+    // 月初人数：入职日期 < 月初，且无离职日期或离职日期 ≥ 月初。
+    // ⚠️ 不要求入职满 3 个月（旧版要求，2026-11-24 按文字定义改掉）。
+    //    269 条「标记离职却没有离职日期」的历史档案也按此计入（无离职日期
+    //    即视为月初仍在职）—— 这正是旧版快照（AttritionBaseline）要补的
+    //    35 人缺口来源；口径修正后公式本身就对了，不再用快照覆盖。
+    let monthStartHeadcount = 0;
+    // 当月离职：离职日期落在当月，且离职时入职满 3 个自然月
+    //   （离职日 − 入职日 ≥ 3 个自然月，按离职日算，不按月初算）
     let monthResigned = 0;
     // 当月入职：入职日期落在当月
     let monthHired = 0;
 
     for (const e of list) {
-      const hired3m = hiredAtLeast3MonthsAgo(e.hireDate, start);
+      const hd = e.hireDate ? e.hireDate.getTime() : null;
+      const rd = e.resignDate ? e.resignDate.getTime() : null;
 
-      // 月初人数：无快照时才实时统计
-      if (!hasBaseline && e.status === "ACTIVE") {
-        if (e.hireDate && e.hireDate.getTime() <= start.getTime() && hired3m) monthStartHeadcount++;
+      if (hd !== null && hd < start.getTime() && (rd === null || rd >= start.getTime())) {
+        monthStartHeadcount++;
       }
 
-      if (e.status !== "ACTIVE") {
-        // RESIGNED
-        if (e.resignDate && e.resignDate.getTime() >= start.getTime() && e.resignDate.getTime() < end.getTime()) {
-          if (hired3m) monthResigned++;
+      if (rd !== null && rd >= start.getTime() && rd < end.getTime()) {
+        if (e.hireDate && hiredAtLeast3MonthsAgo(e.hireDate, e.resignDate!)) {
+          monthResigned++;
         }
       }
 
       // 当月入职：入职日期落在当月（在职离职都算，与 Excel H 列口径一致）
-      if (e.hireDate && e.hireDate.getTime() >= start.getTime() && e.hireDate.getTime() < end.getTime()) {
+      if (hd !== null && hd >= start.getTime() && hd < end.getTime()) {
         monthHired++;
       }
     }
@@ -277,14 +285,14 @@ export async function getAttrition({ month }: MonthParam): Promise<{
     const rate =
       monthStartHeadcount > 0 ? (monthResigned - monthHired) / monthStartHeadcount : null;
     const managers = {
-      storeManager: p.storeManager,
-      techManager: p.techManager,
-      deputyManager: p.deputyManager,
+      storeManager: pickManager(storeId, ["店长", "代理店长"]),
+      techManager: pickManager(storeId, ["技术店长"]),
+      deputyManager: pickManager(storeId, ["副店长"]),
     };
     // 店长行与副店长行共用的人数（同一门店的数据）
     const baseRow = {
-      sortOrder: p.sortOrder,
-      storeName: p.store.name,
+      sortOrder: idx + 1,
+      storeName: storeNames.get(storeId) ?? `门店${storeId}`,
       managers,
       monthStartHeadcount,
       monthResigned,
@@ -299,42 +307,50 @@ export async function getAttrition({ month }: MonthParam): Promise<{
     //    「邀约数量」取**本格填了名字的那一列**（Excel J 列公式逐一核对过：
     //    店长行用 $C、技术店长行用 $D、副店长行用 $E）。
     //    ⛔ 早期版本让「技术店长顶替店长」取邀约，是错的 —— 已修正。
-    const inviteName = p.storeManager ?? p.techManager;
+    const inviteName = managers.storeManager ?? managers.techManager;
     // 没有店长/技术店长时，副店长占用本行（人工表：店长列空、副店长列填名字）
-    const soleDeputy = !inviteName && p.deputyManager ? p.deputyManager : null;
+    const soleDeputy = !inviteName && managers.deputyManager ? managers.deputyManager : null;
     const inviteFor = inviteName ?? soleDeputy;
     rows.push({
       ...baseRow,
       role: soleDeputy ? "DEPUTY_MANAGER" : "STORE_MANAGER",
       managerName: inviteFor,
       invites: inviteFor ? invites.get(inviteFor) ?? 0 : 0,
-      headcountSource: hasBaseline ? "SNAPSHOT" : "COMPUTED",
+      headcountSource: "COMPUTED",
     });
 
     // 该店有副店长 **且已有店长/技术店长** → 才追加一行（人数/流失率相同，只换邀约数量）。
     // ⚠️ 没有店长的门店，副店长就填在本行里（人工表就是这么记的：
     //    店长列空、副店长列填名字，不另起一行）。实测「大朗富华中路店」属于这种。
-    if (p.deputyManager && inviteName) {
+    if (managers.deputyManager && inviteName) {
       rows.push({
         ...baseRow,
         role: "DEPUTY_MANAGER",
-        managerName: p.deputyManager,
-        invites: invites.get(p.deputyManager) ?? 0,
-        headcountSource: hasBaseline ? "SNAPSHOT" : "COMPUTED",
+        managerName: managers.deputyManager,
+        invites: invites.get(managers.deputyManager) ?? 0,
+        headcountSource: "COMPUTED",
       });
     }
-  }
+  });
 
   // ⑤ 汇总
   // ⚠️ 副店长行的人数/流失率与店长行**完全相同**（同一个门店的数据），
   //    汇总时**只能算一次**，否则总人数翻倍、整体流失率算错。
   //    邀约数量则两条都要计（两个管理者各招各的）。
-  const storeRows = rows.filter((r) => r.role === "STORE_MANAGER");
+  //    ⚠️ 2026-11-24 修：按门店去重（取每店第一行），不要只按 STORE_MANAGER 过滤 ——
+  //    只有副店长的门店（soleDeputy）只有一行 DEPUTY_MANAGER，按角色过滤会
+  //    漏掉整家店（实测 2026-09：深圳茜坑天虹店 11 人 + 1 名离职被漏掉）。
+  const seenStores = new Set<string>();
+  const storeRows = rows.filter((r) => {
+    if (seenStores.has(r.storeName)) return false;
+    seenStores.add(r.storeName);
+    return true;
+  });
   const monthStartTotal = storeRows.reduce((s, r) => s + r.monthStartHeadcount, 0);
   const resignedTotal = storeRows.reduce((s, r) => s + r.monthResigned, 0);
   const hiredTotal = storeRows.reduce((s, r) => s + r.monthHired, 0);
   const invitesTotal = rows.reduce((s, r) => s + r.invites, 0);
-  const withRate = rows
+  const withRate = storeRows
     .filter((r) => r.rate !== null)
     .sort((a, b) => b.rate! - a.rate!);
 
@@ -348,13 +364,11 @@ export async function getAttrition({ month }: MonthParam): Promise<{
       invitesTotal,
       overallRate: monthStartTotal > 0 ? (resignedTotal - hiredTotal) / monthStartTotal : null,
       storesWithResign: storeRows.filter((r) => r.monthResigned > 0).length,
-      usesSnapshot: hasBaseline,
+      usesSnapshot: false,
       topWorst: withRate
-        .filter((r) => r.role === "STORE_MANAGER")
         .slice(0, 3)
         .map((r) => ({ storeName: r.storeName, rate: r.rate! })),
       topBest: withRate
-        .filter((r) => r.role === "STORE_MANAGER")
         .slice(-3)
         .reverse()
         .map((r) => ({ storeName: r.storeName, rate: r.rate! })),

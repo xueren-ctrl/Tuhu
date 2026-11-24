@@ -157,3 +157,33 @@ export function clearRange(
     for (let c = c1; c <= c2; c++) putCell(ws, r, c, null);
   }
 }
+
+function colLettersToNum(letters: string): number {
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n;
+}
+
+/** 取消与一块矩形区域相交的合并单元格。
+ *  ExcelJS 里合并从格的值写不进去、读不出来。原表流失率的 A4:A5、A11:A12 是
+ *  旧门店“副店长行”留下的合并，行布局变了之后若不取消，会把新门店的序号
+ *  （写进从格）吞掉。只取消与目标矩形相交的合并，表头与右侧文字说明的合并不动。 */
+export function unmergeCellsIn(
+  ws: ExcelJS.Worksheet,
+  r1: number,
+  r2: number,
+  c1: number,
+  c2: number
+): void {
+  const merges = Array.from(ws.model.merges ?? []);
+  for (const range of merges) {
+    const m = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(range);
+    if (!m) continue;
+    const mc1 = colLettersToNum(m[1]);
+    const mr1 = Number(m[2]);
+    const mc2 = colLettersToNum(m[3]);
+    const mr2 = Number(m[4]);
+    if (mr2 < r1 || mr1 > r2 || mc2 < c1 || mc1 > c2) continue;
+    ws.unMergeCells(range);
+  }
+}

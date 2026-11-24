@@ -38,7 +38,7 @@ import ExcelJS from "exceljs";
 import { prisma } from "./prisma";
 import { formatDate } from "./format";
 import { renderTenureCn, hasCompletedTwoMonths } from "./tenure";
-import { flattenFormulas, putCell, clearRange } from "./excel-export-helpers";
+import { flattenFormulas, putCell, clearRange, unmergeCellsIn } from "./excel-export-helpers";
 import { EMPLOYEE_STATUS_LABEL } from "./constants";
 // 统计表口径**直接复用页面所用的服务**，绝不在导出里另写一套算法
 import { getStoreHeadcount } from "./headcount-service";
@@ -1034,7 +1034,8 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
   // 实测列序（R3）：1 序号 / 2 门店名称 / 3 店长 / 4 技术店长 / 5 副店长 /
   //                6 实时人数 / 7 当月离职 / 8 当月入职 / 9 流失率 / 10 邀约数量
   // ⚠️ 原表**一家门店占 1~2 行**（有副店长就多一行副店长行），A/B 列是合并单元格。
-  //    合并结构保持原样（只写主格，从格自动跳过）。
+  //    导出时先取消数据区 A/B 列的旧合并（见下 unmergeCellsIn），否则旧合并会吞掉
+  //    新门店的序号；真正占 2 行的门店，序号/店名只写在店长行，不再跨行合并。
   {
     const sheet = "人员流失率";
     const ws = wb.getWorksheet(sheet);
@@ -1043,11 +1044,15 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
       out.push({ sheet, rows: 0, written: 0, note: "Excel 里没有这个 Sheet" });
     } else {
       const { dataStart } = layout;
-      // ⚠️ 2026-11-24 修：0 行时不清空、不改标题，保留原模板内容（见 ①）。
-      //    流失率的行结构（每家店 1~2 行、店长/副店长分行）和店长姓名都来自
-      //    AttritionIndicator 指标计划，该表系统里是空的；从在职员工工种
-      //    推导店长名并不可靠（实测李正秋：库里工种是「店长」，原表流失率
-      //    记的是「副店长」），所以不强行推导，保留原表。
+      // ⚠️ 2026-11-24 改：流失率按原表旁边的文字定义从库里实时算，不再留模板。
+      //    口径（用户确认）：流失率=(当月离职−当月入职)/月初人数；当月离职只算
+      //    离职时入职满 3 个自然月的人；月初人数=入职日期<月初且无离职日期或
+      //    离职日期≥月初（不要求满 3 个月）；门店按现门店计，调店归属新店。
+      //    行来源 = 指标计划 ∪ 有在职/离职员工的门店（计划表 AttritionIndicator
+      //    是空的，不能只靠它）；店长名按现门店在职员工的工种填
+      //    （jobGradeRaw 原文匹配，与编制/分布一致）。
+      //    0 行时不清空、不改标题，保留原模板内容（见 ①）—— 正常情况下不会
+      //    0 行（只要库里有员工就有行）；这里是兜底。
       if (attrition.rows.length === 0) {
         out.push({
           sheet,
@@ -1056,14 +1061,27 @@ async function writeStatSheets(wb: ExcelJS.Workbook, month: string): Promise<Exp
           note: "系统里没有流失率指标数据（AttritionIndicator 未导入），保留原模板内容未清空",
         });
       } else {
-      clearRange(ws, dataStart, lastDataRow(ws, dataStart, layout.lastCol), 1, layout.lastCol);
+      // ⚠️ 2026-11-24 修：先取消数据区 A/B 列的旧合并再写。原表 A4:A5、A11:A12 是
+      //    旧门店“副店长行”留下的合并，行布局变了之后若不取消，会把新门店的序号
+      //    （写进合并从格）吞掉——实测 2026-09 导出因此丢了 2 个序号（东城东宝路店、
+      //    南昌崇仁人民大道店）。表头与右侧文字说明的合并在数据区之外，不受影响。
+      //    真正有副店长、占 2 行的门店，序号和店名写在两行（原表是跨行合并，
+      //    一个序号/店名属于整家店，两行共用；人数/离职/入职/流失率/邀约在原表
+      //    里本来就是两行重复的）——数据正确，外观略有不同。
+      const lastRow = lastDataRow(ws, dataStart, layout.lastCol);
+      unmergeCellsIn(ws, dataStart, lastRow, 1, 2);
+      clearRange(ws, dataStart, lastRow, 1, layout.lastCol);
       let written = 0;
       let rowNo = 0;
       for (const r of attrition.rows) {
         const target = dataStart + rowNo;
         if (putCell(ws, target, 2, r.storeName)) written++;
+        // ⚠️ 序号 = 门店序号（sortOrder），店长行和副店长行都写——原表里一家
+        //    占 2 行的门店序号是跨行合并的（一个序号属于整家店，两行共用）；
+        //    只写店长行的话，独占副店长的门店（深圳茜坑天虹店）会让序号出现
+        //    缺口（1..33、35..44，缺 34）。两行都写，序号连续 1..44。
+        if (putCell(ws, target, 1, r.sortOrder)) written++;
         if (r.role === "STORE_MANAGER") {
-          if (putCell(ws, target, 1, r.sortOrder)) written++;
           if (putCell(ws, target, 3, r.managers.storeManager ?? "")) written++;
           if (putCell(ws, target, 4, r.managers.techManager ?? "")) written++;
         } else {
