@@ -11,6 +11,7 @@ import { maskByField, maskIdCard, maskPhone } from "../mask";
 export const ISSUE_TYPE_LABEL: Record<IssueType, string> = {
   MISSING_ID: "身份证缺失",
   INVALID_ID: "身份证异常",
+  INVALID_PHONE: "手机号非合法 11 位（已保留原文）",
   FIELD_MISPLACED: "列错位已归位",
   INVALID_DATE: "日期无法解析",
   EMPTY_NAME: "姓名为空",

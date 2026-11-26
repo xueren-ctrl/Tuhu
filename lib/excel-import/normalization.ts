@@ -146,6 +146,22 @@ export function digitsOnly(v: string | null): string | null {
   return d === "" ? null : d;
 }
 
+/**
+ * 手机号归一化（2026-11-26 修）：
+ * digitsOnly 后是合法 11 位手机号（/^1\d{10}$/）→ 返回纯数字；
+ * 否则保留原始文本（trim 后），不把「做了3天就走了」截成「3」。
+ * 调用方应在保留原文时记一条 INVALID_PHONE issue（行号 + 原值）。
+ * 纯函数，不记 issue；需要记 issue 的调用方自行判断返回值与 digitsOnly 是否不同。
+ */
+export function normalizePhoneKeepRaw(v: string | null): string | null {
+  if (!v) return null;
+  const t = v.trim();
+  if (t === "") return null;
+  const d = digitsOnly(t);
+  if (d && RE_MOBILE.test(d)) return d;
+  return t;
+}
+
 export const RE_ID18 = /^\d{17}[\dX]$/;
 const RE_MOBILE = /^1\d{10}$/;
 const RE_BCARD = /^\d{12,19}$/;

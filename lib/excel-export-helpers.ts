@@ -127,6 +127,11 @@ export function flattenFormulas(wb: ExcelJS.Workbook): {
  * 写入一个数据格（自动跳过合并从格）。
  * 值为 null / undefined / 空串时写入 **null（清空该格）**，而不是「跳过不动」——
  * 这是「数据必须与软件一致」的保证：软件里清空了的字段，导出也必须是空。
+ *
+ * ⚠️ 2026-11-26 兜底：库里若已存有 "[object Object]" 字面量（旧版导入把
+ *    对象 String() 后的脏值写进了库，如刘钰贤的面试评估表/备注），导出时
+ *    一律写空，不把脏字面量原样输出。根因在导入端已修（见
+ *    lib/excel-import/normalization.ts 的 readCellValue），这里是最后一道防线。
  */
 export function putCell(
   ws: ExcelJS.Worksheet,
@@ -138,6 +143,10 @@ export function putCell(
   const cell = ws.getCell(row, col);
   if (isMergeSlave(cell)) return false;
   if (value === null || value === undefined || value === "") {
+    cell.value = null as never;
+    return true;
+  }
+  if (String(value) === "[object Object]") {
     cell.value = null as never;
     return true;
   }

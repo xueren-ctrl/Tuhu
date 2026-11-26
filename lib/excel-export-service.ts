@@ -39,6 +39,7 @@ import { prisma } from "./prisma";
 import { formatDate } from "./format";
 import { renderTenureCn, hasCompletedTwoMonths } from "./tenure";
 import { flattenFormulas, putCell, clearRange, unmergeCellsIn } from "./excel-export-helpers";
+import { normalizeIdCard, looksIdCard, normalizePhoneKeepRaw } from "./excel-import/normalization";
 import { EMPLOYEE_STATUS_LABEL } from "./constants";
 // 统计表口径**直接复用页面所用的服务**，绝不在导出里另写一套算法
 import { getStoreHeadcount } from "./headcount-service";
@@ -198,6 +199,15 @@ const SHEET_STATUS: Record<string, string[]> = {
   运营部离职: ["OPS_RESIGNED"],
 };
 
+/** 各人员表在原表里的身份证列（1-based；与 STAFF_COLUMNS 一致） */
+const SHEET_IDCARD_COL: Record<string, number> = {
+  在职: 6,
+  离职: 6,
+  南昌3店: 6,
+  运营部: 13,
+  运营部离职: 13,
+};
+
 /** XLOOKUP 匹配失败时 Excel 写入的字面量，出现即代表「这条公式没取到值」 */
 const NOT_FOUND = "没找到";
 
@@ -340,23 +350,57 @@ function toHireIso(v: unknown): string {
  * hireDateCol（可选）：同时读出该行的入职日期（归一化为 yyyy-MM-dd），
  * 供 alignToOriginalOrder 在同名多条记录时按「姓名 + 入职日期」精确定位
  * （2026-11-24 修：旧版只按姓名取第一条，全帅棋被配到另一家店的离职记录）。
+ *
+ * idCardCol（可选，2026-11-26 新增）：同时读出该行的身份证号（归一化：
+ * 去分隔符、末位 X 大写），供 alignToOriginalOrder 在同名多条时按
+ * 「姓名 + 身份证号」精确定位。模板行与候选记录身份证都非空且不同时，
+ * 绝不取该记录（宁可留空）。各表身份证列：数据库/在职/离职/南昌3店 = 6，
+ * 运营部/运营部离职 = 13（见 STAFF_COLUMNS）。
+ *
+ * ⚠️ 2026-11-26 补：身份证列本身也可能被填错——原文件有 101 行把手机号
+ * 填在身份证列、身份证填在电话列（与 parser 3.1 同一类串位，如郭驰行 191）。
+ * 这里读身份证列的同时读电话列（idCardCol + 1，各表都是相邻两列），
+ * 与 parser 3.1 用同一条判断：身份证列不是身份证、电话列是身份证时，
+ * 取电话列的值作身份证号。不做这一步，这 101 行会因「身份证冲突」整行
+ * 留空（实测：数据库表 84 行、离职表 91 行被误判为空）。
+ *
+ * 同时读出电话列（phone，与身份证列相邻），供 alignToOriginalOrder 在
+ * 「姓名+身份证+入职日期」三键都相同、无法区分时作最后一道区分
+ * （如罗龙平行 192/198：同名、无身份证、同入职日期，只有电话不同）。
  */
 function readOriginalOrder(
   ws: ExcelJS.Worksheet,
   nameCol: number,
   headerRow: number,
-  hireDateCol?: number
-): { row: number; name: string; hireDate: string }[] {
-  const out: { row: number; name: string; hireDate: string }[] = [];
+  hireDateCol?: number,
+  idCardCol?: number
+): { row: number; name: string; hireDate: string; idCard: string; phone: string }[] {
+  const out: { row: number; name: string; hireDate: string; idCard: string; phone: string }[] = [];
   if (nameCol <= 0) return out;
   const readHire = hireDateCol !== undefined && hireDateCol > 0 && hireDateCol !== nameCol;
+  const readId = idCardCol !== undefined && idCardCol > 0 && idCardCol !== nameCol;
   for (let r = headerRow + 1; r <= ws.rowCount; r++) {
     const nm = cellToText(ws.getRow(r).getCell(nameCol).value);
     if (nm) {
+      let idCard = "";
+      let phone = "";
+      if (readId) {
+        const idRaw = normalizeIdCard(cellToText(ws.getRow(r).getCell(idCardCol!).value));
+        idCard = idRaw ?? "";
+        // 身份证/电话互换行：身份证列不是身份证、电话列（下一列）是身份证时，
+        // 取电话列的值（与 parser 3.1 同一判断，否则该行会被误判为身份证冲突而留空）。
+        const phoneRaw = normalizePhoneKeepRaw(cellToText(ws.getRow(r).getCell(idCardCol! + 1).value));
+        phone = phoneRaw ?? "";
+        if (!looksIdCard(idRaw) && looksIdCard(normalizeIdCard(phoneRaw))) {
+          idCard = normalizeIdCard(phoneRaw) ?? "";
+        }
+      }
       out.push({
         row: r,
         name: nm,
         hireDate: readHire ? toHireIso(ws.getRow(r).getCell(hireDateCol!).value) : "",
+        idCard,
+        phone,
       });
     }
   }
@@ -377,41 +421,107 @@ function readOriginalOrder(
  *    （旧行为）。实测：全帅棋在职行（入职 2026-03-07）旧版配到
  *    大朗富丽东路店的离职记录（入职 2025-07-13），修后配到
  *    大朗富华中路店的正确记录。
+ *
+ * ⚠️ 2026-11-26 修：同名多条时**身份证号优先于入职日期**。
+ *    匹配顺序：⓪ 源行号相同（仅数据库表，模板行号 = 导入源行号，1:1 精确）→
+ *    ① 身份证号相同 → ② 入职日期相同**且唯一**（且身份证不冲突；
+ *    入职日期撞上多个候选时不抢 pick，留给电话区分，否则先到先得会
+ *    把两个同名同入职的人写反，如罗龙平） →
+ *    ②.5 电话相同且唯一（且身份证不冲突；三键都相同、只剩电话能区分时用，
+ *    如罗龙平行 192/198） → ③ 第一条未使用且身份证不冲突的同名记录。
+ *    模板行身份证与候选记录身份证**都非空且不同时，绝不取该记录**——
+ *    宁可留空（并经 opts.onIdMismatch 回调记入导出 stats note），
+ *    也不张冠李戴（实测：许颖行 1689/1693、颜泉行 1902/2008 的首月保障
+ *    串位就是这么来的）。reuseExhausted 复用时同样受此约束。
  */
 function alignToOriginalOrder(
-  originalEntries: Array<{ name: string; hireDate?: string }>,
+  originalEntries: Array<{ row?: number; name: string; hireDate?: string; idCard?: string; phone?: string }>,
   rows: Record<string, unknown>[],
   opts: {
     append?: (r: Record<string, unknown>) => boolean;
     reuseExhausted?: boolean;
+    /**
+     * 仅数据库表传 true：模板就是导入源文件，模板行号 = 员工 sourceRowNo，
+     * 可 1:1 精确直配。人员类表（在职/离职/运营部…）的行号与数据库源行号
+     * 无关，绝不能传（行号巧合会对上另一个人）。
+     */
+    matchSourceRow?: boolean;
+    /** 模板行身份证与全部候选记录身份证都非空且不同、被迫留空时调用 */
+    onIdMismatch?: (ent: { name: string; hireDate?: string; idCard?: string }) => void;
   } = {}
 ): (Record<string, unknown> | null)[] {
-  const { append = () => true, reuseExhausted = false } = opts;
+  const { append = () => true, reuseExhausted = false, matchSourceRow = false, onIdMismatch } = opts;
   const byName = new Map<string, Record<string, unknown>[]>();
   for (const r of rows) {
     const k = String(r.name ?? "");
     if (!byName.has(k)) byName.set(k, []);
     byName.get(k)!.push(r);
   }
+  /** 候选记录的身份证号（归一化；无此字段的记录视为空） */
+  const recId = (r: Record<string, unknown>): string =>
+    normalizeIdCard(
+      r.idCardNo === null || r.idCardNo === undefined ? null : String(r.idCardNo)
+    ) ?? "";
+  /** 候选记录的电话（库里已是 normalizePhoneKeepRaw 后的值） */
+  const recPhone = (r: Record<string, unknown>): string => {
+    const p = r.phone;
+    return p === null || p === undefined ? "" : String(p);
+  };
+  /** 两边身份证都非空且不同 → 绝不能取 */
+  const idConflict = (entId: string, r: Record<string, unknown>): boolean => {
+    const rid = recId(r);
+    return entId !== "" && rid !== "" && entId !== rid;
+  };
   const used = new Set<Record<string, unknown>>();
   const aligned: (Record<string, unknown> | null)[] = [];
   for (const ent of originalEntries) {
+    const entId = ent.idCard ?? "";
     const bucket = byName.get(ent.name) ?? [];
     const unused = bucket.filter((r) => !used.has(r));
     let pick: Record<string, unknown> | undefined;
-    // 同名多条时：入职日期相同的优先（原表行自带入职日期）
-    if (ent.hireDate) {
-      pick = unused.find((r) => toHireIso(r.hireDate) === ent.hireDate);
+    // ⓪ 源行号相同（仅数据库表）：模板行号 = 导入源行号，精确直配
+    if (!pick && matchSourceRow && ent.row !== undefined) {
+      pick = unused.find((r) => r.sourceRowNo === ent.row);
     }
-    if (!pick) pick = unused[0];
+    // ① 身份证号相同的优先
+    if (!pick && entId) {
+      pick = unused.find((r) => recId(r) === entId);
+    }
+    // ② 入职日期相同且唯一、且身份证不冲突（撞上多个候选时不抢，留给电话区分）
+    if (!pick && ent.hireDate) {
+      const hireHits = unused.filter(
+        (r) => toHireIso(r.hireDate) === ent.hireDate && !idConflict(entId, r)
+      );
+      if (hireHits.length === 1) pick = hireHits[0];
+    }
+    // ②.5 电话相同且唯一、且身份证不冲突（三键全同、只剩电话能区分时）
+    if (!pick && ent.phone) {
+      const phoneHits = unused.filter(
+        (r) => recPhone(r) === ent.phone && !idConflict(entId, r)
+      );
+      if (phoneHits.length === 1) pick = phoneHits[0];
+    }
+    // ③ 第一条未使用且身份证不冲突的同名记录
+    if (!pick) pick = unused.find((r) => !idConflict(entId, r));
     if (pick) {
       aligned.push(pick);
       used.add(pick);
     } else if (bucket.length > 0 && reuseExhausted) {
-      // 同名多行但库里只有 1 条档案 → 复用第一条，保持行数与人工表一致
-      aligned.push(bucket[0]);
+      // 同名多行但库里只有 1 条档案 → 复用第一条，保持行数与人工表一致；
+      // 但身份证冲突时绝不复用（宁可留空）。
+      const reuse = bucket.find((r) => !idConflict(entId, r)) ?? bucket[0];
+      if (!idConflict(entId, reuse)) {
+        aligned.push(reuse);
+      } else {
+        aligned.push(null);
+        onIdMismatch?.(ent);
+      }
     } else {
       aligned.push(null);
+      // 模板行有身份证、库里同名记录全是不同身份证 → 记一笔（不是"库中已无此人"）
+      if (entId && bucket.length > 0 && bucket.every((r) => idConflict(entId, r))) {
+        onIdMismatch?.(ent);
+      }
     }
   }
   for (const r of rows) {
@@ -512,12 +622,16 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
         const sb = statuses.includes(String(b.status)) ? 0 : 1;
         return sa - sb;
       });
-    const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow, 3);
+    const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow, 3, SHEET_IDCARD_COL[sheet]);
     // 迁移校验口径：行集合 = 原表行（顺序、行数不变）；
     // 同名多行复用同一条档案；只有「导入之后新增」的员工才追加到末尾
+    let idMismatch = 0;
     const aligned = alignToOriginalOrder(entries, allRows, {
       reuseExhausted: true,
       append: (r) => !r.importBatch && statuses.includes(String(r.status)),
+      onIdMismatch: () => {
+        idMismatch++;
+      },
     });
 
     // 写入的物理行号：原有行按原行号回填，追加的新员工接在最后一行之后
@@ -563,7 +677,10 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
       written,
       note:
         `按原表顺序写 ${aligned.length} 行 × ${cols.filter(Boolean).length} 列实值（0 公式）` +
-        (missing ? `；其中 ${missing} 行原表有、库中已无，保持空白` : ""),
+        (missing ? `；其中 ${missing} 行原表有、库中已无，保持空白` : "") +
+        (idMismatch
+          ? `；其中 ${idMismatch} 行因身份证号与库中同名记录不一致而留空（宁可空着也不张冠李戴）`
+          : ""),
     });
   }
 
@@ -575,11 +692,17 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
     if (ws && layout) {
       const cols = STAFF_COLUMNS[sheet];
       const rows = employees as unknown as Record<string, unknown>[];
-      const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow, 3);
+      const entries = readOriginalOrder(ws, layout.nameCol, layout.headerRow, 3, 6);
       // 同 ②：行集合 = 原表行；只追加导入之后新增的员工
+      let idMismatch = 0;
       const aligned = alignToOriginalOrder(entries, rows, {
         reuseExhausted: true,
+        // 数据库表模板 = 导入源文件：模板行号 = 员工 sourceRowNo，1:1 精确直配
+        matchSourceRow: true,
         append: (r) => !r.importBatch,
+        onIdMismatch: () => {
+          idMismatch++;
+        },
       });
       const tplLast = lastDataRow(ws, layout.dataStart, layout.lastCol);
       const lastOriginalRow = entries.length ? entries[entries.length - 1].row : layout.dataStart - 1;
@@ -614,7 +737,11 @@ export async function exportExcel(opts: { month?: string } = {}): Promise<Export
         sheet,
         rows: aligned.length,
         written,
-        note: `全部 ${rows.length} 名员工 × ${cols.filter(Boolean).length} 列实值（不受状态限制，0 公式）`,
+        note:
+          `全部 ${rows.length} 名员工 × ${cols.filter(Boolean).length} 列实值（不受状态限制，0 公式）` +
+          (idMismatch
+            ? `；其中 ${idMismatch} 行因身份证号与库中同名记录不一致而留空（宁可空着也不张冠李戴）`
+            : ""),
       });
     } else {
       stats.push({ sheet, rows: 0, written: 0, note: "Excel 里没有这个 Sheet" });

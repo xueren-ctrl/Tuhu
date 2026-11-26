@@ -25,8 +25,9 @@ import type { Prisma } from "@prisma/client";
 
 // ---- 共享解析底座（第五阶段）：解析/归一化/状态判定只有这一份实现 ----
 import type { EmployeeRecord, EmployeeStatus, ParseIssue } from "../lib/excel-import/types";
-import { parseWorkbook } from "../lib/excel-import/parser";
-import { dateFromIso, normalizeForCompare } from "../lib/excel-import/normalization";
+import { parseOpsSheets, parseWorkbook } from "../lib/excel-import/parser";
+import type { OpsContactRow } from "../lib/excel-import/parser";
+import { dateFromIso, normalizeForCompare, normalizeIdCard } from "../lib/excel-import/normalization";
 import { SPEC_BY_FIELD, STORED_SPECS } from "../lib/excel-import/field-mapping";
 // Stage 7.1.5（P0）：门店解析统一入口（ACTIVE 门店 > 指向 ACTIVE 门店的别名 > null）
 import { resolveStoreNamesBatch } from "../lib/store-service";
@@ -448,6 +449,11 @@ async function main() {
   // 旧逻辑会按「身份证唯一」合并并用后一行的值覆盖前一行的姓名/入职日期，
   // 实测造成 3 条记录姓名错位。这里记录 empId → 姓名，合并前先比对姓名。
   const nameByEmpId = new Map<number, string>();
+  // empId → 身份证号原文（归一化后），供溯源/姓名匹配前的「身份证不一致则不合并」防护
+  const idCardByEmpId = new Map<number, string | null>();
+  // 姓名+入职 / 姓名+电话 的多候选追踪：同键对应多条员工时绝不强行合并
+  const nameHireCandidates = new Map<string, Set<number>>();
+  const namePhoneCandidates = new Map<string, Set<number>>();
   // 溯源键：来源 Sheet + 原始行号，持久化在 EmployeeSourceRow 表。
   // 这是「没有任何业务去重键」的行的最后兜底，也是重复执行导入幂等性的保证。
   const bySourceRow = new Map<string, number>();
@@ -480,9 +486,20 @@ async function main() {
       else idSingle.delete(idKey); // 出现多条 → 不再视为唯一
       if (hireIso) idCardsWithHire.add(idKey);
     }
-    if (hireIso) byNameHire.set(`${e.name}|${hireIso}`, e.id);
-    if (e.phone) byNamePhone.set(`${e.name}|${e.phone}`, e.id);
+    if (hireIso) {
+      byNameHire.set(`${e.name}|${hireIso}`, e.id);
+      const s = nameHireCandidates.get(`${e.name}|${hireIso}`) ?? new Set<number>();
+      s.add(e.id);
+      nameHireCandidates.set(`${e.name}|${hireIso}`, s);
+    }
+    if (e.phone) {
+      byNamePhone.set(`${e.name}|${e.phone}`, e.id);
+      const s = namePhoneCandidates.get(`${e.name}|${e.phone}`) ?? new Set<number>();
+      s.add(e.id);
+      namePhoneCandidates.set(`${e.name}|${e.phone}`, s);
+    }
     nameByEmpId.set(e.id, e.name);
+    idCardByEmpId.set(e.id, e.idCardNo);
     hireByEmpId.set(e.id, hireIso);
   };
 
@@ -554,6 +571,8 @@ async function main() {
     const hireIso = p.hireDate ? isoDate(p.hireDate) : null;
     const hireKey = `${p.name}|${hireIso ?? ""}`;
     const phoneKey = p.phone ? `${p.name}|${p.phone}` : null;
+    /** 本行身份证号（归一化后；含非 18 位的短号） */
+    const rowIdNorm = normalizeIdCard(p.idCardRaw);
 
     let targetId: number | null = null;
     let matchedBy:
@@ -563,6 +582,41 @@ async function main() {
       | "namePhone"
       | "sourceRow"
       | null = null;
+
+    // ⓪ 溯源键优先：来源 Sheet + 原始行号（EmployeeSourceRow 持久化映射）。
+    //    2026-11-26 修：移到最前。修复后的拆分记录（同名多行各有独立档案）
+    //    靠它保证幂等：同一行永远回到同一条员工记录，不会因姓名/身份证
+    //    相同又被业务键合并回去。
+    //    防护：若该行身份证/姓名与映射员工不一致（旧错误合并的残留映射），
+    //    不采用，回退到业务键重新匹配；映射会在本行落库时被纠正。
+    if (targetId === null) {
+      const v = bySourceRow.get(`${DB_SHEET}|${p.row}`);
+      if (v !== undefined) {
+        const candName = nameByEmpId.get(v) ?? "";
+        const candId = normalizeIdCard(idCardByEmpId.get(v) ?? null);
+        const nameOk =
+          normalizeForCompare("name", candName) ===
+          normalizeForCompare("name", p.name ?? "");
+        const idOk = !rowIdNorm || !candId || rowIdNorm === candId;
+        if (nameOk && idOk) {
+          targetId = v;
+          matchedBy = "sourceRow";
+          matchBySourceRow++;
+        } else {
+          addIssue({
+            row: p.row,
+            name: p.name,
+            field: null,
+            rawValue: null,
+            type: "OTHER",
+            severity: "WARN",
+            message:
+              "溯源映射指向的员工与本行姓名/身份证不一致（疑似旧错误合并的残留映射），" +
+              "已放弃溯源匹配，改按业务键重新匹配；本行落库后映射将被纠正",
+          });
+        }
+      }
+    }
 
     // ① 身份证号 + 入职日期 —— 最可靠，可区分同一人的多次入职
     if (p.idCardKey && hireIso) {
@@ -624,66 +678,91 @@ async function main() {
     }
 
     // ③ 姓名 + 入职日期
+    //    2026-11-26 修：两道防护 ——
+    //    (a) 本行身份证非空、候选记录身份证非空且不同 → 绝不按姓名合并
+    //        （同名不同人，如许颖行 1689/1693），回退新建；
+    //    (b) 同键对应多条候选 → 记 issue，不强行合并。
     if (targetId === null && hireIso) {
-      const v = byNameHire.get(hireKey);
-      if (v !== undefined) {
-        targetId = v;
-        matchedBy = "nameHire";
-        matchByNameHire++;
-        addIssue({
-          row: p.row,
-          name: p.name,
-          field: "身份证号",
-          rawValue: null,
-          type: "FALLBACK_MATCH",
-          severity: "WARN",
-          message: "身份证号缺失，已回退用「姓名+入职日期」匹配到已有员工（谨慎策略）",
-        });
-      }
-    }
-
-    // ④ 姓名 + 电话 —— 严格限制：仅当候选记录的入职日期未知(null)时才匹配。
-    //    若候选记录已有入职日期且与本行不同，那是另一段任职（重新入职），
-    //    必须新建记录而不能合并，否则会丢失历史任职数据。
-    if (targetId === null && phoneKey) {
-      const v = byNamePhone.get(phoneKey);
-      if (v !== undefined && hireByEmpId.get(v) === null) {
-        targetId = v;
-        matchedBy = "namePhone";
-        matchByNamePhone++;
-        addIssue({
-          row: p.row,
-          name: p.name,
-          field: "身份证号",
-          rawValue: null,
-          type: "FALLBACK_MATCH",
-          severity: "WARN",
-          message:
-            "身份证号与入职日期均不足，已回退用「姓名+电话」匹配到一条入职日期为空的已有员工（谨慎策略）",
-        });
-      }
-    }
-
-    // ⑤ 溯源键兜底：来源 Sheet + 原始行号
-    //    用于「没有任何业务去重键」的行，保证重复执行导入不会重复创建员工。
-    //    注意：若有人手工在 Excel 中插入/删除行，行号会整体位移，
-    //    此时该兜底可能失效 —— 因此仍强烈建议尽快补录身份证号。
-    if (targetId === null) {
-      const v = bySourceRow.get(`${DB_SHEET}|${p.row}`);
-      if (v !== undefined) {
-        targetId = v;
-        matchedBy = "sourceRow";
-        matchBySourceRow++;
+      const cands = nameHireCandidates.get(hireKey);
+      if (cands && cands.size > 1) {
         addIssue({
           row: p.row,
           name: p.name,
           field: null,
-          rawValue: `来源行 ${p.row}`,
+          rawValue: null,
           type: "OTHER",
           severity: "WARN",
-          message:
-            "无身份证号/入职日期/电话等业务去重键，已按「来源 Sheet + 原始行号」溯源键匹配到同一条记录（保证重复执行导入幂等）",
+          message: `「姓名+入职日期」在库中对应 ${cands.size} 条员工记录，无法唯一确定，已按独立记录处理，不强行合并，请人工核对`,
         });
+      } else {
+        const v = byNameHire.get(hireKey);
+        if (v !== undefined) {
+          const candId = normalizeIdCard(idCardByEmpId.get(v) ?? null);
+          if (rowIdNorm && candId && rowIdNorm !== candId) {
+            addIssue({
+              row: p.row,
+              name: p.name,
+              field: "身份证号",
+              rawValue: null,
+              type: "OTHER",
+              severity: "WARN",
+              message:
+                "本行身份证号与同名同入职日期的已有记录不一致，已按独立记录处理，不合并，请人工核对身份证号",
+            });
+          } else {
+            targetId = v;
+            matchedBy = "nameHire";
+            matchByNameHire++;
+            addIssue({
+              row: p.row,
+              name: p.name,
+              field: "身份证号",
+              rawValue: null,
+              type: "FALLBACK_MATCH",
+              severity: "WARN",
+              message: "身份证号缺失，已回退用「姓名+入职日期」匹配到已有员工（谨慎策略）",
+            });
+          }
+        }
+      }
+    }
+
+    // ④ 姓名 + 电话 —— 2026-11-26 修：收紧为准 ——
+    //    只有「本行与候选记录双方都无身份证」时才允许；任一方有身份证即不用此策略；
+    //    候选记录须入职日期未知（旧规则：否则是另一段任职）；多条候选 → 记 issue，不合并。
+    if (targetId === null && phoneKey && !rowIdNorm) {
+      const cands = namePhoneCandidates.get(phoneKey);
+      if (cands && cands.size > 1) {
+        addIssue({
+          row: p.row,
+          name: p.name,
+          field: null,
+          rawValue: null,
+          type: "OTHER",
+          severity: "WARN",
+          message: `「姓名+电话」在库中对应 ${cands.size} 条员工记录，无法唯一确定，已按独立记录处理，不强行合并，请人工核对`,
+        });
+      } else {
+        const v = byNamePhone.get(phoneKey);
+        if (v !== undefined && hireByEmpId.get(v) === null) {
+          const candId = normalizeIdCard(idCardByEmpId.get(v) ?? null);
+          if (!candId) {
+            targetId = v;
+            matchedBy = "namePhone";
+            matchByNamePhone++;
+            addIssue({
+              row: p.row,
+              name: p.name,
+              field: "身份证号",
+              rawValue: null,
+              type: "FALLBACK_MATCH",
+              severity: "WARN",
+              message:
+                "身份证号与入职日期均不足，已回退用「姓名+电话」匹配到一条入职日期为空的已有员工（谨慎策略）",
+            });
+          }
+          // 候选记录有身份证号 → 本行无身份证不能证明是同一人，不合并
+        }
       }
     }
 
@@ -894,6 +973,111 @@ async function main() {
   );
   console.log("");
 
+  // ---- 6.2 运营部 / 运营部离职：回填工作电话与户籍地址（2026-11-26 新增） ----
+  // 导入只读「数据库」表，从不读这两个表，所以 Employee.workPhone /
+  // householdAddress 全是空，导出运营部表这两列全空白。运营部的工作电话
+  // 只存在于这两个表里（数据库表没有这一列），必须单独读、按身份证号匹配回填。
+  // 只取工作电话（15 列）与户籍地址（16 列），别的不碰；匹配不到不新建员工。
+  const opsStat = { rows: 0, filled: 0, unchanged: 0, skipped: 0 };
+  {
+    const opsRows = parseOpsSheets(wb);
+    opsStat.rows = opsRows.length;
+    if (opsRows.length > 0) {
+      const allEmps = await prisma.employee.findMany({
+        select: {
+          id: true,
+          name: true,
+          idCardNo: true,
+          hireDate: true,
+          workPhone: true,
+          householdAddress: true,
+        },
+      });
+      const byIdCard = new Map<string, typeof allEmps>();
+      for (const e of allEmps) {
+        const k = normalizeIdCard(e.idCardNo);
+        if (!k) continue;
+        const arr = byIdCard.get(k) ?? [];
+        arr.push(e);
+        byIdCard.set(k, arr);
+      }
+      for (const o of opsRows) {
+        const rowId = normalizeIdCard(o.idCardRaw);
+        if (!rowId) {
+          opsStat.skipped++;
+          addIssue({
+            row: o.rowNo,
+            name: o.name,
+            field: "身份证号",
+            rawValue: null,
+            type: "OTHER",
+            severity: "WARN",
+            message: `「${o.sheet}」第 ${o.rowNo} 行无身份证号，无法匹配员工，未回填工作电话/户籍地址`,
+          });
+          continue;
+        }
+        let cands = byIdCard.get(rowId) ?? [];
+        if (cands.length > 1) {
+          // 同身份证多条任职 → 先按姓名、再按入职日期消歧
+          const byName = cands.filter(
+            (e) =>
+              normalizeForCompare("name", e.name) ===
+              normalizeForCompare("name", o.name)
+          );
+          if (byName.length > 0) cands = byName;
+          if (cands.length > 1 && o.hireDate) {
+            const byHire = cands.filter(
+              (e) => e.hireDate && isoDate(e.hireDate) === o.hireDate
+            );
+            if (byHire.length > 0) cands = byHire;
+          }
+        }
+        if (cands.length === 0) {
+          opsStat.skipped++;
+          addIssue({
+            row: o.rowNo,
+            name: o.name,
+            field: "身份证号",
+            rawValue: null,
+            type: "OTHER",
+            severity: "WARN",
+            message: `「${o.sheet}」第 ${o.rowNo} 行的身份证号在库中无匹配员工，未回填工作电话/户籍地址`,
+          });
+          continue;
+        }
+        if (cands.length > 1) {
+          opsStat.skipped++;
+          addIssue({
+            row: o.rowNo,
+            name: o.name,
+            field: "身份证号",
+            rawValue: null,
+            type: "OTHER",
+            severity: "WARN",
+            message: `「${o.sheet}」第 ${o.rowNo} 行的身份证号在库中对应 ${cands.length} 条员工记录，无法唯一确定，未回填工作电话/户籍地址，请人工核对`,
+          });
+          continue;
+        }
+        const emp = cands[0];
+        const patch: Record<string, string> = {};
+        if (o.workPhone && o.workPhone !== emp.workPhone) patch.workPhone = o.workPhone;
+        if (o.householdAddress && o.householdAddress !== emp.householdAddress)
+          patch.householdAddress = o.householdAddress;
+        if (Object.keys(patch).length > 0) {
+          await prisma.employee.update({ where: { id: emp.id }, data: patch });
+          opsStat.filled++;
+        } else {
+          opsStat.unchanged++;
+        }
+      }
+      console.log(
+        `✓ 运营部回填：读取 ${opsStat.rows} 行（运营部 + 运营部离职），` +
+          `回填 ${opsStat.filled} 人，未变化 ${opsStat.unchanged} 人，未匹配 ${opsStat.skipped} 行（已记异常）`
+      );
+      console.log("");
+    }
+  }
+
   console.log("── 导入结果 ──────────────────────────────");
   console.log(`  新增      : ${inserted}`);
   console.log(`  更新      : ${updated}`);
@@ -901,6 +1085,7 @@ async function main() {
   console.log(`  运行内重复: ${duplicated}`);
   console.log(`  跳过      : ${rowsSkipped.length}`);
   console.log(`  失败      : ${failed}`);
+  console.log(`  运营部回填: ${opsStat.filled} 人（未变化 ${opsStat.unchanged} · 未匹配 ${opsStat.skipped}）`);
   console.log(
     `  匹配来源  : 身份证+入职 ${matchByIdCardHire} / 身份证(唯一) ${matchByIdCardOnly} / 姓名+入职 ${matchByNameHire} / 姓名+电话 ${matchByNamePhone} / 来源行号 ${matchBySourceRow}`
   );
@@ -970,7 +1155,7 @@ async function main() {
       failed,
       issueCount: issues.length,
       status: batchStatus,
-      message: `新增 ${inserted}，更新 ${updated}，未变化 ${unchanged}，重复 ${duplicated}，跳过 ${rowsSkipped.length}，失败 ${failed}`,
+      message: `新增 ${inserted}，更新 ${updated}，未变化 ${unchanged}，重复 ${duplicated}，跳过 ${rowsSkipped.length}，失败 ${failed}；运营部回填 ${opsStat.filled} 人（未匹配 ${opsStat.skipped} 行）`,
       startedAt,
       finishedAt: new Date(),
     },
@@ -1115,6 +1300,7 @@ function buildReport(o: ReportInput): string {
   const typeLabel: Record<string, string> = {
     MISSING_ID: "身份证号缺失",
     INVALID_ID: "身份证号格式异常",
+    INVALID_PHONE: "手机号不是合法 11 位手机号（已保留原文）",
     FIELD_MISPLACED: "字段填写错列（已按内容归位）",
     INVALID_DATE: "日期无法解析或超出合理范围",
     EMPTY_NAME: "有数据但姓名为空",
@@ -1174,11 +1360,11 @@ function buildReport(o: ReportInput): string {
     "",
     "| 优先级 | 匹配键 | 本次命中 | 说明 |",
     "| --- | --- | --- | --- |",
+    `| ⓪ | **来源 Sheet + 原始行号（溯源键）** | ${o.matchBySourceRow} | 最优先。同一行永远回到同一条员工记录（修复拆分后幂等的关键）；姓名/身份证与映射不一致时自动放弃并回退业务键 |`,
     `| ① | **身份证号 + 入职日期** | ${o.matchByIdCardHire} | 主策略。最可靠，且能区分同一人的多次任职 |`,
     `| ② | 身份证号（库中唯一）+ 缺入职日期 | ${o.matchByIdCardOnly} | 谨慎策略，仅在无歧义时使用 |`,
-    `| ③ | 姓名 + 入职日期 | ${o.matchByNameHire} | 身份证号缺失时的备用策略 |`,
-    `| ④ | 姓名 + 联系电话 | ${o.matchByNamePhone} | 前三者都不足时的兜底策略 |`,
-    `| ⑤ | 来源 Sheet + 原始行号（溯源键） | ${o.matchBySourceRow} | 无任何业务键时的最后兜底，映射持久化在 \`EmployeeSourceRow\` 表，保证重复执行幂等 |`,
+    `| ③ | 姓名 + 入职日期 | ${o.matchByNameHire} | 身份证号缺失时的备用策略；本行身份证与候选记录不同时绝不合并 |`,
+    `| ④ | 姓名 + 联系电话 | ${o.matchByNamePhone} | 仅双方都无身份证且候选入职日期为空时使用；多条候选不合并 |`,
     `| — | 本次运行内已落地的同一条记录 | ${o.duplicated} | 真正的重复行，合并为一条 |`,
     "",
     "### 2.1 为什么不用「身份证号」单列做主键（重要）",

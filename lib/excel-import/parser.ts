@@ -32,6 +32,7 @@ import {
   looksIdCard,
   looksMobile,
   normalizeIdCard,
+  normalizePhoneKeepRaw,
   parseDateIso,
   readCellValue,
 } from "./normalization";
@@ -151,20 +152,33 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
     }
 
     // ---------- 3.1 长数字字段：内容识别 + 列错位归位 ----------
+    // ⚠️ 2026-11-26 修：电话列用 normalizeIdCard 而不是 digitsOnly 取值。
+    //    digitsOnly 会把身份证末尾的 x 也去掉（"…01x" → 17 位数字），
+    //    looksIdCard 认不出，导致「身份证在电话列、手机号在身份证列」的
+    //    互换行（郭驰行 191 等 8 行）没被归位，身份证被当成电话存、电话被
+    //    当成身份证存。normalizeIdCard 保留末位 X，电话仍是纯数字，两者一致。
     const cIdCard = normalizeIdCard(read(6));
-    const cPhone = digitsOnly(read(7));
+    const phoneRaw = read(7);
+    const cPhone = normalizeIdCard(phoneRaw);
     let cBank = digitsOnly(read(22));
     let cBankBranch = read(21);
     const bankColRaw = read(22);
 
     let idCard: string | null = null;
     let phone: string | null = null;
+    /** 3.1 是否已决定 phone 的最终值。未决定时沿用 3.5 循环的 keep-raw 值
+     *  （电话列无任何数字时，如「无法适应 已离职」，3.1 的 phone 是 null，
+     *   不能用它覆盖掉循环里已保留的原文 —— 罗龙平行 198 实测）。 */
+    let phoneDecided = false;
     const flags: string[] = [];
 
     // 场景 A：身份证列填的不是身份证，而电话列里才是
     if (!looksIdCard(cIdCard) && looksIdCard(cPhone)) {
       idCard = cPhone;
       flags.push("身份证号填写在「联系电话」列，已按内容归位到身份证号字段");
+      // 电话列里是身份证号，不是电话 → phone 定为 null 或归位来的手机号，
+      // 绝不能沿用循环里对该列的 keep-raw 值（那会把身份证号写进电话字段）。
+      phoneDecided = true;
       collector.add({
         row: r,
         name,
@@ -178,6 +192,7 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
         //    必须归位到联系电话字段。旧逻辑只纠了身份证、把手机号丢了，
         //    实测 37 人的电话因此丢失（罗建柔、陈俊杰、唐跃彬等）。
         phone = cIdCard;
+        phoneDecided = true;
         flags.push("手机号填写在「身份证号」列，已按内容归位到联系电话字段");
         collector.add({
           row: r,
@@ -220,6 +235,8 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
     } else if (looksIdCard(cIdCard)) {
       idCard = cIdCard;
       if (looksIdCard(cPhone)) {
+        // 电话列也是同一张身份证号（重复值）→ 电话定为空，不沿用循环的 keep-raw 值
+        phoneDecided = true;
         collector.add({
           row: r,
           name,
@@ -259,16 +276,40 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
     }
 
     if (!looksIdCard(cPhone) && cPhone) {
-      phone = cPhone;
-      if (!looksMobile(cPhone) && cPhone.length > 11) {
+      // ⚠️ 2026-11-26 修：digitsOnly 后不是合法 11 位手机号时保留原文
+      //    （如「做了3天就走了」），不只剩一个「3」（罗龙平行 192 实测）。
+      phone = normalizePhoneKeepRaw(phoneRaw);
+      phoneDecided = true;
+      if (phone === cPhone) {
+        if (!looksMobile(cPhone) && cPhone.length > 11) {
+          collector.add({
+            row: r,
+            name,
+            field: "phone",
+            type: "OTHER",
+            message: `联系电话长度为 ${cPhone.length} 位（非 11 位手机号），已按字符串原样保留`,
+          });
+        }
+      } else {
         collector.add({
           row: r,
           name,
           field: "phone",
-          type: "OTHER",
-          message: `联系电话长度为 ${cPhone.length} 位（非 11 位手机号），已按字符串原样保留`,
+          type: "INVALID_PHONE",
+          message: `联系电话原文「${phoneRaw}」不是合法 11 位手机号，已保留原文，请人工核对`,
         });
       }
+    } else if (phoneRaw && !cPhone) {
+      // 电话列是纯文本、无任何数字（如「无法适应 已离职」）：
+      // 值本身由 3.5 循环的 keep-raw 保留（phoneDecided 为 false，不覆盖），
+      // 这里只记一条 issue（罗龙平行 198 实测：旧逻辑连 issue 都没有）。
+      collector.add({
+        row: r,
+        name,
+        field: "phone",
+        type: "INVALID_PHONE",
+        message: `联系电话原文「${phoneRaw}」不是合法 11 位手机号，已保留原文，请人工核对`,
+      });
     }
 
     // 银行卡列填的是银行名称 → 归位到开户行
@@ -297,6 +338,9 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
         });
       }
     } else if (bankColRaw && !looksBankCard(bankColRaw)) {
+      // ⚠️ 2026-11-26 修：非 12–19 位数字的银行卡原文按原文保留
+      //    （与 issue 文案「已原样保留」一致；旧逻辑只留 digits，文本信息会丢）。
+      cBank = bankColRaw.trim();
       collector.add({
         row: r,
         name,
@@ -407,7 +451,31 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
           values[spec.field] = normalizeIdCard(raw);
           break;
         case "digits":
-          values[spec.field] = digitsOnly(raw);
+          if (spec.field === "bankAccountNo") {
+            // 银行卡号由 3.1 的内容识别逻辑覆盖（values.bankAccountNo 稍后被覆写），
+            // 这里只做占位，不额外记 issue。
+            values[spec.field] = digitsOnly(raw);
+          } else {
+            // 手机号字段（phone / emergencyPhone1 / emergencyPhone2）：
+            // 合法 11 位手机号取纯数字，否则保留原文（2026-11-26 修）。
+            // phone 本身稍后会被 3.1 的归位结果覆写、3.1 也已记过 issue，
+            // 这里只给紧急电话记 issue，避免同一行重复记两条。
+            // ⚠️ 无任何数字的纯文本（如紧急电话列填了人名「父亲」）也要记 issue：
+            //    digitsOnly 为空不代表值合法，只代表值里没数字。
+            values[spec.field] = normalizePhoneKeepRaw(raw);
+            if (spec.field !== "phone" && raw) {
+              const kept = values[spec.field];
+              if (kept !== null && kept !== undefined && !looksMobile(String(kept))) {
+                collector.add({
+                  row: r,
+                  name,
+                  field: spec.field,
+                  type: "INVALID_PHONE",
+                  message: `「${spec.label}」原文「${raw}」不是合法 11 位手机号，已保留原文，请人工核对`,
+                });
+              }
+            }
+          }
           break;
         case "date":
           values[spec.field] = parseDateIso(raw);
@@ -422,8 +490,10 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
       }
     }
     // 覆盖经过「内容识别归位」处理的字段
+    // （phone 只有 3.1 已决定时才覆盖；否则沿用 3.5 循环的 keep-raw 值，
+    //  见 phoneDecided 注释 —— 电话列无数字的文本行不能写成 null）
     values.idCardNo = idCard;
-    values.phone = phone;
+    if (phoneDecided) values.phone = phone;
     values.bankAccountNo = cBank;
     values.bankBranch = cBankBranch;
     values.hireDate = hireDate;
@@ -481,6 +551,66 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
     rosterResigned,
     headerMap,
   };
+}
+
+/**
+ * 「运营部 / 运营部离职」Sheet —— 只取工作电话与户籍地址（2026-11-26 新增）
+ *
+ * 背景：导入只读「数据库」表，从不读这两个表，所以 Employee.workPhone /
+ * householdAddress 全是空，导出运营部表这两列全空白。运营部的工作电话只存在
+ * 于这两个表里（数据库表没有这一列），必须单独读。
+ *
+ * 列（与 lib/excel-export-service.ts 的 STAFF_COLUMNS 一致，按实测列序号）：
+ *   3 入职时间、5 姓名、13 身份证号、14 联系电话、15 工作电话、16 户籍地址
+ * 表头在第 1 行，数据从第 2 行起。无姓名的行跳过。
+ *
+ * ⚠️ 运营部离职表第 9/10 列虽然表头写「劳动合同 / 备注（薪资）」，实际填的是
+ *    紧急联系人姓名+电话（人工表就是这样记的）—— 这里**不读**这两列，
+ *    只取工作电话（15 列）与户籍地址（16 列），别的不碰。
+ * 工作电话走 normalizePhoneKeepRaw（合法手机号取纯数字，否则保留原文）。
+ */
+export interface OpsContactRow {
+  sheet: "运营部" | "运营部离职";
+  /** Excel 原始行号 */
+  rowNo: number;
+  name: string;
+  /** 18 位规范身份证（可用于匹配）；非 18 位时为 null */
+  idCardKey: string | null;
+  /** 原始身份证值（normalizeIdCard 后） */
+  idCardRaw: string | null;
+  /** 入职日期 ISO（YYYY-MM-DD），用于多候选时消歧 */
+  hireDate: string | null;
+  workPhone: string | null;
+  householdAddress: string | null;
+}
+
+export function parseOpsSheets(wb: ExcelJS.Workbook): OpsContactRow[] {
+  const out: OpsContactRow[] = [];
+  for (const sheet of ["运营部", "运营部离职"] as const) {
+    const ws = wb.getWorksheet(sheet);
+    if (!ws) continue;
+    for (let r = 2; r <= ws.rowCount; r++) {
+      const read = (col: number): string | null => {
+        const cell = ws.getCell(r, col);
+        if (isSlaveMergedCell(cell)) return null;
+        return readCellValue(cell.value, typeof cell.text === "string" ? cell.text : undefined);
+      };
+      const name = read(5);
+      if (!name) continue;
+      const idRaw = normalizeIdCard(read(13));
+      out.push({
+        sheet,
+        rowNo: r,
+        name,
+        idCardKey: idRaw && RE_ID18.test(idRaw) ? idRaw : null,
+        idCardRaw: idRaw,
+        hireDate: parseDateIso(read(3)),
+        workPhone: normalizePhoneKeepRaw(read(15)),
+        householdAddress: read(16),
+      });
+    }
+  }
+  return out;
 }
 
 /** 从文件路径解析（正式导入脚本用） */

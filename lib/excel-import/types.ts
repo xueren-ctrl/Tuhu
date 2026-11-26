@@ -22,6 +22,8 @@ export type IssueType =
   /** 源数据本身就没有提供该字段（如门店员工的「部门」），
    *  与「系统应该有但为空」是两回事，不能混为一谈 */
   | "SOURCE_MISSING"
+  /** 手机号原文不是合法 11 位手机号（digitsOnly 后仍不合规，已保留原文，见 normalizePhoneKeepRaw） */
+  | "INVALID_PHONE"
   /** Stage 7.1.5：门店原文名解析不到可归属目标（INACTIVE 同名门店且无有效别名），
    *  按规则不自动重绑，storeId 置 null 并记录本问题（不静默） */
   | "STORE_UNRESOLVED"
