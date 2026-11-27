@@ -867,9 +867,10 @@ async function writeRecruitAndSalarySheets(
   const out: ExportResult["stats"] = [];
 
   /** 列号 → 字段（招聘面试登记表 R3 实测；第 5 列「年龄」由 age 计算） */
+  // ⚠️ 模板只有 14 列：不要加 salaryTerms——第 12 列起会全部错位一位（2026-11-27 实测：简历表/面试评估表/招聘人全丢）
   const RECRUIT_COLUMNS: (string | null)[] = [
     "__seq__", "name", "phone", "jobGradeRaw", "__age__", "interviewDate", "interviewLocation",
-    "interviewResult", "interviewerName", "interviewHired", "hireDate", "salaryTerms",
+    "interviewResult", "interviewerName", "interviewHired", "hireDate",
     "docResume", "docInterviewEvaluation", "recruiterName",
   ];
   /** 列号 → 字段（薪资表 R1 实测；第 6 列表头是合并的「首月保障」跨两列） */
