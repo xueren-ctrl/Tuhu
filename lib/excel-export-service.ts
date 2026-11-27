@@ -164,8 +164,9 @@ const STAFF_COLUMNS: Record<string, (string | null)[]> = {
   // 数据库：R2 = 字段名，45 列。R1 是一行示例数据（不是表头）
   // ⚠️ 2026-11-24 修：原表数据库表只有 45 列，没有「薪资待遇」列（旧版 46 列多写一列，
   //   导致导出多出第 46 列）。第 4 列「在职年限」原表公式是 DATEDIF(C,TODAY())——
-  //   无论在职/离职都算到今天（实测刘家卓 3年8个月=到今天，非到离职日），
-  //   所以用 __tenure__（算到今天），不用 __tenureAny__（离职算到离职日）。
+  //   无论在职/离职都算到今天（实测刘家卓 3年8个月=到今天，非到离职日）。
+  //   ⚠️ 2026-11-27 改（用户定）：离职员工的在职年限改为按入职日→离职日算，
+  //   在职员工仍算到今天；__tenure__ 已按此口径实现，不再是纯“算到今天”。
   // ⚠️ 第 41 列也是「面试评估表」—— 原表的重复列。Stage 10.4 起改为按
   //    docInterviewEvaluation2 原样导出：原表这一列是有值的（部分行与第 35 列不同），
   //    早先「留空以保持与原表一致」的判断是错的，会导致 300+ 行内容丢失。
@@ -294,8 +295,15 @@ function employeeValues(
     })(),
 
     // —— 计算列：与 lib/employee-sheet-service.ts 的 cellValue 同一套口径 ——
-    // 在职年限（在职算到今天）
-    __tenure__: safe(() => renderTenureCn(e.hireDate as Date | null, null, now), ""),
+    // 在职年限（离职算到离职日，在职算到今天）
+    // ⚠️ 2026-11-27 改（用户定）：原表数据库表第 4 列公式是 DATEDIF(C,TODAY())，
+    //    无论在职/离职都算到今天；用户现改为离职员工按入职日→离职日算，
+    //    在职员工仍算到今天。在职/南昌3店/运营部表只含在职员工，不受影响；
+    //    实际变的是数据库表里离职行的第 4 列。离职表仍用 __resignedTenure__。
+    __tenure__: safe(
+      () => renderTenureCn(e.hireDate as Date | null, e.resignDate as Date | null, now),
+      ""
+    ),
     // 在职年限（离职算到离职日）
     // ⚠️ 2026-11-24 修：原表 C35 公式是 IF(OR(C="",Z=""),"",DATEDIF(C,Z,…))——
     //    没有离职日期（在职员工）时本列为空。旧版 renderTenureCn 在 resignDate 为空时

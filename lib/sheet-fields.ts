@@ -64,7 +64,7 @@ export const COMPUTED = {
   DEPARTMENT: "__departmentName__",
   POSITION: "__positionName__",
   AGE: "__age__",
-  TENURE: "__tenure__", // 在职年限（未离职算到今天的在职年限）
+  TENURE: "__tenure__", // 在职年限（离职算到离职日，未离职算到今天；2026-11-27 用户定）
   RESIGNED_TENURE: "__resignedTenure__", // 在职期限（离职时点）
   TENURE_ANY: "__tenureAny__", // 离职看离职时点，未离职看今天
   WORK_7DAYS: "__work7days__",

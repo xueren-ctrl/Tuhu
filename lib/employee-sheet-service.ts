@@ -168,7 +168,10 @@ function cellValue(emp: EmployeeLite, source: string, now: Date): string {
     case COMPUTED.STATUS:
       return EMPLOYEE_STATUS_LABEL[emp.status] ?? emp.status;
     case COMPUTED.TENURE:
-      return renderTenureCn(emp.hireDate as Date | null, null, now);
+      // 2026-11-27 改（用户定）：离职算到离职日，在职算到今天（与导出 __tenure__ 同口径）。
+      // 本列只用于在职/南昌3店/运营部表（均为在职员工），此次改动不改变现有显示；
+      // 改这里是为统一“在职年限”字段的口径，避免以后混用。
+      return renderTenureCn(emp.hireDate as Date | null, emp.resignDate as Date | null, now);
     case COMPUTED.RESIGNED_TENURE:
     case COMPUTED.TENURE_ANY:
       return renderTenureCn(emp.hireDate as Date | null, emp.resignDate as Date | null, now);
