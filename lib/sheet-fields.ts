@@ -171,7 +171,7 @@ const RECRUIT_COLUMNS: SheetColumnSpec[] = [
   col("面试人", "interviewerName"),
   col("是否入职", "interviewHired"),
   col("入职日期", "hireDate"),
-  col("薪资待遇", "salaryTerms"),
+  // ⚠️ 模板只有 14 列：不要加 salaryTerms——第 12 列起会全部错位一位（2026-11-27 实测；导出侧已修，见 lib/excel-export-service.ts）
   col("简历表", "docResume"),
   col("面试评估表", "docInterviewEvaluation"),
   col("招聘人", "recruiterName"),
@@ -239,6 +239,8 @@ const SALARY_COLUMNS: SheetColumnSpec[] = [
   col("招聘人", "recruiterName"),
   col("带教人", "mentorName"),
   col("入职表", "docOnboardingForm"),
+  // ⚠️ 模板薪资表 15 列，第 11 列是「面试评估表」（2026-11-28 实测模板 K 列 265 个值；导出侧 SALARY_COLUMNS 第 11 列也是它，页面侧缺了会从第 11 列起整体错位）
+  col("面试评估表", "docInterviewEvaluation"),
   col("证书级别", "certificateLevel"),
   col("备注（重复列）", "remark3"),
   col("是否满7天", COMPUTED.WORK_7DAYS),
@@ -268,7 +270,7 @@ const DATABASE_COLUMNS: SheetColumnSpec[] = [
   col("入职体检", "onboardingMedical"),
   col("工资卡的开户银行支行", "bankBranch"),
   col("银行卡账号", "bankAccountNo"),
-  col("薪资待遇", "salaryTerms"),
+  // ⚠️ 模板数据库表 45 列，第 23 列是「现居住地址」——没有「薪资待遇」列（见 lib/excel-import/field-mapping.ts 2026-11-24 注）；不要在这里加 salaryTerms，否则 23 列起整体错位
   col("现居住地址", "currentAddress"),
   col("招聘人", "recruiterName"),
   col("离职原因", "resignReason"),
@@ -283,10 +285,12 @@ const DATABASE_COLUMNS: SheetColumnSpec[] = [
   col("面试评估表", "docInterviewEvaluation"),
   col("在职年限（离职）", COMPUTED.RESIGNED_TENURE),
   col("首月保障", "firstMonthGuarantee"),
-  // ⚠️ Stage 9.35：在职表里这一列就叫「薪资待遇」（上方已定义，数据源同为 salaryTerms）；
-  //    薪资表里同一份数据的列名叫「备注」。这里**不再重复出现一列「备注」**。
+  // 模板第 37 列「备注」(remark)：与薪资表里读 salaryTerms 的「备注」是两列不同的数据，不要混淆
+  col("备注", "remark"),
   col("带教人", "mentorName"),
   col("入职表", "docOnboardingForm"),
+  // 模板第 40 列「面试评估表」（重复列名，第二个面试评估表；字段 docInterviewEvaluation2）
+  col("面试评估表（重复列）", "docInterviewEvaluation2"),
   col("证书级别", "certificateLevel"),
   col("备注（重复列）", "remark3"),
   col("是否满7天", COMPUTED.WORK_7DAYS),

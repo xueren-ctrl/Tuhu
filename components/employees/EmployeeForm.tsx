@@ -87,35 +87,35 @@ const TEXT_FIELDS: {
   { key: "emergencyPhone1", label: "紧急联系人1电话", excel: "M" },
   { key: "emergencyContact2", label: "紧急联系人2", excel: "N" },
   { key: "emergencyPhone2", label: "紧急联系人2电话", excel: "O" },
-  { key: "currentAddress", label: "现居住地址", excel: "X" },
-  { key: "certificateLevel", label: "证书级别", excel: "AP" },
+  { key: "currentAddress", label: "现居住地址", excel: "W" },
+  { key: "certificateLevel", label: "证书级别", excel: "AO" },
   { key: "positionNote", label: "职位备注", excel: "I" },
   { key: "dormitory", label: "是否住宿舍", excel: "J", type: "yesno" },
-  { key: "mentorName", label: "带教人", excel: "AM" },
+  { key: "mentorName", label: "带教人", excel: "AL" },
   { key: "onboardingMedical", label: "入职体检", excel: "T", type: "yesno" },
   { key: "socialInsurancePurchased", label: "社保购买", excel: "K", type: "yesno" },
-  { key: "salaryTerms", label: "薪资待遇", excel: "W" },
-  { key: "firstMonthGuarantee", label: "首月保障", excel: "AK" },
+  { key: "salaryTerms", label: "薪资待遇", excel: "" },
+  { key: "firstMonthGuarantee", label: "首月保障", excel: "AJ" },
   { key: "bankBranch", label: "工资卡开户银行支行", excel: "U" },
   { key: "bankAccountNo", label: "银行卡账号", excel: "V", hint: "按字符串存储，支持前导零，不会转成科学计数法" },
   { key: "laborContract", label: "劳动合同", excel: "P", type: "yesno" },
   { key: "socialInsuranceAgreement", label: "社保协议", excel: "Q", type: "yesno" },
   { key: "fireSafetyCommitment", label: "消防承诺书", excel: "R", type: "yesno" },
   { key: "dormitoryWaiver", label: "宿舍免责协议", excel: "S", type: "yesno" },
-  { key: "docResume", label: "简历表", excel: "AH" },
-  { key: "docInterviewEvaluation", label: "面试评估表", excel: "AI" },
-  { key: "docOnboardingForm", label: "入职表", excel: "AN" },
-  { key: "recruiterName", label: "招聘人", excel: "Y" },
-  { key: "interviewLocation", label: "面试地点", excel: "AD" },
-  { key: "interviewResult", label: "面试结果", excel: "AE" },
-  { key: "interviewerName", label: "面试人", excel: "AF" },
-  { key: "interviewHired", label: "是否入职", excel: "AG" },
-  { key: "remark3", label: "备注（重复列）", excel: "AQ" },
-  { key: "computed7Days", label: "是否满7天（快照）", excel: "AR" },
-  { key: "computed2Months", label: "是否入职满2个月（快照）", excel: "AS" },
+  { key: "docResume", label: "简历表", excel: "AG" },
+  { key: "docInterviewEvaluation", label: "面试评估表", excel: "AH" },
+  { key: "docOnboardingForm", label: "入职表", excel: "AM" },
+  { key: "recruiterName", label: "招聘人", excel: "X" },
+  { key: "interviewLocation", label: "面试地点", excel: "AC" },
+  { key: "interviewResult", label: "面试结果", excel: "AD" },
+  { key: "interviewerName", label: "面试人", excel: "AE" },
+  { key: "interviewHired", label: "是否入职", excel: "AF" },
+  { key: "remark3", label: "备注（重复列）", excel: "AP" },
+  { key: "computed7Days", label: "是否满7天（快照）", excel: "AQ" },
+  { key: "computed2Months", label: "是否入职满2个月（快照）", excel: "AR" },
   { key: "tenureTextAtImport", label: "在职年限（导入快照）", excel: "D" },
-  { key: "resignedTenureText", label: "在职年限-离职（导入快照）", excel: "AJ" },
-  { key: "minorNote", label: "未成年备注", excel: "AT" },
+  { key: "resignedTenureText", label: "在职年限-离职（导入快照）", excel: "AI" },
+  { key: "minorNote", label: "未成年备注", excel: "AS" },
 ];
 
 const TEXT_GROUPS: { title: string; keys: string[] }[] = [
@@ -491,7 +491,7 @@ export default function EmployeeForm({
           {/* ---------- 招聘 / 面试（Stage 9.33：受控选项，不再是自由文本） ---------- */}
           <Field
             label="面试地点"
-            excelColumn="AD"
+            excelColumn="AC"
             hint="在哪家门店面试的，输入店名搜索"
           >
             <StorePicker
@@ -504,7 +504,7 @@ export default function EmployeeForm({
             />
           </Field>
 
-          <Field label="面试结果" excelColumn="AE" hint="通过 / 不通过，也可留空（未知）">
+          <Field label="面试结果" excelColumn="AD" hint="通过 / 不通过，也可留空（未知）">
             <YesNoSelect
               value={form.interviewResult}
               options={INTERVIEW_RESULT_OPTIONS}
@@ -512,13 +512,13 @@ export default function EmployeeForm({
             />
           </Field>
 
-          <Field label="简历表" excelColumn="AH" hint="有这份材料就打 √，没有就留空">
+          <Field label="简历表" excelColumn="AG" hint="有这份材料就打 √，没有就留空">
             <MarkSelect value={form.docResume} onChange={(v) => set("docResume")(v)} label="已交" />
           </Field>
 
           <Field
             label="面试评估表"
-            excelColumn="AI"
+            excelColumn="AH"
             hint="有就打 √，没有就留空。招聘面试登记表与薪资表原本是同名列，现已合并为一项"
           >
             <MarkSelect
@@ -528,7 +528,7 @@ export default function EmployeeForm({
             />
           </Field>
 
-          <Field label="入职表" excelColumn="AN" hint="有这份材料就打 √，没有就留空">
+          <Field label="入职表" excelColumn="AM" hint="有这份材料就打 √，没有就留空">
             <MarkSelect
               value={form.docOnboardingForm}
               onChange={(v) => set("docOnboardingForm")(v)}
@@ -573,14 +573,14 @@ export default function EmployeeForm({
 
           {isResigned ? (
             <>
-              <Field label="离职日期" excelColumn="AA">
+              <Field label="离职日期" excelColumn="Z">
                 <Input
                   type="date"
                   value={form.resignDate}
                   onChange={(e) => set("resignDate")(e.target.value)}
                 />
               </Field>
-              <Field label="离职原因" excelColumn="Z">
+              <Field label="离职原因" excelColumn="Y">
                 <Input
                   value={form.resignReason}
                   onChange={(e) => set("resignReason")(e.target.value)}
@@ -590,7 +590,7 @@ export default function EmployeeForm({
             </>
           ) : null}
 
-          <Field label="备注" excelColumn="AL" className="sm:col-span-2 lg:col-span-3">
+          <Field label="备注" excelColumn="AK" className="sm:col-span-2 lg:col-span-3">
             <Textarea
               value={form.remark}
               onChange={(e) => set("remark")(e.target.value)}

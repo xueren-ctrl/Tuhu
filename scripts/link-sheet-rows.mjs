@@ -16,9 +16,16 @@
  *
  * 用法：
  *   node scripts/link-sheet-rows.mjs            # 预演，只统计不写库
- *   node scripts/link-sheet-rows.mjs --apply    # 写库（会先清空旧关联再重建）
+ *   node scripts/link-sheet-rows.mjs --apply    # 写库（先备份旧关联到 /tmp，再在事务里清空重建）
+ *
+ * 安全措施（2026-11-28 加固，见 OpenCode 核对 §2/§7）：
+ *   ① deleteMany 只清 TARGETS 两张表的关联，不动其他表；
+ *   ② 删除 + 重建包在一个 $transaction 里，中途失败不留半套；
+ *   ③ --apply 前先把旧关联表完整落盘到 /tmp/link-backup-<时间戳>.json；
+ *   ④ 写完自检：目标表的关联数必须 == plan.length，否则报错退出。
  */
 import { PrismaClient } from "@prisma/client";
+import { writeFile } from "node:fs/promises";
 
 const prisma = new PrismaClient();
 const APPLY = process.argv.includes("--apply");
@@ -70,7 +77,7 @@ console.log(`\n======= 原始名单行 → 员工档案 关联（${APPLY ? "写�
 const plan = [];
 for (const { sheet, pick } of TARGETS) {
   const rows = await prisma.sheetRow.findMany({ where: { sheet }, orderBy: { rowNo: "asc" } });
-  const stat = { pair: 0, pairTime: 0, phone: 0, nameHire: 0, name: 0, ambiguous: 0, unmatched: 0 };
+  const stat = { pair: 0, pairTime: 0, phone: 0, nameHire: 0, name: 0, ambiguous: 0, taken: 0, unmatched: 0 };
   const missed = [];
   const used = new Set();
   for (const r of rows) {
@@ -82,6 +89,7 @@ for (const { sheet, pick } of TARGETS) {
 
     let employeeId = uniq(idx.pair, nm && ph ? `${nm}|${ph}` : "");
     let method = "pair";
+    let taken = false; // 命中了员工，但该员工已被别行占用（去重时被拒）
     if (!employeeId && nm && ph && idx.pair.has(`${nm}|${ph}`)) {
       employeeId = narrowByTime([...idx.pair.get(`${nm}|${ph}`)], time);
       method = "pairTime";
@@ -92,6 +100,7 @@ for (const { sheet, pick } of TARGETS) {
 
     if (employeeId && used.has(employeeId)) {
       // 同一员工被两行认到（例如重新入职）：保留第一次，后面这行留空
+      taken = true;
       employeeId = null;
     }
     if (employeeId) {
@@ -99,20 +108,21 @@ for (const { sheet, pick } of TARGETS) {
       stat[method]++;
       plan.push({ sheet, rowNo: r.rowNo, employeeId, method });
     } else {
-      // 判断是「有歧义」还是「库里根本没这个人」
+      // 判断是「有歧义」「已被别行占用」还是「库里根本没这个人」（三者分开计数）
       const amb =
         (nm && ph && idx.pair.has(`${nm}|${ph}`)) ||
         (ph && idx.phone.has(ph)) ||
         (nm && hd && idx.nameHire.has(`${nm}|${hd}`)) ||
         (nm && idx.name.has(nm));
-      if (amb) stat.ambiguous++;
+      if (taken) stat.taken++;
+      else if (amb) stat.ambiguous++;
       else stat.unmatched++;
-      if (missed.length < 6) missed.push({ rowNo: r.rowNo, 姓名: nm, 原因: amb ? "有歧义/已被别行占用" : "员工库中没有这个人" });
+      if (missed.length < 6) missed.push({ rowNo: r.rowNo, 姓名: nm, 原因: taken ? "已被别行占用" : amb ? "有歧义" : "员工库中没有这个人" });
     }
   }
   console.log(`--- ${sheet}（${rows.length} 行）---`);
   console.log(`  姓名+电话 ${stat.pair} · 姓名+电话+面试时间消歧 ${stat.pairTime} · 电话唯一 ${stat.phone} · 姓名+入职日期 ${stat.nameHire} · 姓名唯一 ${stat.name}`);
-  console.log(`  关联成功 ${rows.length - stat.ambiguous - stat.unmatched} 行；有歧义未关联 ${stat.ambiguous} 行；库中无此人 ${stat.unmatched} 行`);
+  console.log(`  关联成功 ${rows.length - stat.ambiguous - stat.taken - stat.unmatched} 行；有歧义未关联 ${stat.ambiguous} 行；已被别行占用 ${stat.taken} 行；库中无此人 ${stat.unmatched} 行`);
   if (missed.length) console.log("  未关联样例:", JSON.stringify(missed));
 }
 
@@ -121,13 +131,25 @@ if (!APPLY) {
   console.log("（预演结束。确认后加 --apply 写库）\n");
   await prisma.$disconnect();
 } else {
-  await prisma.sheetRowEmployeeLink.deleteMany({});
-  // SQLite 不支持 createMany 的 skipDuplicates，这里逐条写入（744 条，足够快）
-  for (const row of plan) {
-    await prisma.sheetRowEmployeeLink.create({ data: row });
-  }
-  const n = await prisma.sheetRowEmployeeLink.count();
+  const TARGET_SHEETS = TARGETS.map((t) => t.sheet);
+  // ③ 写库前先把旧关联表完整落盘（回滚用），再动手
+  const oldLinks = await prisma.sheetRowEmployeeLink.findMany({ orderBy: [{ sheet: "asc" }, { rowNo: "asc" }] });
+  const backupPath = `/tmp/link-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+  await writeFile(backupPath, JSON.stringify(oldLinks, null, 2));
+  console.log(`  已备份旧关联 ${oldLinks.length} 条 → ${backupPath}`);
+  // ①② 只清这两张表的旧关联，且删除 + 重建包在一个事务里（中途失败不留半套）
+  await prisma.$transaction([
+    prisma.sheetRowEmployeeLink.deleteMany({ where: { sheet: { in: TARGET_SHEETS } } }),
+    // SQLite 不支持 createMany 的 skipDuplicates，这里逐条写入
+    ...plan.map((row) => prisma.sheetRowEmployeeLink.create({ data: row })),
+  ]);
+  // ④ 自检：目标两张表的关联数必须等于计划数
+  const n = await prisma.sheetRowEmployeeLink.count({ where: { sheet: { in: TARGET_SHEETS } } });
   console.log(`✓ 已写入 ${n} 条关联`);
+  if (n !== plan.length) {
+    console.error(`❌ 自检失败：目标表关联数 ${n} ≠ 计划 ${plan.length}，请用备份 ${backupPath} 核对后处理`);
+    process.exitCode = 1;
+  }
   const byMethod = await prisma.sheetRowEmployeeLink.groupBy({ by: ["method"], _count: { _all: true } });
   for (const m of byMethod) console.log(`  ${m.method.padEnd(10)} ${m._count._all}`);
   await prisma.$disconnect();

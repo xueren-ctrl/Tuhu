@@ -353,7 +353,7 @@ model DictOption {
 
 // ------------------------------------------------------------
 // 员工主档案 —— 系统唯一员工数据源
-// 字段顺序基本对齐 Excel「数据库」Sheet 的 46 列，便于人工核对
+// 字段顺序基本对齐 Excel「数据库」Sheet 的 45 列，便于人工核对
 // ------------------------------------------------------------
 model Employee {
   id         Int    @id @default(autoincrement()) // 内部主键（自增）
@@ -363,14 +363,14 @@ model Employee {
   name                  String // 姓名（Excel col5）
   idCardNo              String? // 身份证号（Excel col6，字符串存储，禁止当数字）
   gender                String? // 性别（由身份证号推导，仅供统计，不落 Excel）
-  age                   Int? // 年龄（Excel col28，清洗为整数）
+  age                   Int? // 年龄（Excel col27，清洗为整数）
   ageRaw                String? // 年龄原文，保留 Excel 原样
-  minorNote             String? // 未成年备注（Excel col46）
+  minorNote             String? // 未成年备注（Excel col45）
 
   // ---- ② 联系方式 --------------------------------------------------
   phone            String? // 联系电话（Excel col7，字符串存储）
   workPhone        String? // 工作电话（「运营部」Sheet 专有列）
-  currentAddress   String? // 现居住地址（Excel col24）
+  currentAddress   String? // 现居住地址（Excel col23）
   householdAddress String? // 户籍地址（「运营部」Sheet 专有列）
   emergencyContact1 String? // 紧急联系人1（Excel col12）
   emergencyPhone1   String? // 紧急联系人1电话（Excel col13）
@@ -387,20 +387,20 @@ model Employee {
   positionId        Int? // 关联 Position
   jobGradeRaw       String? // Excel「工种级别」原文，如「青铜机修技师」
   positionNote      String? // 职位备注（Excel col9）
-  certificateLevel  String? // 证书级别（Excel col42）
+  certificateLevel  String? // 证书级别（Excel col41）
 
   // ---- ④ 入职信息 --------------------------------------------------
   hireDate     DateTime? // 入职日期（Excel col3）
   dormitory    String? // 是否住宿舍（Excel col10）
-  mentorName   String? // 带教人（Excel col39）
+  mentorName   String? // 带教人（Excel col38）
   onboardingMedical String? // 入职体检（Excel col20）
 
   // ---- ⑤ 社保（第一阶段仅存字段，不做业务逻辑）----------------------
   socialInsurancePurchased String? // 社保购买（Excel col11）
 
   // ---- ⑥ 薪资（第一阶段仅存字段，不做业务逻辑）----------------------
-  salaryTerms         String? // 薪资待遇（Excel col23）
-  firstMonthGuarantee String? // 首月保障（Excel col37）
+  salaryTerms         String? // 薪资待遇（数据库表无此列；薪资表「备注」列读它）
+  firstMonthGuarantee String? // 首月保障（Excel col36）
   bankBranch          String? // 工资卡开户银行支行（Excel col21）
   bankAccountNo       String? // 银行卡账号（Excel col22，字符串存储，禁止当数字）
 
@@ -409,10 +409,10 @@ model Employee {
   socialInsuranceAgreement String? // 社保协议（Excel col17）
   fireSafetyCommitment   String? // 消防承诺书（Excel col18）
   dormitoryWaiver        String? // 宿舍免责协议（Excel col19）
-  docResume              String? // 简历表（Excel col34）
-  docInterviewEvaluation String? // 面试评估表（Excel col35）
-  docOnboardingForm      String? // 入职表（Excel col40）
-  docInterviewEvaluation2 String? // 面试评估表（Excel col41，原表重复列名）
+  docResume              String? // 简历表（Excel col33）
+  docInterviewEvaluation String? // 面试评估表（Excel col34）
+  docOnboardingForm      String? // 入职表（Excel col39）
+  docInterviewEvaluation2 String? // 面试评估表（Excel col40，原表重复列名）
 
   // ---- ⑧ 离职 ------------------------------------------------------
   /**
@@ -428,25 +428,25 @@ model Employee {
    * 「数据库」表不受状态限制，包含全部员工。
    */
   status        String    @default("ACTIVE")
-  resignDate    DateTime? // 离职日期（Excel col27「备注（离职日期）」中可解析的日期部分）
+  resignDate    DateTime? // 离职日期（Excel col26「备注（离职日期）」中可解析的日期部分）
   resignDateRaw String? // 离职日期原文（含 "9/30已离职" 之类文本，原样保留）
-  resignReason  String? // 离职原因（Excel col26）
+  resignReason  String? // 离职原因（Excel col25）
 
   // ---- ⑨ 招聘 / 面试（第一阶段仅存字段，不做完整招聘系统）------------
-  recruiterName     String? // 招聘人（Excel col25）
-  interviewDate     DateTime? // 面试时间（Excel col29）
-  interviewLocation String? // 面试地点（Excel col30）
-  interviewResult   String? // 面试结果（Excel col31）
-  interviewerName   String? // 面试人（Excel col32）
-  interviewHired    String? // 是否入职（Excel col33）
+  recruiterName     String? // 招聘人（Excel col24）
+  interviewDate     DateTime? // 面试时间（Excel col28）
+  interviewLocation String? // 面试地点（Excel col29）
+  interviewResult   String? // 面试结果（Excel col30）
+  interviewerName   String? // 面试人（Excel col31）
+  interviewHired    String? // 是否入职（Excel col32）
 
   // ---- ⑩ 备注 / 系统计算字段（原样保留以便追溯）----------------------
-  remark             String? // 备注（Excel col38）
-  remark3            String? // 备注（Excel col43，原表重复列名）
-  computed7Days      String? // 是否满7天（Excel col44，公式/手工混合，仅存快照）
-  computed2Months    String? // 是否入职满2个月（Excel col45，公式/手工混合，仅存快照）
+  remark             String? // 备注（Excel col37）
+  remark3            String? // 备注（Excel col42，原表重复列名）
+  computed7Days      String? // 是否满7天（Excel col43，公式/手工混合，仅存快照）
+  computed2Months    String? // 是否入职满2个月（Excel col44，公式/手工混合，仅存快照）
   tenureTextAtImport String? // 导入时「在职年限」计算快照（Excel col4，计算字段）
-  resignedTenureText String? // 导入时「在职年限（离职）」计算快照（Excel col36，计算字段）
+  resignedTenureText String? // 导入时「在职年限（离职）」计算快照（Excel col35，计算字段）
 
   // ---- ⑪ 溯源 / 审计 -----------------------------------------------
   sourceSheet  String? // 来源 Sheet 名，默认「数据库」

@@ -94,7 +94,7 @@ const LAYOUT: Record<string, SheetLayout> = {
   南昌3店: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 25 },
   运营部: { headerRow: 1, dataStart: 2, nameCol: 5, lastCol: 16 },
   运营部离职: { headerRow: 1, dataStart: 2, nameCol: 5, lastCol: 18 },
-  招聘面试登记表: { headerRow: 3, dataStart: 4, nameCol: 2, lastCol: 15 },
+  招聘面试登记表: { headerRow: 3, dataStart: 4, nameCol: 2, lastCol: 14 }, // ⚠️ 2026-11-28：模板只有 14 列（O 列全空），lastCol 15 会把第 15 列整列清空却不回写
   薪资表: { headerRow: 1, dataStart: 2, nameCol: 4, lastCol: 15 },
   数据库: { headerRow: 2, dataStart: 3, nameCol: 5, lastCol: 45 }, // ⚠️ 2026-11-24：原表 45 列（无薪资待遇）
   社保总名单: { headerRow: 1, dataStart: 2, nameCol: 3, lastCol: 6 },

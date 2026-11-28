@@ -190,14 +190,14 @@ export const EMPLOYEE_FIELDS: FieldMeta[] = [
   { key: "name", label: "姓名", group: "basic", control: "text", excelColumn: "E 姓名" },
   { key: "idCardNo", label: "身份证号", group: "basic", sensitive: true, control: "text", excelColumn: "F 身份证号" },
   { key: "gender", label: "性别", group: "basic", control: "select", excelColumn: "（由身份证号推导）" },
-  { key: "age", label: "年龄", group: "basic", control: "number", excelColumn: "AB 年龄" },
-  { key: "ageRaw", label: "年龄（原文）", group: "basic", control: "text", excelColumn: "AB 年龄" },
-  { key: "minorNote", label: "未成年备注", group: "basic", control: "text", excelColumn: "AT 未成年备注" },
+  { key: "age", label: "年龄", group: "basic", control: "number", excelColumn: "AA 年龄" },
+  { key: "ageRaw", label: "年龄（原文）", group: "basic", control: "text", excelColumn: "AA 年龄" },
+  { key: "minorNote", label: "未成年备注", group: "basic", control: "text", excelColumn: "AS 未成年备注" },
 
   // ② 联系方式
   { key: "phone", label: "联系电话", group: "contact", sensitive: true, control: "text", excelColumn: "G 联系电话" },
   { key: "workPhone", label: "工作电话", group: "contact", sensitive: true, control: "text", excelColumn: "（「运营部」Sheet）" },
-  { key: "currentAddress", label: "现居住地址", group: "contact", sensitive: true, control: "text", excelColumn: "X 现居住地址" },
+  { key: "currentAddress", label: "现居住地址", group: "contact", sensitive: true, control: "text", excelColumn: "W 现居住地址" },
   { key: "householdAddress", label: "户籍地址", group: "contact", sensitive: true, control: "text", excelColumn: "（「运营部」Sheet）" },
   { key: "emergencyContact1", label: "紧急联系人1", group: "contact", control: "text", excelColumn: "L 紧急联系人1" },
   { key: "emergencyPhone1", label: "紧急联系人1电话", group: "contact", sensitive: true, control: "text", excelColumn: "M 联系人电话" },
@@ -214,20 +214,20 @@ export const EMPLOYEE_FIELDS: FieldMeta[] = [
   { key: "positionName", label: "职位／工种", group: "position", control: "select", excelColumn: "H 工种级别" },
   { key: "jobGradeRaw", label: "工种级别（Excel原文）", group: "position", control: "text", excelColumn: "H 工种级别" },
   { key: "positionNote", label: "职位备注", group: "position", control: "text", excelColumn: "I 职位备注" },
-  { key: "certificateLevel", label: "证书级别", group: "position", control: "text", excelColumn: "AP 证书级别" },
+  { key: "certificateLevel", label: "证书级别", group: "position", control: "text", excelColumn: "AO 证书级别" },
 
   // ⑤ 入职信息
   { key: "hireDate", label: "入职日期", group: "onboard", control: "date", excelColumn: "C 入职时间" },
   { key: "dormitory", label: "是否住宿舍", group: "onboard", control: "text", excelColumn: "J 是否住宿舍" },
-  { key: "mentorName", label: "带教人", group: "onboard", control: "text", excelColumn: "AM 带教人" },
+  { key: "mentorName", label: "带教人", group: "onboard", control: "text", excelColumn: "AL 带教人" },
   { key: "onboardingMedical", label: "入职体检", group: "onboard", control: "text", excelColumn: "T 入职体检" },
 
   // ⑥ 社保
   { key: "socialInsurancePurchased", label: "社保购买", group: "social", sensitive: true, control: "text", excelColumn: "K 社保购买" },
 
   // ⑦ 薪资
-  { key: "salaryTerms", label: "薪资待遇", group: "salary", sensitive: true, control: "textarea", excelColumn: "W 薪资待遇" },
-  { key: "firstMonthGuarantee", label: "首月保障", group: "salary", sensitive: true, control: "text", excelColumn: "AK 首月保障" },
+  { key: "salaryTerms", label: "薪资待遇", group: "salary", sensitive: true, control: "textarea", excelColumn: "薪资待遇（数据库表无此列）" },
+  { key: "firstMonthGuarantee", label: "首月保障", group: "salary", sensitive: true, control: "text", excelColumn: "AJ 首月保障" },
   { key: "bankBranch", label: "工资卡开户银行支行", group: "salary", control: "text", excelColumn: "U 工资卡的开户银行支行" },
   { key: "bankAccountNo", label: "银行卡账号", group: "salary", sensitive: true, control: "text", excelColumn: "V 银行卡账号" },
 
@@ -236,30 +236,30 @@ export const EMPLOYEE_FIELDS: FieldMeta[] = [
   { key: "socialInsuranceAgreement", label: "社保协议", group: "contract", control: "text", excelColumn: "Q 社保协议" },
   { key: "fireSafetyCommitment", label: "消防承诺书", group: "contract", control: "text", excelColumn: "R 消防承诺书" },
   { key: "dormitoryWaiver", label: "宿舍免责协议", group: "contract", control: "text", excelColumn: "S 宿舍免责协议" },
-  { key: "docResume", label: "简历表", group: "contract", control: "tick", excelColumn: "AH 简历表" },
-  { key: "docInterviewEvaluation", label: "面试评估表", group: "contract", control: "tick", excelColumn: "AI 面试评估表" },
-  { key: "docOnboardingForm", label: "入职表", group: "contract", control: "tick", excelColumn: "AN 入职表" },
+  { key: "docResume", label: "简历表", group: "contract", control: "tick", excelColumn: "AG 简历表" },
+  { key: "docInterviewEvaluation", label: "面试评估表", group: "contract", control: "tick", excelColumn: "AH 面试评估表" },
+  { key: "docOnboardingForm", label: "入职表", group: "contract", control: "tick", excelColumn: "AM 入职表" },
 
   // ⑨ 招聘面试
-  { key: "recruiterName", label: "招聘人", group: "recruit", control: "text", excelColumn: "Y 招聘人" },
-  { key: "interviewDate", label: "面试时间", group: "recruit", control: "date", excelColumn: "AC 面试时间" },
-  { key: "interviewLocation", label: "面试地点", group: "recruit", control: "text", excelColumn: "AD 面试地点" }, // Stage 9.33：编辑表单里改为门店搜索下拉（此处仍为文本，仅表格内联编辑用）
-  { key: "interviewResult", label: "面试结果", group: "recruit", control: "passfail", excelColumn: "AE 面试结果" },
-  { key: "interviewerName", label: "面试人", group: "recruit", control: "text", excelColumn: "AF 面试人" },
-  { key: "interviewHired", label: "是否入职", group: "recruit", control: "text", excelColumn: "AG 是否入职" },
+  { key: "recruiterName", label: "招聘人", group: "recruit", control: "text", excelColumn: "X 招聘人" },
+  { key: "interviewDate", label: "面试时间", group: "recruit", control: "date", excelColumn: "AB 面试时间" },
+  { key: "interviewLocation", label: "面试地点", group: "recruit", control: "text", excelColumn: "AC 面试地点" }, // Stage 9.33：编辑表单里改为门店搜索下拉（此处仍为文本，仅表格内联编辑用）
+  { key: "interviewResult", label: "面试结果", group: "recruit", control: "passfail", excelColumn: "AD 面试结果" },
+  { key: "interviewerName", label: "面试人", group: "recruit", control: "text", excelColumn: "AE 面试人" },
+  { key: "interviewHired", label: "是否入职", group: "recruit", control: "text", excelColumn: "AF 是否入职" },
 
   // ⑩ 离职信息
-  { key: "resignDate", label: "离职日期", group: "resign", control: "date", excelColumn: "AA 备注（离职日期）" },
-  { key: "resignDateRaw", label: "离职日期（Excel原文）", group: "resign", control: "text", excelColumn: "AA 备注（离职日期）" },
-  { key: "resignReason", label: "离职原因", group: "resign", control: "text", excelColumn: "Z 离职原因" },
+  { key: "resignDate", label: "离职日期", group: "resign", control: "date", excelColumn: "Z 备注（离职日期）" },
+  { key: "resignDateRaw", label: "离职日期（Excel原文）", group: "resign", control: "text", excelColumn: "Z 备注（离职日期）" },
+  { key: "resignReason", label: "离职原因", group: "resign", control: "text", excelColumn: "Y 离职原因" },
 
   // ⑪ 其他字段
-  { key: "remark", label: "备注", group: "other", control: "textarea", excelColumn: "AL 备注" },
-  { key: "remark3", label: "备注（重复列）", group: "other", control: "text", excelColumn: "AQ 备注" },
-  { key: "computed7Days", label: "是否满7天（快照）", group: "other", control: "text", excelColumn: "AR 是否满7天" },
-  { key: "computed2Months", label: "是否入职满2个月（快照）", group: "other", control: "text", excelColumn: "AS 是否入职满2个月" },
+  { key: "remark", label: "备注", group: "other", control: "textarea", excelColumn: "AK 备注" },
+  { key: "remark3", label: "备注（重复列）", group: "other", control: "text", excelColumn: "AP 备注" },
+  { key: "computed7Days", label: "是否满7天（快照）", group: "other", control: "text", excelColumn: "AQ 是否满7天" },
+  { key: "computed2Months", label: "是否入职满2个月（快照）", group: "other", control: "text", excelColumn: "AR 是否入职满2个月" },
   { key: "tenureTextAtImport", label: "在职年限（导入快照）", group: "other", control: "text", excelColumn: "D 在职年限" },
-  { key: "resignedTenureText", label: "在职年限-离职（导入快照）", group: "other", control: "text", excelColumn: "AJ 在职年限（离职）" },
+  { key: "resignedTenureText", label: "在职年限-离职（导入快照）", group: "other", control: "text", excelColumn: "AI 在职年限（离职）" },
 
   // ⑫ 系统信息
   { key: "employeeId", label: "员工编号", group: "system", excelColumn: "（系统生成）" },
