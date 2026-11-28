@@ -252,7 +252,7 @@ export async function computeDiff(
       changes.push(c);
     };
 
-    // ---- 全部 46 列字段逐一比对 ----
+    // ---- 全部 45 列字段逐一比对 ----
     for (const spec of COMPARABLE_SPECS) {
       if (spec.col === 0 && spec.field !== "gender" && spec.field !== "status") continue;
       push(spec.field, (e as Record<string, unknown>)[spec.field], row.values[spec.field]);

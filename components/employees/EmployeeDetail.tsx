@@ -399,7 +399,7 @@ export default function EmployeeDetail({
 
       {/* 全部字段一览（排查用） */}
       <Card
-        title="全部字段一览（46 列完整对照）"
+        title="全部字段一览（45 列完整对照）"
         extra={
           <Button size="sm" variant="ghost" onClick={() => setShowAll((v) => !v)}>
             {showAll ? "收起 ▲" : "展开 ▼"}

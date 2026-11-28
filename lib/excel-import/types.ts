@@ -46,7 +46,7 @@ export type EmployeeStatus = "ACTIVE" | "RESIGNED" | "CANDIDATE";
 /**
  * 标准化员工记录（解析产物）
  *
- * - `values` 以 **Prisma 字段名** 为键，覆盖 Excel「数据库」Sheet 的 46 列
+ * - `values` 以 **Prisma 字段名** 为键，覆盖 Excel「数据库」Sheet 的 45 列
  *   （除纯定位用的「序号」外全部入库），外加由身份证推导的 gender / age / status。
  * - 日期统一为 `YYYY-MM-DD` 字符串；是否转 Date 由调用方决定（预览不需要，写库才需要）。
  * - 长数字（身份证 / 银行卡 / 手机号）全程字符串，已做归一化但未做脱敏 ——

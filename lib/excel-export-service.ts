@@ -167,7 +167,7 @@ const STAFF_COLUMNS: Record<string, (string | null)[]> = {
   //   无论在职/离职都算到今天（实测刘家卓 3年8个月=到今天，非到离职日）。
   //   ⚠️ 2026-11-27 改（用户定）：离职员工的在职年限改为按入职日→离职日算，
   //   在职员工仍算到今天；__tenure__ 已按此口径实现，不再是纯“算到今天”。
-  // ⚠️ 第 41 列也是「面试评估表」—— 原表的重复列。Stage 10.4 起改为按
+  // ⚠️ 第 40 列也是「面试评估表」—— 原表的重复列。Stage 10.4 起改为按
   //    docInterviewEvaluation2 原样导出：原表这一列是有值的（部分行与第 35 列不同），
   //    早先「留空以保持与原表一致」的判断是错的，会导致 300+ 行内容丢失。
   数据库: [
@@ -279,7 +279,7 @@ function employeeValues(
     interviewHired: s(e.interviewHired),
     docResume: s(e.docResume),
     docInterviewEvaluation: s(e.docInterviewEvaluation),
-    // 原表第 41 列的重复「面试评估表」—— 必须单独输出，否则该列整列丢失
+    // 原表第 40 列的重复「面试评估表」—— 必须单独输出，否则该列整列丢失
     docInterviewEvaluation2: s(e.docInterviewEvaluation2),
     docOnboardingForm: s(e.docOnboardingForm),
     // 薪资表第 7 列「备注」：薪资说明在原表里可能记在「薪资待遇」列，也可能记在「备注」列

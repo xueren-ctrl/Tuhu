@@ -23,6 +23,8 @@
  *   ② 删除 + 重建包在一个 $transaction 里，中途失败不留半套；
  *   ③ --apply 前先把旧关联表完整落盘到 /tmp/link-backup-<时间戳>.json；
  *   ④ 写完自检：目标表的关联数必须 == plan.length，否则报错退出。
+ *   ⑤ 计划为空时拒绝写库：否则 deleteMany 会把旧关联全清，
+ *      而末尾自检 count()===0===plan.length 还会"通过"（OpenCode 2026-11-28 复核 §5.3-1）。
  */
 import { PrismaClient } from "@prisma/client";
 import { writeFile } from "node:fs/promises";
@@ -137,6 +139,13 @@ if (!APPLY) {
   const backupPath = `/tmp/link-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
   await writeFile(backupPath, JSON.stringify(oldLinks, null, 2));
   console.log(`  已备份旧关联 ${oldLinks.length} 条 → ${backupPath}`);
+  // ⑤ 计划为空时拒绝写库：否则 deleteMany 会把旧关联全清，
+  //    而末尾自检 count()===0===plan.length 还会"通过"（OpenCode 2026-11-28 复核 §5.3-1）
+  if (plan.length === 0) {
+    console.error("❌ 计划为 0（镜像为空或员工库无匹配），拒绝写库，旧关联未动");
+    await prisma.$disconnect();
+    process.exit(1);
+  }
   // ①② 只清这两张表的旧关联，且删除 + 重建包在一个事务里（中途失败不留半套）
   await prisma.$transaction([
     prisma.sheetRowEmployeeLink.deleteMany({ where: { sheet: { in: TARGET_SHEETS } } }),

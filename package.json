@@ -23,6 +23,7 @@
     "import:excel:reset": "tsx scripts/import-excel.ts --reset",
     "migrate:departments": "tsx scripts/migrate-departments.ts",
     "check:sensitive": "node scripts/pre-push-check.mjs",
+    "check:columns": "tsx scripts/check-sheet-columns.mjs",
     "test:stage5": "tsx scripts/stage5-test.mjs",
     "test:stage6": "tsx scripts/stage6-test.mjs",
     "test:stage6:security": "tsx scripts/stage6-security-test.mjs",

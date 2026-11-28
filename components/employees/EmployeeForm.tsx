@@ -18,7 +18,7 @@ import YesNoSelect from "@/components/common/YesNoSelect";
 import MarkSelect from "@/components/common/MarkSelect";
 import { EMPLOYEE_STATUS_OPTIONS } from "@/lib/constants";
 
-/** Excel 原始字段（除核心字段外的全部 46 列）建在折叠分组里，确保不丢字段 */
+/** Excel 原始字段（除核心字段外的全部 45 列）建在折叠分组里，确保不丢字段 */
 
 type FormState = Record<string, string>;
 
@@ -94,7 +94,7 @@ const TEXT_FIELDS: {
   { key: "mentorName", label: "带教人", excel: "AL" },
   { key: "onboardingMedical", label: "入职体检", excel: "T", type: "yesno" },
   { key: "socialInsurancePurchased", label: "社保购买", excel: "K", type: "yesno" },
-  { key: "salaryTerms", label: "薪资待遇", excel: "" },
+  { key: "salaryTerms", label: "薪资待遇", excel: "（数据库表无此列）" },
   { key: "firstMonthGuarantee", label: "首月保障", excel: "AJ" },
   { key: "bankBranch", label: "工资卡开户银行支行", excel: "U" },
   { key: "bankAccountNo", label: "银行卡账号", excel: "V", hint: "按字符串存储，支持前导零，不会转成科学计数法" },
@@ -105,6 +105,7 @@ const TEXT_FIELDS: {
   { key: "docResume", label: "简历表", excel: "AG" },
   { key: "docInterviewEvaluation", label: "面试评估表", excel: "AH" },
   { key: "docOnboardingForm", label: "入职表", excel: "AM" },
+  { key: "docInterviewEvaluation2", label: "面试评估表（重复列）", excel: "AN" },
   { key: "recruiterName", label: "招聘人", excel: "X" },
   { key: "interviewLocation", label: "面试地点", excel: "AC" },
   { key: "interviewResult", label: "面试结果", excel: "AD" },
@@ -537,6 +538,18 @@ export default function EmployeeForm({
           </Field>
 
           <Field
+            label="面试评估表（重复列）"
+            excelColumn="AN"
+            hint="数据库表第 40 列的重复列，有就打 √，没有就留空"
+          >
+            <MarkSelect
+              value={form.docInterviewEvaluation2}
+              onChange={(v) => set("docInterviewEvaluation2")(v)}
+              label="已交"
+            />
+          </Field>
+
+          <Field
             label="部门"
             hint="Excel 只提供了「运营部」的部门归属；门店员工可在此手动指定"
           >
@@ -629,7 +642,7 @@ export default function EmployeeForm({
         }
       >
         <div className="mb-3 rounded-md border border-[var(--hr-border)] bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-500">
-          这些字段来自 Excel「数据库」Sheet 的第 4~46 列。第一阶段不做业务逻辑，
+          这些字段来自 Excel「数据库」Sheet 的第 4~45 列。第一阶段不做业务逻辑，
           但<strong>全部原样落库、可查询、可编辑</strong>，后续再拆分为招聘 / 社保 / 薪资 / 合同 / 离职等子模块。
         </div>
 

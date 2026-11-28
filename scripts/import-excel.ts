@@ -28,7 +28,7 @@ import type { EmployeeRecord, EmployeeStatus, ParseIssue } from "../lib/excel-im
 import { parseOpsSheets, parseWorkbook } from "../lib/excel-import/parser";
 import type { OpsContactRow } from "../lib/excel-import/parser";
 import { dateFromIso, normalizeForCompare, normalizeIdCard } from "../lib/excel-import/normalization";
-import { SPEC_BY_FIELD, STORED_SPECS } from "../lib/excel-import/field-mapping";
+import { FIELD_SPECS, SPEC_BY_FIELD, STORED_SPECS } from "../lib/excel-import/field-mapping";
 // Stage 7.1.5（P0）：门店解析统一入口（ACTIVE 门店 > 指向 ACTIVE 门店的别名 > null）
 import { resolveStoreNamesBatch } from "../lib/store-service";
 type Issue = ParseIssue;
@@ -327,8 +327,10 @@ async function main() {
     console.error(`✗ ${parseResult.error ?? "解析失败"}`);
     process.exit(1);
   }
+  // 列数从 FIELD_SPECS 推导（数据库表 45 列，无「薪资待遇」列；2026-11-28 改，旧版写死 46 列）
+  const dbColCount = new Set(FIELD_SPECS.filter((s) => s.col > 0).map((s) => s.col)).size;
   console.log(
-    `✓ 已读取「${DB_SHEET}」Sheet：数据区 ${parseResult.totalRows} 行 × 46 列（表头校验已通过）`
+    `✓ 已读取「${DB_SHEET}」Sheet：数据区 ${parseResult.totalRows} 行 × ${dbColCount} 列（表头校验已通过）`
   );
 
   const rosterActive = parseResult.rosterActive;

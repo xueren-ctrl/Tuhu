@@ -441,7 +441,7 @@ export function parseWorkbook(wb: ExcelJS.Workbook): ParseResult {
       if (Number.isFinite(n) && n > 0 && n < 120) age = n;
     }
 
-    // ---------- 3.5 组装标准化记录（覆盖 46 列） ----------
+    // ---------- 3.5 组装标准化记录（覆盖 45 列） ----------
     const values: Record<string, string | number | null> = {};
     for (const spec of STORED_SPECS) {
       if (spec.col === 0) continue; // 派生字段稍后填

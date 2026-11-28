@@ -12,10 +12,9 @@
  *   所以错位 bug 能过校验。
  *
  * 注意（模板计数为什么不用 txt()，以及下限的由来）：
- *   模板里招聘/薪资的部分格子是 XLOOKUP 数组公式，ExcelJS 读缓存值时按
- *   <c> 的 t 属性走：缺 t="str" 的文本缓存值会被 parseFloat 成 NaN 再丢掉，
- *   txt() 读出来是空——这正是 import-sheets.mjs 丢值的同一机制（2026-11-28
- *   实测：模板招聘 G 列 openpyxl 读出 574，ExcelJS 只读出 5）。
+ *   模板里招聘/薪资的部分格子是 XLOOKUP 公式，ExcelJS 读缓存值时
+ *   读不出这几列（原因待服务器 D1/D2 定性；2026-11-28 本地实测：
+ *   模板招聘 G 列 openpyxl 读出 574，ExcelJS 只读出 5）。
  *   所以模板基线另设了下限（KNOWN_TEMPLATE_MIN，openpyxl data_only 实测
  *   11.17 源文件）：ExcelJS 读出的模板数低于下限时，基线改用下限。
  *   下限只在「模板内容指纹」吻合时生效——招聘 577 行、薪资 356 行、
@@ -97,10 +96,10 @@ function txt(v) {
   return String(v).trim();
 }
 /**
- * 模板计数专用：txt() 读不到的 XLOOKUP 缓存值，在 ExcelJS 里常以
- * Invalid Date 的形式残留（文本缓存值被 parseFloat 成 NaN 后又按日期
- * 格式转了一道）——值读不出来，但格子确实有值，计数时要算进去。
- * （导出文件是纯值、无公式，不会产生 Invalid Date，两边用同一口径无妨。）
+ * 模板计数专用：ExcelJS 读不出这几列的 XLOOKUP 缓存值（原因待服务器
+ * D1/D2 定性），但格子确实有值——Date（含 Invalid Date）一律算有值，
+ * 计数时不要漏掉。（导出文件是纯值、无公式，不会产生 Invalid Date，
+ * 两边用同一口径无妨。）
  */
 function cellHasValue(v) {
   if (v === null || v === undefined) return false;
@@ -132,6 +131,11 @@ function headerCount(ws, headerRows) {
   for (let c = 1; c <= ws.columnCount; c++) if (effectiveHeader(ws, headerRows, c) !== "") n++;
   return n;
 }
+function headerWidth(ws, headerRows) {
+  let n = 0;
+  for (let c = 1; c <= ws.columnCount; c++) if (effectiveHeader(ws, headerRows, c) !== "") n = c;
+  return n;
+}
 function colCounts(ws, dataStart) {
   const counts = {};
   const last = lastDataRow(ws);
@@ -146,7 +150,9 @@ function colCounts(ws, dataStart) {
 }
 
 let fail = 0;
+let warn = 0;
 const bad = (m) => { console.log("  ❌ " + m); fail++; };
+const warnMsg = (m) => { console.log("  ⚠️ " + m); warn++; };
 
 console.log("=== ① 公式残留检查（要求：0 个公式）===");
 let totalF = 0;
@@ -243,8 +249,10 @@ if (!templateFile) {
   }
   const fpHit = Object.entries(TEMPLATE_FINGERPRINT).every(([name, fp]) => tplCounts[name]?.[fp.col] === fp.count);
   const floorsApply = fpHit;
+  // 下限覆盖的关键列数（指纹失配时说明"多少列失去下限保护"）
+  const floorColCount = Object.values(KNOWN_TEMPLATE_MIN).reduce((n, m) => n + Object.keys(m).length, 0);
   if (floorsApply) console.log("  （模板内容指纹吻合 11.17 源文件，关键列下限生效）");
-  else console.log("  （模板内容指纹与 11.17 源文件不符，已核对的关键列下限不适用，基线以 ExcelJS 实测为准）");
+  else warnMsg(`模板内容指纹与 11.17 源文件不符，已核对的关键列下限不适用，基线以 ExcelJS 实测为准——本次 ${floorColCount} 项关键列没有下限保护（机制 C 类丢值查不出来）`);
   for (const [name, cfg] of Object.entries(SHEETS)) {
     const ews = wb.getWorksheet(name);
     const tws = twb.getWorksheet(name);
@@ -270,6 +278,11 @@ if (!templateFile) {
     const tCounts = tplCounts[name] ?? {};
     const allowance = UNLINKED_ALLOWANCE[name] ?? 0;
     const floors = floorsApply ? (KNOWN_TEMPLATE_MIN[name] ?? {}) : {};
+    // 模板宽度 = 表头最右列与数据最右列取大：模板本身在无表头列里也可能有
+    // 残留值（如社保总名单 I7 的「·」），那是模板内容、不是导出多写的列，
+    // 判「多出一列」时不能把它算进去（2026-11-28 复核时因此误报过一次）
+    const tDataWidth = Math.max(0, ...Object.keys(tCounts).map(Number));
+    const tWidth = Math.max(headerWidth(tws, cfg.headerRows), tDataWidth);
     const maxCol = Math.max(...Object.keys(tCounts).map(Number), ...Object.keys(eCounts).map(Number), 0);
     for (let c = 1; c <= maxCol; c++) {
       let t = tCounts[c] ?? 0;
@@ -278,6 +291,11 @@ if (!templateFile) {
         t = floors[c];
       }
       const e = eCounts[c] ?? 0;
+      // 模板表头与数据都没有的列却有值：导出凭空多出一列（旧 bug 曾在数据库表写出第 46 列）
+      if (c > tWidth && e > 0) {
+        bad(`${name} 第${c}列超出模板宽度（模板表头最右到第 ${headerWidth(tws, cfg.headerRows)} 列、数据最右到第 ${tDataWidth} 列），导出却有 ${e} 个值`);
+        continue;
+      }
       const min = t - allowance;
       const mark = e < min ? "❌" : (e < t ? "△" : "✓");
       if (e < min) bad(`${name} 第${c}列「${effectiveHeader(tws, cfg.headerRows, c)}」导出 ${e} < 模板 ${t} - 已知未关联 ${allowance}（下限 ${min}）`);
@@ -286,5 +304,6 @@ if (!templateFile) {
   }
 }
 
-console.log(fail === 0 ? "\n✅ 全部通过" : `\n❌ ${fail} 项未通过`);
+if (fail === 0) console.log(warn > 0 ? `\n✅ 全部通过，但有 ${warn} 项警告（关键列下限未生效，见上）` : "\n✅ 全部通过");
+else console.log(`\n❌ ${fail} 项未通过${warn > 0 ? `，另有 ${warn} 项警告` : ""}`);
 process.exit(fail === 0 ? 0 : 1);

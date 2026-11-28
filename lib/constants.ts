@@ -239,6 +239,7 @@ export const EMPLOYEE_FIELDS: FieldMeta[] = [
   { key: "docResume", label: "简历表", group: "contract", control: "tick", excelColumn: "AG 简历表" },
   { key: "docInterviewEvaluation", label: "面试评估表", group: "contract", control: "tick", excelColumn: "AH 面试评估表" },
   { key: "docOnboardingForm", label: "入职表", group: "contract", control: "tick", excelColumn: "AM 入职表" },
+  { key: "docInterviewEvaluation2", label: "面试评估表（重复列）", group: "contract", control: "tick", excelColumn: "AN 面试评估表" },
 
   // ⑨ 招聘面试
   { key: "recruiterName", label: "招聘人", group: "recruit", control: "text", excelColumn: "X 招聘人" },
